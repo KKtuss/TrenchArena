@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PokeArena × Showdown Client POC</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Segoe UI, system-ui, sans-serif;
+      background: #0b0d10;
+      color: #f5f1ea;
+    }
+    header {
+      padding: 14px 18px;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+    }
+    header code { color: #f0d19a; }
+    #status {
+      padding: 10px 18px;
+      color: #9e9a92;
+      font-size: 13px;
+    }
+    #controls {
+      padding: 12px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+    }
+    button {
+      background: rgba(201, 166, 107, 0.2);
+      border: 1px solid rgba(201, 166, 107, 0.55);
+      color: #f0d19a;
+      border-radius: 999px;
+      padding: 8px 14px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .move-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(140px, 1fr));
+      gap: 8px;
+      padding: 12px 18px 24px;
+      max-width: 520px;
+    }
+    .wrapper {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 12px;
+    }
+    .note {
+      padding: 0 18px 18px;
+      color: #9e9a92;
+      font-size: 13px;
+      max-width: 720px;
+    }
+  </style>
+</head>
+<body class="dark">
+  <header>
+    <strong>PokeArena Showdown Client POC</strong>
+    — renderer from <code>pokemon-showdown-client@c24f883</code>-era CDN battle modules;
+    authority remains PokeArena API → BattleEngine → BattleStream.
+  </header>
+  <div id="status">Connecting…</div>
+  <div id="controls">
+    <button id="create" type="button">1. Create casual 1v1</button>
+    <button id="ready" type="button" disabled>2. Ready up</button>
+    <button id="start" type="button" disabled>3. Start battle</button>
+  </div>
+  <div class="wrapper replay-wrapper">
+    <div class="battle"></div>
+    <div class="battle-log"></div>
+  </div>
+  <div class="note">
+    Move/switch buttons below are driven by Showdown’s <code>BattleChoiceBuilder</code>
+    request JSON (move names/PP from private <code>|request|</code>), then translated into
+    PokeArena typed <code>match.choice</code> messages. Raw Showdown commands are never
+    sent to the API.
+  </div>
+  <div id="choice-panel" class="move-grid"></div>
+
+  <script src="/config.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/lib/ps-polyfill.js"></script>
+  <script src="https://play.pokemonshowdown.com/config/config.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/lib/jquery-1.11.0.min.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/lib/html-sanitizer-minified.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/battle-sound.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/battledata.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/battle-log.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/pokedex-mini.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/pokedex-mini-bw.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/graphics.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/pokedex.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/moves.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/abilities.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/items.js"></script>
+  <script src="https://play.pokemonshowdown.com/data/teambuilder-tables.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/battle-tooltips.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/battle.js"></script>
+  <script src="https://play.pokemonshowdown.com/js/battle-choices.js"></script>
+  <link rel="stylesheet" href="https://play.pokemonshowdown.com/style/font-awesome.css" />
+  <link rel="stylesheet" href="https://play.pokemonshowdown.com/style/battle.css" />
+  <link rel="stylesheet" href="https://play.pokemonshowdown.com/style/replay.css" />
+  <script src="/poc-client.js"></script>
+</body>
+</html>

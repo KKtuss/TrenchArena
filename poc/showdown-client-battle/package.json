@@ -1,0 +1,23 @@
+{
+  "name": "@pokearena/showdown-client-battle-poc",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "build": "npm run build:deps && tsc -p tsconfig.json",
+    "build:deps": "npm --prefix ../../packages/battle-engine run build && npm --prefix ../../packages/api run build",
+    "start": "npm run build && node dist/src/poc-server.js",
+    "test": "npm run build && node --test --test-force-exit dist/test/**/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "@types/ws": "8.18.1",
+    "typescript": "7.0.2"
+  }
+}

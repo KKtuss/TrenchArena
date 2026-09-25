@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PokeArena API Demo</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+      label { display: inline-block; margin: .25rem 1rem .25rem 0; }
+      input, button { padding: .4rem; }
+      #log { background: #111; color: #b9f6ca; min-height: 18rem; padding: 1rem; white-space: pre-wrap; overflow: auto; }
+      #choices button { margin: .25rem; }
+      .status { font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <h1>PokeArena development match</h1>
+    <p>This intentionally simple page exercises the application protocol.</p>
+    <label>Identity
+      <select id="identity">
+        <option>demo-player-1</option>
+        <option>demo-player-2</option>
+      </select>
+    </label>
+    <label>Tournament ID <input id="tournamentId" size="38"></label>
+    <button id="connect">Connect</button>
+    <button id="create">Create tournament</button>
+    <button id="join">Join tournament</button>
+    <button id="start">Start tournament</button>
+    <button id="subscribe">Subscribe to match</button>
+    <label>Match ID <input id="matchId" size="38"></label>
+    <p>Connection: <span class="status" id="connection">offline</span></p>
+    <p>Request revision: <span id="revision">-</span></p>
+    <div id="choices"></div>
+    <h2>Battle event log</h2>
+    <pre id="log"></pre>
+    <script src="/client.js"></script>
+  </body>
+</html>

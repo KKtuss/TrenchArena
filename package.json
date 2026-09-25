@@ -1,0 +1,13 @@
+{
+  "name": "@pokearena/workspace",
+  "private": true,
+  "packageManager": "pnpm@12.6.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "sync:copies": "powershell -ExecutionPolicy Bypass -File scripts/sync-workspace-copies.ps1",
+    "dev:api": "pnpm --filter @pokearena/api start",
+    "dev:web": "pnpm --filter @pokearena/web dev"
+  }
+}

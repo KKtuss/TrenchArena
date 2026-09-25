@@ -1,0 +1,6 @@
+{
+  "clientCommit": "c24f883a5b505aea79f07037110fac315e3bda7e",
+  "simulatorCommit": "739a5e1fee432ad80ff7136d70cca993be358b59",
+  "runtime": "Battle/BattleScene/BattleLog/BattleChoiceBuilder",
+  "assetPolicy": "local-only"
+}

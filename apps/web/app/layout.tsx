@@ -1,0 +1,52 @@
+import type { Metadata } from 'next';
+import type { ReactNode } from 'react';
+import { Barlow, Barlow_Condensed, JetBrains_Mono, Teko } from 'next/font/google';
+
+import { ArenaProvider } from '@/lib/arena-context';
+import { ArenaShell } from '@/components/shell';
+import './globals.css';
+
+const barlow = Barlow({
+  subsets: ['latin'],
+  weight: ['500', '600', '700', '800'],
+  display: 'swap',
+  variable: '--font-barlow',
+});
+
+const barlowCondensed = Barlow_Condensed({
+  subsets: ['latin'],
+  weight: ['600', '700', '800'],
+  display: 'swap',
+  variable: '--font-barlow-condensed',
+});
+
+const teko = Teko({
+  subsets: ['latin'],
+  weight: ['600', '700'],
+  display: 'swap',
+  variable: '--font-teko',
+});
+
+const jetbrains = JetBrains_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  display: 'swap',
+  variable: '--font-jetbrains',
+});
+
+export const metadata: Metadata = {
+  title: 'PokeArena',
+  description: 'Playable Pokémon tournament arena with mocked POKE economics.',
+};
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en" className={`${barlow.variable} ${barlowCondensed.variable} ${teko.variable} ${jetbrains.variable}`}>
+      <body>
+        <ArenaProvider>
+          <ArenaShell>{children}</ArenaShell>
+        </ArenaProvider>
+      </body>
+    </html>
+  );
+}

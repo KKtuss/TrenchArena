@@ -1,0 +1,5 @@
+node_modules/
+src/
+test/
+README.md
+tsconfig.json
