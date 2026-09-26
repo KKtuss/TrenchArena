@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { PokemonSprite, TrainerSprite } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
+import { trainerName } from '@/lib/trainers';
 
 export default function TeamsPage() {
   const { playerId } = useArena();
@@ -33,9 +34,9 @@ export default function TeamsPage() {
       {team ? (
         <section className="pa-team-file">
           <header className="pa-team-file-head">
-            <TrainerSprite label={playerId} />
+            <TrainerSprite label={trainerName(playerId)} />
             <div>
-              <small>Deployment file · {playerId}</small>
+              <small>Deployment file · {trainerName(playerId)}</small>
               <h2>{team.name}</h2>
               <p className={team.validated ? 'ok' : 'warn'}>
                 {team.validated ? 'Passes Gen 9 OU.' : 'Draft. The validator still has problems.'}
@@ -62,7 +63,7 @@ export default function TeamsPage() {
         </section>
       ) : (
         <section className="pa-team-file pa-team-empty">
-          <p>No saved protocol for this profile. The editor opens on the demo team.</p>
+          <p>No saved roster for this profile. Open the team builder to lock a Gen 9 OU six.</p>
           <Link className="pa-btn pa-btn-primary" href="/teams/builder">Open team builder</Link>
         </section>
       )}

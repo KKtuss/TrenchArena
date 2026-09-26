@@ -25,7 +25,7 @@ export default function CasualLobbyPage() {
       />
       <div className="queue-banner">
         <div><span className="micro-label">Available to stake</span><strong>{snapshot ? formatPoke(snapshot.wallet.balance) : 'Loading…'}</strong></div>
-        <span className="muted">Mock economics · 2% once from gross pool at match start · winner receives 98% · no withdrawal tax</span>
+        <span className="muted">2% once from the gross pool at match start · winner receives 98% · no withdrawal tax</span>
       </div>
       <section className="stack">
         <SectionHeader eyebrow="Open challenges" title="Pick a trainer" />

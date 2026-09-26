@@ -9,6 +9,7 @@ import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom, TournamentSummary } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
+import { trainerName } from '@/lib/trainers';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
@@ -125,13 +126,13 @@ export default function LandingPage() {
             <header>
               <div>
                 <small>Challenger</small>
-                <strong>{featured?.creatorId ?? 'Open slot'}</strong>
+                <strong>{featured ? trainerName(featured.creatorId) : 'Open slot'}</strong>
               </div>
               <Dots filled={featured ? 3 : 0} tone="cyan" />
             </header>
             <div className="pa-mon">
               <span className="pa-portrait">
-                <TrainerSprite label={featured?.creatorId ?? 'Open slot'} />
+                <TrainerSprite label={featured ? trainerName(featured.creatorId) : 'Open slot'} />
               </span>
               <div>
                 <div className="pa-mon-name">
@@ -156,7 +157,7 @@ export default function LandingPage() {
             <span className="pa-timer">{featured ? featured.status.toUpperCase() : 'BOARD CLEAR'}</span>
             <p className="pa-ticker">
               {featured
-                ? <>{featured.creatorId} vs {featured.opponentId ?? 'open slot'} · winner {formatPoke(featured.economics.winnerPayout)} after 2% start fee</>
+                ? <>{trainerName(featured.creatorId)} vs {featured.opponentId ? trainerName(featured.opponentId) : 'open slot'} · winner {formatPoke(featured.economics.winnerPayout)} after 2% start fee</>
                 : 'No live fight on the board. Call a player-funded challenge from the Arena.'}
             </p>
           </div>
@@ -165,12 +166,12 @@ export default function LandingPage() {
               <Dots filled={waiting ? 0 : 3} tone="coral" />
               <div>
                 <small>Rival</small>
-                <strong>{featured?.opponentId ?? 'Open slot'}</strong>
+                <strong>{featured?.opponentId ? trainerName(featured.opponentId) : 'Open slot'}</strong>
               </div>
             </header>
             <div className="pa-mon foe">
               <span className="pa-portrait foe">
-                <TrainerSprite label={featured?.opponentId ?? 'Open slot'} />
+                <TrainerSprite label={featured?.opponentId ? trainerName(featured.opponentId) : 'Open slot'} />
               </span>
               <div>
                 <div className="pa-mon-name">
@@ -211,7 +212,7 @@ export default function LandingPage() {
             <h2><span>◆</span> Two competitive paths</h2>
             <p>Casual is player-funded collateral. Tournaments are Treasury-funded prizes.</p>
           </div>
-          <span className="pa-live-pill"><i /> Mock POKE ledger</span>
+          <span className="pa-live-pill"><i /> POKE ledger</span>
         </header>
         <CompetitivePaths />
       </section>
@@ -249,11 +250,11 @@ export default function LandingPage() {
               <div className="pa-board-mark">{room.format === 'gen9ou' ? 'OU' : 'PA'}</div>
               <div>
                 <p className="pa-board-trainers">
-                  <TrainerSprite label={room.creatorId} />
-                  <b>{room.creatorId}</b>
+                  <TrainerSprite label={trainerName(room.creatorId)} />
+                  <b>{trainerName(room.creatorId)}</b>
                   <span>vs</span>
-                  {room.opponentId ? <TrainerSprite label={room.opponentId} /> : null}
-                  <b>{room.opponentId ?? 'Open slot'}</b>
+                  {room.opponentId ? <TrainerSprite label={trainerName(room.opponentId)} /> : null}
+                  <b>{room.opponentId ? trainerName(room.opponentId) : 'Open slot'}</b>
                 </p>
                 <small>{formatLabel(room.format)} • {room.battleSize} • {room.status}</small>
               </div>
@@ -268,14 +269,14 @@ export default function LandingPage() {
         <div id="treasury-audit">
           <header>
             <h2>Funding snapshot</h2>
-            <span className="ok">Mock ledger</span>
+            <span className="ok">Live ledger</span>
           </header>
           <div className="pa-vault">
             <div className="pa-vault-grid">
               <div>
                 <small>Treasury prize targets</small>
                 <strong>{flagship ? formatPoke(flagship.economics.prizePool) : '—'}</strong>
-                <span>Mock cup estimate · not a live vault balance</span>
+                <span>Treasury prize target on the calendar</span>
               </div>
               <div>
                 <small>Recent casual payouts</small>
@@ -290,7 +291,7 @@ export default function LandingPage() {
             </div>
             <div className="pa-contract">
               <span>Casual fee 2% at match start · no withdrawal tax</span>
-              <span>Mock ledger</span>
+              <span>Settled in POKE</span>
             </div>
             <Link href="/treasury">Open Treasury map</Link>
           </div>
@@ -313,7 +314,7 @@ export default function LandingPage() {
                 <small>{eventStatus(flagship)}</small>
               </div>
               <h3>{flagship.title}</h3>
-              <p>{flagship.winner ? `Champion ${flagship.winner}` : `${formatLabel(flagship.format)} · ${flagship.playerCount}/${flagship.maxPlayers} on the field.`}</p>
+              <p>{flagship.winner ? `Champion ${trainerName(flagship.winner)}` : `${formatLabel(flagship.format)} · ${flagship.playerCount}/${flagship.maxPlayers} on the field.`}</p>
               {flagship.playerCount > 0 ? (
                 <div className="ps-field" aria-hidden>
                   {Array.from({ length: Math.min(flagship.playerCount, 4) }, (_, index) => (
@@ -340,7 +341,7 @@ export default function LandingPage() {
                 <article key={event.id}>
                   <small>{formatLabel(event.format)}</small>
                   <h4>{event.title}</h4>
-                  <p>{eventStatus(event)}{event.winner ? ` · ${event.winner}` : ''}</p>
+                  <p>{eventStatus(event)}{event.winner ? ` · ${trainerName(event.winner)}` : ''}</p>
                   <strong>Entry {formatPoke(event.entryFee)}</strong>
                   <span style={{ display: 'block', color: '#8ea0c0', fontSize: '0.7rem' }}>
                     Treasury prize {formatPoke(event.economics.prizePool)}
@@ -362,9 +363,9 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="pa-foot-meta">
-          <span>◆ Mock POKE</span>
+          <span>◆ POKE</span>
           <span>◆ Gen 9 OU</span>
-          <span>◆ Local prototype</span>
+          <span>◆ Live stadium</span>
         </div>
         <div className="pa-foot-badges">
           <span>Smogon OU compliant</span>
