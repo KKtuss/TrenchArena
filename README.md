@@ -4,7 +4,7 @@ PokeArena is a competitive Pokémon stadium for Generation 9 Overused. Stake POK
 
 ![PokeArena stadium](docs/images/home.png)
 
-The full walkthrough, with the Arena, team builder, live battle, brackets, and Treasury, is in the [product guide](docs/guide.md).
+The full walkthrough, with the Arena, team builder, live battle, brackets, and Treasury, is in the [product guide](docs/guide.md). A shareable PDF is at [docs/PokeArena-Product-Guide.pdf](docs/PokeArena-Product-Guide.pdf).
 
 ## Stadium
 

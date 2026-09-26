@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>PokeArena Product Guide</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 16mm 16mm 18mm;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      color: #172033;
+      font-family: "Liberation Sans", "Nimbus Sans", "DejaVu Sans", sans-serif;
+      font-size: 11pt;
+      line-height: 1.45;
+      background: white;
+    }
+
+    h1, h2, h3 { font-family: "Liberation Sans", "Nimbus Sans", "DejaVu Sans", sans-serif; line-height: 1.15; }
+    h2 { font-size: 18pt; margin: 0 0 8px; letter-spacing: -0.02em; }
+    h3 { font-size: 13pt; margin: 16px 0 6px; }
+    p { margin: 0 0 10px; }
+    strong { font-weight: 700; }
+
+    .cover {
+      break-after: page;
+      margin: -16mm -16mm -18mm;
+      min-height: 297mm;
+      padding: 28mm 18mm 20mm;
+      background: #0b1020;
+      color: #f4f7fb;
+    }
+
+    .cover-kicker {
+      margin: 0 0 18px;
+      color: #7ee7ff;
+      font-size: 10pt;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .cover h1 {
+      margin: 0;
+      font-size: 54pt;
+      letter-spacing: -0.03em;
+    }
+
+    .cover .tag {
+      margin: 8px 0 22px;
+      font-size: 16pt;
+      color: #d5deee;
+    }
+
+    .cover p { max-width: 150mm; color: #c5d0e4; font-size: 12pt; }
+    .cover-meta { margin-top: 28px; color: #8ea0c0; font-size: 10pt; }
+    .cover-meta span { display: inline-block; margin-right: 14px; }
+
+    h2 { break-after: avoid; }
+    h3 { break-after: avoid; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 12px;
+      font-size: 10pt;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 8px 8px;
+      border-bottom: 1px solid #d5deea;
+    }
+
+    th { color: #3d4d66; font-size: 9pt; letter-spacing: 0.04em; text-transform: uppercase; }
+
+    ul { margin: 6px 0 12px; padding-left: 18px; }
+    li { margin: 0 0 4px; }
+
+    code, pre {
+      font-family: "Liberation Mono", "DejaVu Sans Mono", monospace;
+      font-size: 9pt;
+    }
+
+    pre {
+      background: #0b1020;
+      color: #e8eef8;
+      padding: 12px 14px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+    }
+
+    figure {
+      margin: 8px 0 14px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    figcaption {
+      margin: 0 0 6px;
+      color: #3d4d66;
+      font-size: 9pt;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    img {
+      display: block;
+      width: 100%;
+      height: 210mm;
+      object-fit: contain;
+      object-position: top center;
+      background: #0b1020;
+      border: 1px solid #d5deea;
+      border-radius: 8px;
+    }
+
+    .note {
+      color: #3d4d66;
+    }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <p class="cover-kicker">Product guide</p>
+    <h1>PokeArena</h1>
+    <p class="tag">Battle. Compete. Climb.</p>
+    <p>The competitive stadium for Generation 9 Overused. Stake POKE in player-funded casual fights, or enter low-cost cups for prizes funded by the Tournament Treasury. Battles are Showdown-synced: legal teams, legal choices, and one settlement when the fight ends.</p>
+    <p class="cover-meta">
+      <span>Gen 9 OU</span>
+      <span>Casual collateral</span>
+      <span>Treasury cups</span>
+    </p>
+  </section>
+
+  <h2>The stadium</h2>
+  <p>PokeArena puts two competitive paths on one stadium. Casual fights are funded by the trainers in the match. Tournaments are funded by the Tournament Treasury. The header stays on every screen and shows your POKE balance, the live connection, and the active trainer profile.</p>
+  <p>Aria Vale and Kai Ren are the stadium profiles. Switch between them from the profile menu.</p>
+
+  <figure class="sheet">
+    <figcaption>Stadium home</figcaption>
+    <img src="../images/home.png" alt="PokeArena stadium home" />
+  </figure>
+
+  <h2>Two ways to compete</h2>
+  <p>Casual fights and tournaments share the Gen 9 OU ruleset. They do not share money.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Path</th>
+        <th>Who funds it</th>
+        <th>What you post</th>
+        <th>What the winner receives</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Casual</td>
+        <td>The two trainers</td>
+        <td>The same collateral from each side</td>
+        <td>98% of the gross pool</td>
+      </tr>
+      <tr>
+        <td>Tournament</td>
+        <td>The Tournament Treasury</td>
+        <td>A small entry fee</td>
+        <td>The Treasury prize for that cup</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Casual collateral never enters the Tournament Treasury. Creator and developer rewards do. Ninety percent of those rewards bank the Treasury that pays cup prizes. Ten percent stays with the project for stadium operations.</p>
+
+  <h2>Casual fights</h2>
+  <p>Open the Arena to see every challenge on the board. Each card shows the challenger, the format, the collateral each trainer must post, the gross pool, and the winner’s payout after the start fee.</p>
+
+  <figure class="sheet">
+    <figcaption>Arena board</figcaption>
+    <img src="../images/arena.png" alt="Arena board of open casual fights" />
+  </figure>
+
+  <p>The casual lobby is the same board with your active challenges and recent results beside it.</p>
+
+  <figure class="sheet">
+    <figcaption>Casual lobby</figcaption>
+    <img src="../images/casual.png" alt="Casual lobby with open challenges and recent results" />
+  </figure>
+
+  <h3>Call a challenge</h3>
+  <p>Create a challenge to set the stake before anyone joins.</p>
+  <ul>
+    <li>Format is Gen 9 OU singles.</li>
+    <li>Open challenges appear on the Arena for any trainer.</li>
+    <li>Private callouts go only to the trainer you invite.</li>
+    <li>Both trainers post the same collateral. The gross pool is that amount twice.</li>
+    <li>A 2% protocol fee is taken once, from the gross pool, when the match starts. There is no withdrawal tax.</li>
+    <li>The winner receives the remaining 98%.</li>
+  </ul>
+  <p>Example at 100,000 POKE each: the gross pool is 200,000 POKE, the protocol fee is 4,000 POKE, and the winner receives 196,000 POKE.</p>
+
+  <figure class="sheet">
+    <figcaption>Create a challenge</figcaption>
+    <img src="../images/create-challenge.png" alt="Challenge setup with collateral and pool preview" />
+  </figure>
+
+  <h3>The lobby</h3>
+  <p>The room lobby is where both trainers lock in. Your saved Gen 9 OU team is shown before you ready up. The room code can be copied for a rival, and the economics stay visible until the fight starts. When both trainers are ready, either one can start the battle. Collateral is committed at the start, and the protocol fee is charged at that moment.</p>
+
+  <figure class="sheet">
+    <figcaption>Pre-battle lobby</figcaption>
+    <img src="../images/room-lobby.png" alt="Casual room lobby before the fight starts" />
+  </figure>
+
+  <h3>The fight</h3>
+  <p>The battle screen is the Showdown client, bound to your trainer. Team preview comes first. Confirm the lead order, then play the fight with the moves and switches the position allows. The bar above the field shows the rival, the stake, and the pot.</p>
+  <p>Leaving the battle tab does not end the fight. The stadium keeps a rejoin path until the match is decided or you forfeit. A forfeit awards the fight to the rival.</p>
+
+  <figure class="sheet">
+    <figcaption>Live battle</figcaption>
+    <img src="../images/battle.png" alt="Gen 9 OU battle at team preview" />
+  </figure>
+
+  <h3>The result</h3>
+  <p>Finished fights land on a result card. The winner is credited in POKE. The ledger shows the reason, the format, and the 2% protocol fee.</p>
+
+  <figure class="sheet">
+    <figcaption>Settled result</figcaption>
+    <img src="../images/result.png" alt="Casual result with the winner payout" />
+  </figure>
+
+  <h2>Teams</h2>
+  <p>Each trainer profile keeps a Gen 9 OU roster. My Teams shows the six slots, the team name, and whether the paste passes the ruleset.</p>
+
+  <figure class="sheet">
+    <figcaption>Saved team</figcaption>
+    <img src="../images/teams.png" alt="Aria Vale's saved Circuit Six roster" />
+  </figure>
+
+  <p>The team builder is the editor. It loads the saved protocol, validates it against Gen 9 OU, and shows species, items, abilities, Tera types, moves, EVs, and the defensive profile of the six. Save the protocol on this browser, then bring it to a casual ready-up or a tournament registration.</p>
+  <p class="note">A paste that does not pass Gen 9 OU can still be saved as a draft. A match brings the circuit roster until the draft is legal.</p>
+
+  <figure class="sheet">
+    <figcaption>Team builder</figcaption>
+    <img src="../images/team-builder.png" alt="Gen 9 OU team builder" />
+  </figure>
+
+  <h2>Tournaments</h2>
+  <p>Cups are not collateral wagers. You pay the entry fee and compete for a Treasury prize. The calendar leads with the featured cup and lists the rest of the circuit. Harbor Invitational is open for registration at 5,000 POKE, with an 18,000 POKE Treasury prize. Midnight Stadium Cup is already on the bracket.</p>
+
+  <figure class="sheet">
+    <figcaption>Tournament calendar</figcaption>
+    <img src="../images/tournaments.png" alt="Championship calendar" />
+  </figure>
+
+  <p>Open a cup to register, or to watch the bracket once it is live. Registration uses your saved team. When the field is set, the cup starts as a single-elimination bracket. Your match opens the same battle screen as a casual fight. The champion receives the Treasury prize for that cup.</p>
+
+  <figure class="sheet">
+    <figcaption>Midnight Stadium Cup</figcaption>
+    <img src="../images/tournament.png" alt="Single-elimination bracket, Aria Vale versus Kai Ren" />
+  </figure>
+
+  <h2>Treasury and economy</h2>
+  <p>Treasury &amp; Economy is the funding map. It keeps the two routes separate.</p>
+  <p><strong>Creator rewards.</strong> Token trading activity produces creator and developer rewards. That stream is split once: 90% goes to the Tournament Treasury and banks cup prizes, so events can stay low-entry. 10% stays with the project for operations and growth. It is not a player payout.</p>
+  <p><strong>Casual protocol fee.</strong> This route never touches the Treasury. Each fighter posts collateral. At match start, 2% of the gross pool is the protocol fee and the winner receives the other 98%. Open pools and recent payouts are shown from the fights currently on the stadium.</p>
+
+  <figure class="sheet">
+    <figcaption>Treasury and economy</figcaption>
+    <img src="../images/treasury.png" alt="Funding map for Treasury prizes and casual pools" />
+  </figure>
+
+  <h2>Run the stadium</h2>
+  <p>From the repository root:</p>
+  <pre>pnpm install
+pnpm --filter @pokearena/battle-engine build
+pnpm --filter @pokearena/tournament build
+pnpm --filter @pokearena/api build
+pnpm --filter @pokearena/api start
+pnpm --filter @pokearena/web dev</pre>
+  <p>The API listens on <code>http://127.0.0.1:3000</code>. The stadium UI listens on <code>http://127.0.0.1:3001</code>.</p>
+  <p>Sign in with Aria Vale or Kai Ren from the profile menu. Build a team, post a casual challenge, or register for the cup on the calendar.</p>
+</body>
+</html>

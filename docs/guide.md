@@ -1,5 +1,7 @@
 # PokeArena
 
+A shareable copy of this guide is in [PokeArena-Product-Guide.pdf](PokeArena-Product-Guide.pdf).
+
 PokeArena is the competitive stadium for Generation 9 Overused. Trainers stake their own POKE in casual fights, or pay a small entry fee and play single-elimination cups for prizes funded by the Tournament Treasury. Every battle is Showdown-synced: teams are checked against the OU ruleset, only legal choices are accepted, and a finished fight settles once.
 
 ![PokeArena stadium home](images/home.png)
