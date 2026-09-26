@@ -146,7 +146,7 @@ export class ApiServer {
   private async route(connection: ClientConnection, message: ClientMessage): Promise<void> {
     if (message.type === 'identify') {
       if (!/^demo-player-[12]$/.test(message.playerId)) {
-        throw new Error('Only demo-player-1 and demo-player-2 are available in development.');
+        throw new Error('That trainer profile is not on this stadium.');
       }
       connection.playerId = createTournamentPlayerId(message.playerId);
       this.send(connection, { type: 'ready', playerId: message.playerId }, message.requestId);
@@ -351,7 +351,7 @@ export class ApiServer {
       case 'team.starter':
         this.send(connection, {
           type: 'team.starter',
-          name: 'Demo Circuit',
+          name: 'Circuit Six',
           paste: (playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO).trim(),
         }, message.requestId);
         return;

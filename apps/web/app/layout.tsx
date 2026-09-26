@@ -51,7 +51,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: 'PokeArena',
-  description: 'Playable Pokémon tournament arena with mocked POKE economics.',
+  description: 'Competitive Pokémon stadium. Stake POKE in casual fights or enter Treasury-funded tournaments.',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

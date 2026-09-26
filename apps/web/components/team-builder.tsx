@@ -31,7 +31,7 @@ const STAT_LABEL: Record<StatId, string> = {
 
 export function TeamBuilder() {
   const { client, playerId, connected } = useArena();
-  const [name, setName] = useState('Demo Circuit');
+  const [name, setName] = useState('Circuit Six');
   const [sets, setSets] = useState<EditorSet[]>(() => Array.from({ length: 6 }, emptySet));
   const [selected, setSelected] = useState(0);
   const [inspection, setInspection] = useState<TeamInspection | null>(null);
@@ -179,7 +179,7 @@ export function TeamBuilder() {
     setSaved(true);
     setNotice(inspection?.packed
       ? 'Saved on this browser. Ready up or register to bring this protocol.'
-      : 'Draft saved. It does not pass Gen 9 OU, so a match will bring the demo team.');
+      : 'Draft saved. It does not pass Gen 9 OU, so a match will bring the circuit roster.');
   }
 
   return (

@@ -44,7 +44,7 @@ export class ArenaApiClient {
     if (playerId) this.identity = playerId;
     await this.openSocket({ restore: false });
     if (!this.identity) {
-      throw new Error('Identify with a development player before using the arena API.');
+      throw new Error('Sign in with your trainer before using the arena.');
     }
     return this.request({ type: 'identify', playerId: this.identity });
   }

@@ -8,6 +8,7 @@ import { TrainerSprite } from '@/components/showdown-visuals';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
+import { trainerName } from '@/lib/trainers';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
@@ -63,17 +64,17 @@ export default function BattlePage() {
     <div className="pa-page battle-page">
       <header className="pa-battle-bar">
         <div className="pa-battle-bar-fighters">
-          <TrainerSprite label={you ?? 'You'} side="left" />
+          <TrainerSprite label={you ? trainerName(you) : 'You'} side="left" />
           <div>
-            <b>{you ?? 'You'}</b>
+            <b>{you ? trainerName(you) : 'You'}</b>
             <small>{contextLabel}</small>
           </div>
           <span className="pa-fight-vs">vs</span>
           <div className="end">
-            <b>{rival ?? 'Opponent'}</b>
+            <b>{rival ? trainerName(rival) : 'Opponent'}</b>
             <small>Rival</small>
           </div>
-          <TrainerSprite label={rival ?? 'Opponent'} side="right" />
+          <TrainerSprite label={rival ? trainerName(rival) : 'Opponent'} side="right" />
         </div>
         <div className="pa-battle-bar-meta">
           {match?.tournamentId ? (
@@ -97,7 +98,7 @@ export default function BattlePage() {
       {error ? <div className="error-banner">{error}</div> : null}
       {match?.status === 'completed' && resultHref ? (
         <div className="live-fight-banner">
-          <span>This fight is over. {match.winner ? `${match.winner} takes it.` : 'The pot is settled.'}</span>
+          <span>This fight is over. {match.winner ? `${trainerName(match.winner)} takes it.` : 'The pot is settled.'}</span>
           <Link className="pa-btn pa-btn-primary pa-btn-sm" href={resultHref}>View result</Link>
         </div>
       ) : null}

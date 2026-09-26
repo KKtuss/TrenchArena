@@ -7,6 +7,7 @@ import { useState, type ReactNode } from 'react';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { DemoPlayerId } from '@/lib/protocol';
+import { trainerName } from '@/lib/trainers';
 
 export function ArenaShell({ children }: { children: ReactNode }) {
   const { playerId, setPlayerId, connectionState, snapshot, error, clearError, connected } = useArena();
@@ -56,7 +57,7 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                 aria-label={connected ? `Connection ${connectionState}` : 'offline'}
               />
             </span>
-            <label className="trainer-control" title="Trainer profile (history coming soon)">
+            <label className="trainer-control" title="Trainer profile">
               <span className="trainer-avatar" aria-hidden>👤</span>
               <span className="trainer-control-copy">
                 <small>Profile</small>
@@ -65,8 +66,8 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                   value={playerId}
                   onChange={event => setPlayerId(event.target.value as DemoPlayerId)}
                 >
-                  <option value="demo-player-1">demo-player-1</option>
-                  <option value="demo-player-2">demo-player-2</option>
+                  <option value="demo-player-1">{trainerName('demo-player-1')}</option>
+                  <option value="demo-player-2">{trainerName('demo-player-2')}</option>
                 </select>
               </span>
             </label>
@@ -106,7 +107,7 @@ function LiveFightBanner() {
   return (
     <div className="live-fight-banner">
       <span>
-        You are still in a fight{opponentId ? ` against ${opponentId}` : ''}. Leaving the battle tab does not end it.
+        You are still in a fight{opponentId ? ` against ${trainerName(opponentId)}` : ''}. Leaving the battle tab does not end it.
         {error ? ` ${error}` : ''}
       </span>
       <span className="row">

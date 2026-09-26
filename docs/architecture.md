@@ -4,7 +4,7 @@
 Browser (apps/web)
   ↓ typed JSON over WebSocket
 API/WebSocket (packages/api)
-  ↓ casual rooms + mock POKE economics + tournament gateway
+  ↓ casual rooms + POKE economics + tournament gateway
 Tournament / Casual
   ↓ typed choices and terminal subscriptions
 BattleEngine
@@ -16,21 +16,21 @@ Pokémon Showdown simulator
 
 - The browser owns presentation and user intent only.
 - The API owns the connection identity, casual/tournament access checks,
-  mock POKE economics, and protocol validation.
+  POKE balances, and protocol validation.
 - The Tournament service owns registration, bracket state, match ownership,
   advancement, timeout forfeits, and idempotent tournament finalization.
-- The Casual room service owns private/open rooms, readiness, 1v1 battle start,
-  and mocked collateral settlement (2% one-time fee on total pot).
+- The Casual room service owns private/open rooms, readiness, singles battle start,
+  and collateral settlement (2% one-time fee on the total pot).
 - BattleEngine owns team validation, legal choice validation, battle state,
   normalized `BattleView`, and the authoritative Pokémon `BattleResult`.
 - Showdown is never an application identity or tournament ID source.
 
 ## Product modes
 
-- Casual: 1v1 Gen 9 OU is playable; 2v2 is configurable but start is rejected.
+- Casual: Gen 9 OU singles. Each trainer posts the same collateral.
 - Tournaments: single-elimination brackets via `TournamentService`.
-- Economics: development balances for `demo-player-1` / `demo-player-2` only.
-  No Solana, wallets, escrow, or persistence in this slice.
+- Economics: trainer wallets hold POKE. Casual fights settle from player
+  collateral. Tournament prizes are funded by the Tournament Treasury.
 
 ## Choice and revision flow
 
@@ -58,8 +58,8 @@ request. Spectators never receive request payloads.
 
 ## Reconnect and history
 
-The fake identity is re-established with `identify`, then the client
-resubscribes with `match.subscribe`. The API replays the in-memory
+The trainer identity is re-established with `identify`, then the client
+resubscribes with `match.subscribe`. The API replays the
 BattleEngine event history filtered for that player and includes the current
 state/request/view. Completed battle sessions are retained for five minutes,
 then their listeners and session references are cleaned up.

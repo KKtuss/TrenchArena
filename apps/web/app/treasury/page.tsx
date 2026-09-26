@@ -27,7 +27,7 @@ export default function TreasuryPage() {
   return (
     <div className="pa-page">
       <header className="pa-page-head">
-        <p className="pa-kicker"><i /> — Funding map • mock ledger —</p>
+        <p className="pa-kicker"><i /> — Funding map • live ledger —</p>
         <h1>Treasury &amp; Economy</h1>
         <p className="pa-lead">
           Two separate routes. Creator and developer rewards fund tournaments. Casual fights stay player-funded and pay one protocol fee at match start. Neither route is an immediately withdrawable vault.
@@ -53,7 +53,7 @@ export default function TreasuryPage() {
           </div>
           <div className="pa-split-legend">
             <span><i className="treasury" /> Tournament Treasury · funds prize pools</span>
-            <span><i className="project" /> Developer / project funds · continued development</span>
+            <span><i className="project" /> Developer / project funds · stadium operations</span>
           </div>
           <div className="pa-flow">
             <div className="pa-flow-step">
@@ -62,7 +62,7 @@ export default function TreasuryPage() {
             </div>
             <div className="pa-flow-step">
               <b>10% Project</b>
-              <span>Retained for development and growth. Not a player payout.</span>
+              <span>Retained for operations and growth. Not a player payout.</span>
             </div>
           </div>
         </article>
@@ -129,12 +129,12 @@ export default function TreasuryPage() {
               <div>
                 <small>Prize targets</small>
                 <strong>{prizeTargets ? formatPoke(prizeTargets) : '—'}</strong>
-                <span>Mock estimate · not withdrawable</span>
+                <span>Treasury prize targets on the calendar</span>
               </div>
               <div>
                 <small>Project-fund figure</small>
                 <strong>{projectShare ? formatPoke(projectShare) : '—'}</strong>
-                <span>Mock 10% display from the ledger</span>
+                <span>10% project allocation</span>
               </div>
             </div>
             <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/tournaments">Open tournaments</Link>
@@ -178,7 +178,7 @@ export default function TreasuryPage() {
           </article>
         </div>
         <p className="pa-route-copy">
-          Availability note: creator-reward inflows and a live Tournament Treasury balance are not represented by the API yet. Figures are mock estimates.
+          Creator and developer rewards route 90% into the Tournament Treasury and 10% into project funds. Casual collateral never enters that route.
         </p>
       </section>
     </div>

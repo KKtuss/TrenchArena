@@ -8,6 +8,7 @@ import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
+import { trainerName } from '@/lib/trainers';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
@@ -80,20 +81,20 @@ export default function ArenaPage() {
             <article key={room.id} className="pa-fight-card">
               <div className="pa-fight-trainers">
                 <div className="pa-fight-fighter">
-                  <TrainerSprite label={room.creatorId} side="left" />
+                  <TrainerSprite label={trainerName(room.creatorId)} side="left" />
                   <div>
-                    <b>{room.creatorId}</b>
+                    <b>{trainerName(room.creatorId)}</b>
                     <small>Challenger</small>
                   </div>
                 </div>
                 <span className="pa-fight-vs">vs</span>
                 <div className="pa-fight-fighter end">
                   <div>
-                    <b>{room.opponentId ?? 'Open slot'}</b>
+                    <b>{room.opponentId ? trainerName(room.opponentId) : 'Open slot'}</b>
                     <small>{room.opponentId ? 'Rival' : 'Waiting'}</small>
                   </div>
                   {room.opponentId ? (
-                    <TrainerSprite label={room.opponentId} side="right" />
+                    <TrainerSprite label={trainerName(room.opponentId)} side="right" />
                   ) : (
                     <span className="pa-fight-open" aria-hidden />
                   )}
@@ -132,11 +133,6 @@ export default function ArenaPage() {
         )}
       </section>
 
-      <div className="pa-soon">
-        <span className="pa-kicker" style={{ margin: 0 }}><i /> Coming soon</span>
-        <strong>2v2 Multi</strong>
-        <span>Rooms can be configured, but starts are not live yet.</span>
-      </div>
     </div>
   );
 }

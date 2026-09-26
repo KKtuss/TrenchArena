@@ -8,6 +8,7 @@ import { TrainerSprite } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { TournamentSummary } from '@/lib/protocol';
+import { trainerName } from '@/lib/trainers';
 
 function isLiveEvent(tournament: TournamentSummary): boolean {
   return ['registration', 'ready', 'in-progress', 'active', 'draft'].includes(tournament.status);
@@ -98,7 +99,7 @@ export default function TournamentsPage() {
             <div>
               <small>{formatLabel(featured.format)} · Championship</small>
               <h2>{featured.title}</h2>
-              {featured.winner ? <p>Champion {featured.winner}</p> : (
+              {featured.winner ? <p>Champion {trainerName(featured.winner)}</p> : (
                 <p>{featured.playerCount}/{featured.maxPlayers} on the field</p>
               )}
               {featured.playerCount > 0 ? (
@@ -173,7 +174,7 @@ export default function TournamentsPage() {
                 <p><b>{tournament.title}</b></p>
                 <small>
                   {formatLabel(tournament.format)}
-                  {tournament.winner ? ` · ${tournament.winner}` : ''}
+                  {tournament.winner ? ` · ${trainerName(tournament.winner)}` : ''}
                 </small>
               </div>
               <div className="pa-board-side">

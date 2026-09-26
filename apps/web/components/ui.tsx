@@ -4,6 +4,7 @@ import Link from 'next/link';
 
 import { Badge, Panel } from '@/components/shell';
 import { formatPoke } from '@/lib/api-client';
+import { trainerName } from '@/lib/trainers';
 import type {
   CasualEconomicsPreview,
   CasualRoom,
@@ -110,11 +111,11 @@ export function ResultCard({
           <span className="result-crown">WIN</span>
           <div>
             <span className="micro-label">Winner</span>
-            <strong>{winner ?? 'Tie / unresolved'}</strong>
+            <strong>{winner ? trainerName(winner) : 'Tie / unresolved'}</strong>
           </div>
         </div>
         <div className="economy-row">
-          <span className="muted">Mock POKE payout</span>
+          <span className="muted">POKE payout</span>
           <Badge tone="live">{payoutAmount !== undefined ? formatPoke(payoutAmount) : '—'}</Badge>
         </div>
         {reason ? <div className="muted">{reason}</div> : null}
@@ -137,7 +138,7 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
           <TrainerFigure />
           <span>
             <small>Trainer</small>
-            <strong>{room.creatorId}</strong>
+            <strong>{trainerName(room.creatorId)}</strong>
             <TeamChips filled={3} total={3} />
           </span>
         </div>
@@ -145,7 +146,7 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
         <div className="matchup-trainer matchup-trainer-inline matchup-trainer-foe">
           <span>
             <small>{waiting ? 'Open slot' : 'Opponent'}</small>
-            <strong>{room.opponentId ?? 'Waiting…'}</strong>
+            <strong>{room.opponentId ? trainerName(room.opponentId) : 'Waiting…'}</strong>
             <TeamChips filled={waiting ? 0 : 3} total={3} />
           </span>
           <TrainerFigure foe />
@@ -177,7 +178,7 @@ export function FeaturedMatchup({ room }: { room: CasualRoom }) {
           <TrainerFigure size="lg" />
           <div className="trainer-card-copy">
             <small>Trainer card</small>
-            <strong>{room.creatorId}</strong>
+            <strong>{trainerName(room.creatorId)}</strong>
             <TeamChips filled={5} total={6} />
           </div>
         </div>
@@ -186,7 +187,7 @@ export function FeaturedMatchup({ room }: { room: CasualRoom }) {
           <TrainerFigure foe size="lg" />
           <div className="trainer-card-copy">
             <small>{waiting ? 'Challenger' : 'Opponent'}</small>
-            <strong>{room.opponentId ?? 'Open slot'}</strong>
+            <strong>{room.opponentId ? trainerName(room.opponentId) : 'Open slot'}</strong>
             <TeamChips filled={waiting ? 0 : 5} total={6} />
           </div>
         </div>
@@ -213,7 +214,7 @@ export function TournamentCard({ tournament }: { tournament: TournamentSummary }
       <div className="tournament-rail-id">
         <span className="broadcast-label">{formatLabel(tournament.format)}</span>
         <strong>{tournament.title}</strong>
-        {tournament.winner ? <p className="event-banner-champion">Champion {tournament.winner}</p> : null}
+        {tournament.winner ? <p className="event-banner-champion">Champion {trainerName(tournament.winner)}</p> : null}
       </div>
       <dl className="tournament-rail-stats">
         <div>
@@ -247,14 +248,14 @@ export function MatchPreview({ room }: { room: CasualRoom }) {
         <div className="match-object-trainer">
           <TrainerFigure />
           <span>
-            <strong>{room.creatorId}</strong>
+            <strong>{trainerName(room.creatorId)}</strong>
             <TeamChips filled={3} total={3} />
           </span>
         </div>
         <span className="match-object-vs" aria-hidden>VS</span>
         <div className="match-object-trainer match-object-foe">
           <span>
-            <strong>{room.opponentId ?? 'Open slot'}</strong>
+            <strong>{room.opponentId ? trainerName(room.opponentId) : 'Open slot'}</strong>
             <TeamChips filled={waiting ? 0 : 3} total={3} />
           </span>
           <TrainerFigure foe />
@@ -290,7 +291,7 @@ export function TournamentEvent({
           <span className="broadcast-label">{formatLabel(tournament.format)} · Championship event</span>
           {featured ? <h2>{tournament.title}</h2> : <h3>{tournament.title}</h3>}
           {tournament.winner ? (
-            <p className="event-banner-champion">Champion {tournament.winner}</p>
+            <p className="event-banner-champion">Champion {trainerName(tournament.winner)}</p>
           ) : null}
         </div>
         <dl className="event-banner-meta">
@@ -387,11 +388,11 @@ export function TournamentEconomicsBlock({
           <div><span>Field size</span><strong>{economics ? `${economics.playerCount} trainers` : '—'}</strong></div>
           <div><span>Prize distribution</span><strong>Champion payout</strong></div>
           <p className="economy-note">
-            Intended funding: Tournament Treasury from creator/dev rewards. Displayed prize is a mock estimate — not an immediately withdrawable balance.
+            Funded by the Tournament Treasury from creator and developer rewards. The champion receives the prize in POKE.
           </p>
         </>
       ) : (
-        <p className="economy-note">Low entry. Treasury-funded prize. Mock estimate.</p>
+        <p className="economy-note">Low entry. Treasury-funded prize.</p>
       )}
     </div>
   );
@@ -506,14 +507,14 @@ export function BracketView({
                   </div>
                   <div className="matchup-axis bracket-axis">
                     <div className="matchup-trainer">
-                      <strong>{match.player1 ?? 'TBD'}</strong>
+                      <strong>{match.player1 ? trainerName(match.player1) : 'TBD'}</strong>
                     </div>
                     <span className="matchup-vs" aria-hidden>VS</span>
                     <div className="matchup-trainer matchup-trainer-foe">
-                      <strong>{match.player2 ?? 'TBD'}</strong>
+                      <strong>{match.player2 ? trainerName(match.player2) : 'TBD'}</strong>
                     </div>
                   </div>
-                  {match.winner ? <div className="muted" style={{ marginTop: 8 }}>Winner: {match.winner}</div> : null}
+                  {match.winner ? <div className="muted" style={{ marginTop: 8 }}>Winner: {trainerName(match.winner)}</div> : null}
                 </div>
               ))}
           </div>

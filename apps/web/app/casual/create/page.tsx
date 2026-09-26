@@ -7,6 +7,7 @@ import { PageHeader, Panel } from '@/components/shell';
 import { CasualPoolEquation, EconomyBreakdown } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
 import type { CasualEconomicsPreview, DemoPlayerId } from '@/lib/protocol';
+import { trainerName } from '@/lib/trainers';
 
 export default function CreateCasualPage() {
   const { client, playerId, snapshot } = useArena();
@@ -77,9 +78,9 @@ export default function CreateCasualPage() {
                 type="button"
                 className={battleSize === '2v2' ? 'selected' : ''}
                 onClick={() => setBattleSize('2v2')}
-                title="Rooms can be configured; starts are not supported yet"
+                title="Doubles rooms"
               >
-                2v2 Multi <small>Soon</small>
+                2v2 Doubles
               </button>
             </div>
           </div>
@@ -108,16 +109,16 @@ export default function CreateCasualPage() {
                 value={invitedPlayerId}
                 onChange={event => setInvitedPlayerId(event.target.value as DemoPlayerId)}
               >
-                <option value="demo-player-1">demo-player-1</option>
-                <option value="demo-player-2">demo-player-2</option>
+                <option value="demo-player-1">{trainerName('demo-player-1')}</option>
+                <option value="demo-player-2">{trainerName('demo-player-2')}</option>
               </select>
             </div>
           ) : null}
         </div>
         {battleSize === '2v2' ? (
-          <p className="form-note">2v2 rooms can be configured, but battle start is not available yet.</p>
+          <p className="form-note">Gen 9 OU singles is the live competitive format.</p>
         ) : roomType === 'private' ? (
-          <p className="form-note">Private callout is sent to the selected development trainer.</p>
+          <p className="form-note">The private callout goes only to the trainer you invite.</p>
         ) : (
           <p className="form-note">Open challenges are visible to every trainer in the queue.</p>
         )}
@@ -126,7 +127,7 @@ export default function CreateCasualPage() {
         <div className="stack">
           <CasualPoolEquation economics={preview} />
           <EconomyBreakdown economics={preview} />
-          {overBalance ? <div className="error-banner">Collateral exceeds your development balance.</div> : null}
+          {overBalance ? <div className="error-banner">Collateral exceeds your POKE balance.</div> : null}
           {error ? <div className="error-banner">{error}</div> : null}
           <button
             type="button"

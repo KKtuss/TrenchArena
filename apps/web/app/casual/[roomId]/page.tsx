@@ -9,6 +9,7 @@ import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
+import { trainerName } from '@/lib/trainers';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
@@ -98,8 +99,8 @@ export default function CasualRoomPage() {
               {paste
                 ? `Bringing ${saved?.name ?? 'saved team'}: ${(saved?.species ?? []).filter(Boolean).join(' · ')}`
                 : saved
-                  ? 'This draft does not pass Gen 9 OU, so the locked demo team will be brought instead.'
-                  : 'No saved team. The locked demo team will be brought.'}
+                  ? 'This draft does not pass Gen 9 OU, so the circuit roster will be brought instead.'
+                  : 'No saved team. The circuit roster will be brought.'}
             </p>
 
             {paste && saved?.species.some(Boolean) ? (
@@ -112,8 +113,8 @@ export default function CasualRoomPage() {
             <div className="pa-lobby-vs">
               <article className="pa-lobby-side cyan">
                 <small>Your trainer</small>
-                <TrainerSprite label={yourId} side="left" />
-                <strong>{yourId}</strong>
+                <TrainerSprite label={trainerName(yourId)} side="left" />
+                <strong>{trainerName(yourId)}</strong>
                 <span className={`pa-lobby-ready ${youReady ? 'on' : ''}`}>
                   {youReady ? 'Ready' : 'Preparing'}
                 </span>
@@ -123,8 +124,8 @@ export default function CasualRoomPage() {
               </div>
               <article className="pa-lobby-side coral">
                 <small>Opponent</small>
-                {rivalId ? <TrainerSprite label={rivalId} side="right" /> : <span className="pa-fight-open" aria-hidden />}
-                <strong>{rivalId ?? 'Waiting…'}</strong>
+                {rivalId ? <TrainerSprite label={trainerName(rivalId)} side="right" /> : <span className="pa-fight-open" aria-hidden />}
+                <strong>{rivalId ? trainerName(rivalId) : 'Waiting…'}</strong>
                 <span className={`pa-lobby-ready ${rivalReady ? 'on' : ''}`}>
                   {rivalId ? (rivalReady ? 'Ready' : 'Joined') : 'Open queue'}
                 </span>
@@ -226,9 +227,6 @@ export default function CasualRoomPage() {
           >
             Start battle
           </button>
-        ) : null}
-        {room?.battleSize === '2v2' ? (
-          <span className="pa-soon" style={{ border: 0, padding: 0 }}>2v2 Multi · Coming soon</span>
         ) : null}
         {room?.status === 'battling' ? (
           <Link className="pa-btn pa-btn-primary" href={`/battle/${room.matchId}`}>Rejoin fight</Link>

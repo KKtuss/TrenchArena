@@ -8,6 +8,7 @@ import { Panel } from '@/components/shell';
 import { BracketView, TournamentEconomicsBlock } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
+import { trainerName } from '@/lib/trainers';
 
 export default function TournamentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -72,7 +73,7 @@ export default function TournamentDetailPage() {
             {tournament.winner ? (
               <div className="row">
                 <span className="muted">Champion</span>
-                <strong>{tournament.winner}</strong>
+                <strong>{trainerName(tournament.winner)}</strong>
               </div>
             ) : null}
           </div>
@@ -105,8 +106,8 @@ export default function TournamentDetailPage() {
             {saved?.validated
               ? `Bringing ${saved.name}`
               : saved
-                ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
-                : 'No saved protocol. The demo team will be brought.'}
+                ? 'Draft is not Gen 9 OU legal, so the circuit roster will be brought.'
+                : 'No saved roster. The circuit roster will be brought.'}
           </span>
         ) : null}
         {registered && (tournament?.status === 'registration' || tournament?.status === 'ready') ? (

@@ -69,7 +69,7 @@ export class MockEconomics {
       throw new Error('Amount must be a positive integer POKE value.');
     }
     if (this.getBalance(playerId) < amount) {
-      throw new Error('Collateral exceeds development POKE balance.');
+      throw new Error('Collateral exceeds your POKE balance.');
     }
   }
 

@@ -9,6 +9,7 @@ import {
   showdownChoiceToPlayerChoice,
 } from '@/lib/showdown-client-adapter';
 import type { BattleView, PlayerChoice } from '@/lib/protocol';
+import { presentShowdownLine } from '@/lib/trainers';
 
 declare global {
   interface Window {
@@ -298,7 +299,7 @@ export function ShowdownBattle({
       sequenceRef.current,
       playerId,
     );
-    for (const line of feed.publicLines) battle.add(line);
+    for (const line of feed.publicLines) battle.add(presentShowdownLine(line));
     const latest = latestRequestPayload(feed.requestPayloads);
     if (latest !== undefined) {
       const normalized = normalizeRequest(latest, battle);
