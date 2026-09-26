@@ -61,6 +61,11 @@ test('Showdown runtime is shared across remounts and cleaned after final unmount
     await new Promise(resolve => setTimeout(resolve, 1));
     assert.equal(elements.length, __showdownRuntimeForTest.assetCount);
 
+    Object.defineProperty(fakeWindow, 'Battle', {
+      value: function Battle() {},
+      writable: true,
+      configurable: false,
+    });
     __showdownRuntimeForTest.release();
     await new Promise(resolve => setTimeout(resolve, 1));
     assert.equal(elements.length, 0);

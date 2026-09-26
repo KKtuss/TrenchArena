@@ -4,7 +4,12 @@ import Link from 'next/link';
 
 import { Badge, Panel } from '@/components/shell';
 import { formatPoke } from '@/lib/api-client';
-import type { CasualEconomicsPreview, CasualRoom, TournamentSummary } from '@/lib/protocol';
+import type {
+  CasualEconomicsPreview,
+  CasualRoom,
+  TournamentEconomicsPreview,
+  TournamentSummary,
+} from '@/lib/protocol';
 
 function formatLabel(format: string, battleSize?: string): string {
   const pretty = format === 'gen9ou' ? 'Gen 9 OU' : format.toUpperCase();
@@ -149,7 +154,7 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
       <div className="matchup-footer">
         <div className="matchup-stake">
           <strong>{formatPoke(room.collateral)}</strong>
-          <span>Winner {formatPoke(room.economics.winnerPayout)}</span>
+          <span>Each · winner {formatPoke(room.economics.winnerPayout)}</span>
         </div>
         <Link className="btn btn-primary" href={`/casual/${room.id}`}>
           {room.status === 'open' ? 'Join' : 'View'}
@@ -216,7 +221,7 @@ export function TournamentCard({ tournament }: { tournament: TournamentSummary }
           <dd>{field.value}</dd>
         </div>
         <div>
-          <dt>Prize</dt>
+          <dt>Treasury prize</dt>
           <dd>{formatPoke(tournament.economics.prizePool)}</dd>
         </div>
         <div>
@@ -294,11 +299,11 @@ export function TournamentEvent({
             <dd>{field.value}</dd>
           </div>
           <div>
-            <dt>Prize pool</dt>
+            <dt>Treasury prize</dt>
             <dd>{formatPoke(tournament.economics.prizePool)}</dd>
           </div>
           <div>
-            <dt>{settled ? 'Entry was' : 'Entry'}</dt>
+            <dt>{settled ? 'Entry was' : 'Entry fee'}</dt>
             <dd>{formatPoke(tournament.entryFee)}</dd>
           </div>
           <div>
@@ -323,10 +328,100 @@ export function TournamentEvent({
 export function EconomyBreakdown({ economics }: { economics: CasualEconomicsPreview | null }) {
   return (
     <div className="economy-breakdown">
-      <div className="economy-row"><span>Your stake</span><strong>{economics ? formatPoke(economics.collateral) : '—'}</strong></div>
-      <div className="economy-row"><span>Total pot</span><strong>{economics ? formatPoke(economics.totalPot) : '—'}</strong></div>
-      <div className="economy-row economy-fee"><span>Protocol fee · 2%</span><strong>{economics ? formatPoke(economics.protocolFee) : '—'}</strong></div>
-      <div className="economy-row economy-total"><span>Winner receives</span><strong>{economics ? formatPoke(economics.winnerPayout) : '—'}</strong></div>
+      <div className="economy-row">
+        <span>Collateral each</span>
+        <strong>{economics ? formatPoke(economics.collateral) : '—'}</strong>
+      </div>
+      <div className="economy-row">
+        <span>Gross match pool</span>
+        <strong>{economics ? formatPoke(economics.totalPot) : '—'}</strong>
+      </div>
+      <div className="economy-row economy-fee">
+        <span>Protocol fee · 2% at match start</span>
+        <strong>{economics ? formatPoke(economics.protocolFee) : '—'}</strong>
+      </div>
+      <div className="economy-row economy-total">
+        <span>Winner receives</span>
+        <strong>{economics ? formatPoke(economics.winnerPayout) : '—'}</strong>
+      </div>
+      <p className="economy-note">One fee from the gross pool. No withdrawal tax.</p>
+    </div>
+  );
+}
+
+export function CompetitivePaths() {
+  return (
+    <div className="pa-paths">
+      <article className="pa-path casual">
+        <small>Casual</small>
+        <strong>Stake your own POKE</strong>
+        <p>Player-funded fights. Each side posts collateral; one 2% fee comes off the gross pool at match start.</p>
+        <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Find a fight</Link>
+      </article>
+      <article className="pa-path cup">
+        <small>Tournament</small>
+        <strong>Low entry. Treasury prizes.</strong>
+        <p>Compete for prizes funded by the Tournament Treasury, not by large player collateral.</p>
+        <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/tournaments">Browse cups</Link>
+      </article>
+    </div>
+  );
+}
+
+export function TournamentEconomicsBlock({
+  economics,
+  entryFee,
+  compact = false,
+}: {
+  economics?: TournamentEconomicsPreview | null;
+  entryFee?: number;
+  compact?: boolean;
+}) {
+  const entry = entryFee ?? economics?.entryFee;
+  return (
+    <div className={`pa-cup-econ${compact ? ' compact' : ''}`}>
+      <div><span>Entry fee</span><strong>{entry !== undefined ? formatPoke(entry) : '—'}</strong></div>
+      <div><span>Treasury-funded prize</span><strong>{economics ? formatPoke(economics.prizePool) : '—'}</strong></div>
+      {!compact ? (
+        <>
+          <div><span>Field size</span><strong>{economics ? `${economics.playerCount} trainers` : '—'}</strong></div>
+          <div><span>Prize distribution</span><strong>Champion payout</strong></div>
+          <p className="economy-note">
+            Intended funding: Tournament Treasury from creator/dev rewards. Displayed prize is a mock estimate — not an immediately withdrawable balance.
+          </p>
+        </>
+      ) : (
+        <p className="economy-note">Low entry. Treasury-funded prize. Mock estimate.</p>
+      )}
+    </div>
+  );
+}
+
+export function CasualPoolEquation({ economics }: { economics: CasualEconomicsPreview | null }) {
+  if (!economics) {
+    return <p className="muted">Enter collateral to preview the player-funded pool.</p>;
+  }
+  return (
+    <div className="pa-pool-eq">
+      <div className="pa-pool-eq-row">
+        <span>{formatPoke(economics.collateral)}</span>
+        <small>collateral</small>
+        <i>+</i>
+        <span>{formatPoke(economics.collateral)}</span>
+        <small>collateral</small>
+        <i>=</i>
+        <strong>{formatPoke(economics.totalPot)}</strong>
+        <small>gross pool</small>
+      </div>
+      <div className="pa-pool-eq-row fee">
+        <span>2% protocol fee at match start</span>
+        <strong>{formatPoke(economics.protocolFee)}</strong>
+      </div>
+      <div className="pa-pool-eq-row payout">
+        <span>Winner payout</span>
+        <strong>{formatPoke(economics.winnerPayout)}</strong>
+      </div>
+      <p className="economy-note">Player-funded. One fee from the gross pool. No withdrawal tax.</p>
     </div>
   );
 }

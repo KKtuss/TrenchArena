@@ -23,6 +23,7 @@ export interface SideView {
   playerId: PlayerId;
   name: string;
   active?: PokemonView;
+  party: readonly PokemonView[];
 }
 
 export interface BattleView {
@@ -36,10 +37,21 @@ export interface BattleView {
   failure?: BattleFailure;
 }
 
+interface MutablePokemon {
+  species: string;
+  level?: number;
+  hp?: number;
+  maxHp?: number;
+  hpPercent?: number;
+  status?: string;
+  fainted?: boolean;
+}
+
 interface MutableSide {
   playerId: PlayerId;
   name: string;
-  active?: PokemonView;
+  active?: MutablePokemon;
+  party: MutablePokemon[];
 }
 
 export class BattleViewModel {
@@ -47,10 +59,21 @@ export class BattleViewModel {
   private readonly sides: [MutableSide, MutableSide];
   private readonly nameToSlot = new Map<string, 0 | 1>();
 
-  constructor(players: readonly [BattlePlayer, BattlePlayer]) {
+  constructor(
+    players: readonly [BattlePlayer, BattlePlayer],
+    parties: readonly [readonly string[], readonly string[]] = [[], []],
+  ) {
     this.sides = [
-      { playerId: players[0].id, name: players[0].name },
-      { playerId: players[1].id, name: players[1].name },
+      {
+        playerId: players[0].id,
+        name: players[0].name,
+        party: parties[0].map(species => ({ species, fainted: false })),
+      },
+      {
+        playerId: players[1].id,
+        name: players[1].name,
+        party: parties[1].map(species => ({ species, fainted: false })),
+      },
     ];
     this.nameToSlot.set(players[0].name, 0);
     this.nameToSlot.set(players[1].name, 1);
@@ -99,6 +122,14 @@ export class BattleViewModel {
         this.nameToSlot.set(name, slot as 0 | 1);
         break;
       }
+      case 'poke': {
+        const slot = parts[2] === 'p2' ? 1 : parts[2] === 'p1' ? 0 : undefined;
+        if (slot === undefined) break;
+        const species = speciesFromDetails(parts[3] ?? '', '');
+        if (!species || species === 'Unknown') break;
+        this.ensurePartyMember(slot, species);
+        break;
+      }
       case 'switch':
       case 'drag': {
         const pokemonIdent = parts[2] ?? '';
@@ -108,6 +139,7 @@ export class BattleViewModel {
         if (slot === undefined) break;
         const species = speciesFromDetails(details, pokemonIdent);
         const health = parseCondition(condition);
+        this.ensurePartyMember(slot, species);
         this.sides[slot].active = {
           species,
           ...(health.level !== undefined ? { level: health.level } : {}),
@@ -141,17 +173,41 @@ export class BattleViewModel {
       case 'faint': {
         const slot = sideFromIdent(parts[2] ?? '');
         if (slot === undefined || !this.sides[slot].active) break;
+        const species = this.sides[slot].active!.species;
         this.sides[slot].active = {
           ...this.sides[slot].active!,
           hp: 0,
           hpPercent: 0,
           fainted: true,
         };
+        this.markPartyFainted(slot, species);
         break;
       }
       default:
         break;
     }
+  }
+
+  private ensurePartyMember(slot: 0 | 1, species: string): void {
+    const party = this.sides[slot].party;
+    if (party.some(mon => mon.species === species)) return;
+    if (party.length >= 6) return;
+    party.push({ species, fainted: false });
+  }
+
+  private markPartyFainted(slot: 0 | 1, species: string): void {
+    const party = this.sides[slot].party;
+    const exact = party.find(mon => mon.species === species && !mon.fainted)
+      ?? party.find(mon => mon.species === species);
+    if (exact) {
+      exact.fainted = true;
+      return;
+    }
+    const needle = normalizeSpeciesKey(species);
+    const fuzzy = party.find(mon => !mon.fainted && normalizeSpeciesKey(mon.species) === needle)
+      ?? party.find(mon => normalizeSpeciesKey(mon.species).startsWith(needle))
+      ?? party.find(mon => needle.startsWith(normalizeSpeciesKey(mon.species)));
+    if (fuzzy) fuzzy.fainted = true;
   }
 
   private applyCondition(ident: string, condition: string): void {
@@ -166,6 +222,9 @@ export class BattleViewModel {
       ...(health.status ? { status: health.status } : {}),
       fainted: health.fainted ?? this.sides[slot].active!.fainted,
     };
+    if (this.sides[slot].active?.fainted) {
+      this.markPartyFainted(slot, this.sides[slot].active!.species);
+    }
   }
 
   private applyStatus(ident: string, status: string): void {
@@ -190,6 +249,7 @@ function cloneSide(side: MutableSide): SideView {
   return {
     playerId: side.playerId,
     name: side.name,
+    party: side.party.map(mon => ({ ...mon })),
     ...(side.active ? { active: { ...side.active } } : {}),
   };
 }
@@ -207,6 +267,10 @@ function speciesFromDetails(details: string, ident: string): string {
   }
   const fromIdent = ident.includes(':') ? ident.split(':').slice(1).join(':').trim() : ident;
   return fromIdent || 'Unknown';
+}
+
+function normalizeSpeciesKey(species: string): string {
+  return species.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function parseCondition(condition: string): {

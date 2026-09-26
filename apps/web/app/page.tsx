@@ -1,32 +1,22 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
+import { CompetitivePaths, TournamentEconomicsBlock } from '@/components/ui';
+import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom, TournamentSummary } from '@/lib/protocol';
+import { readSavedTeam, type SavedTeam } from '@/lib/team';
 
-function formatLabel(format: string, battleSize?: string): string {
-  const pretty = format === 'gen9ou' ? 'Gen 9 OU' : format.toUpperCase();
-  return battleSize ? `${pretty} · ${battleSize}` : pretty;
-}
-
-function trainerMark(id: string): string {
-  const compact = id.replace(/[^a-zA-Z0-9]/g, '');
-  if (compact.length < 2) return compact.slice(0, 2).toUpperCase() || 'PA';
-  return (compact.slice(0, 1) + compact.slice(-1)).toUpperCase();
+function formatLabel(format: string): string {
+  return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
 }
 
 function roomHref(room: CasualRoom): string {
   if (room.status === 'battling' && room.matchId) return `/battle/${room.matchId}`;
   return `/casual/${room.id}`;
-}
-
-function roomAction(room: CasualRoom): string {
-  if (room.status === 'open') return 'Join matchup';
-  if (room.status === 'battling') return 'Spectate live';
-  return 'View matchup';
 }
 
 function roomRank(room: CasualRoom): number {
@@ -36,195 +26,27 @@ function roomRank(room: CasualRoom): number {
   return 3;
 }
 
-function eventField(tournament: TournamentSummary): { label: string; value: string; hint?: string } {
-  if (tournament.status === 'completed' || tournament.status === 'cancelled' || tournament.status === 'forfeited') {
-    return { label: 'Field', value: `${tournament.playerCount} entered` };
-  }
-  if (tournament.status === 'in-progress' || tournament.status === 'active' || tournament.status === 'ready') {
-    return { label: 'Field', value: `${tournament.playerCount} competing` };
-  }
-  const open = Math.max(0, tournament.maxPlayers - tournament.playerCount);
-  return {
-    label: 'Registering',
-    value: `${tournament.playerCount} / ${tournament.maxPlayers}`,
-    hint: open ? `${open} slot${open === 1 ? '' : 's'} left` : 'Field full',
-  };
-}
-
 function eventStatus(tournament: TournamentSummary): string {
   if (tournament.status === 'completed') return tournament.winner ? 'Crown awarded' : 'Completed';
   if (tournament.status === 'registration') return 'Registration';
   if (tournament.status === 'ready') return 'Ready to start';
   if (tournament.status === 'in-progress' || tournament.status === 'active') return 'Bracket live';
-  if (tournament.status === 'draft') return 'Draft';
   return tournament.status;
 }
 
-function TeamDots({ filled, total = 6, foe }: { filled: number; total?: number; foe?: boolean }) {
+function Dots({ filled, tone }: { filled: number; tone: 'cyan' | 'coral' }) {
   return (
-    <span className={`home-team-dots${foe ? ' home-team-dots-foe' : ''}`} aria-hidden>
-      {Array.from({ length: total }, (_, index) => (
+    <span className={`pa-dots pa-dots-${tone}`} aria-hidden>
+      {Array.from({ length: 6 }, (_, index) => (
         <i key={index} className={index < filled ? 'on' : ''} />
       ))}
     </span>
   );
 }
 
-function HeroHud({ room }: { room?: CasualRoom }) {
-  if (!room) {
-    return (
-      <article className="home-hero-hud">
-        <div className="home-hero-hud-rail">
-          <div>
-            <span className="home-live-dot idle" />
-            <strong>STADIUM GATES OPEN · GEN 9 OU</strong>
-          </div>
-          <span className="home-hero-hud-meta">Awaiting first challenge</span>
-        </div>
-        <div className="home-hero-hud-grid">
-          <div className="home-side-card">
-            <div className="home-side-head">
-              <span className="home-avatar">P1</span>
-              <div>
-                <strong>Trainer</strong>
-                <small>Challenger</small>
-              </div>
-            </div>
-            <div className="home-side-body">
-              <span>TEAM PREVIEW</span>
-              <TeamDots filled={0} />
-            </div>
-          </div>
-          <div className="home-hero-vs">
-            <span className="home-vs-mark">VS</span>
-            <span className="home-vs-chip">Rival waiting</span>
-          </div>
-          <div className="home-side-card home-side-foe">
-            <div className="home-side-head">
-              <span className="home-avatar home-avatar-foe">P2</span>
-              <div>
-                <strong>Rival</strong>
-                <small>Open slot</small>
-              </div>
-            </div>
-            <div className="home-side-body">
-              <span>TEAM PREVIEW</span>
-              <TeamDots filled={0} foe />
-            </div>
-          </div>
-        </div>
-        <div className="home-hero-hud-foot">
-          <span>Find a fight on the arena floor</span>
-          <Link href="/arena">View Arena →</Link>
-        </div>
-      </article>
-    );
-  }
-
-  const waiting = !room.opponentId;
-  return (
-    <article className="home-hero-hud">
-      <div className="home-hero-hud-rail">
-        <div>
-          <span className={`home-live-dot${room.status === 'battling' ? '' : ' idle'}`} />
-          <strong>
-            {room.status === 'battling' ? 'LIVE ON THE FLOOR' : 'OPEN CHALLENGE'}
-            {' · '}
-            {formatLabel(room.format).toUpperCase()}
-          </strong>
-          <span className="home-chip">{room.battleSize.toUpperCase()}</span>
-        </div>
-        <span className="home-prize-chip">STAKE {formatPoke(room.collateral)}</span>
-      </div>
-      <div className="home-hero-hud-grid">
-        <div className="home-side-card">
-          <div className="home-side-head">
-            <span className="home-avatar">{trainerMark(room.creatorId)}</span>
-            <div>
-              <strong>{room.creatorId}</strong>
-              <small>Challenger</small>
-            </div>
-          </div>
-          <div className="home-side-body">
-            <span>TEAM PREVIEW</span>
-            <span className="home-side-count">3/6</span>
-            <TeamDots filled={3} />
-          </div>
-        </div>
-        <div className="home-hero-vs">
-          <span className="home-vs-mark">VS</span>
-          <span className="home-vs-chip">{room.status}</span>
-          <span className="home-vs-note">{formatLabel(room.format, room.battleSize)}</span>
-        </div>
-        <div className="home-side-card home-side-foe">
-          <div className="home-side-head">
-            <span className="home-avatar home-avatar-foe">{waiting ? 'P2' : trainerMark(room.opponentId!)}</span>
-            <div>
-              <strong>{room.opponentId ?? 'Open slot'}</strong>
-              <small>{waiting ? 'Waiting' : 'Opponent'}</small>
-            </div>
-          </div>
-          <div className="home-side-body">
-            <span>TEAM PREVIEW</span>
-            <span className="home-side-count">{waiting ? '0/6' : '3/6'}</span>
-            <TeamDots filled={waiting ? 0 : 3} foe />
-          </div>
-        </div>
-      </div>
-      <div className="home-hero-hud-foot">
-        <Link href={roomHref(room)}>
-          <span className="home-live-dot" />
-          {roomAction(room).toUpperCase()}
-        </Link>
-        <span>Winner {formatPoke(room.economics.winnerPayout)}</span>
-      </div>
-    </article>
-  );
-}
-
-function BoardCard({ room }: { room: CasualRoom }) {
-  const waiting = !room.opponentId;
-  return (
-    <article className="home-board-card">
-      <div className="home-board-rail">
-        <div>
-          <span className={`home-live-tag${room.status === 'battling' ? '' : ' idle'}`}>
-            {room.status === 'battling' ? 'LIVE' : room.status}
-          </span>
-          <span>{formatLabel(room.format, room.battleSize)}</span>
-        </div>
-        <strong>STAKE: {formatPoke(room.collateral)}</strong>
-      </div>
-      <div className="home-board-axis">
-        <div className="home-board-trainer">
-          <span className="home-avatar">{trainerMark(room.creatorId)}</span>
-          <div>
-            <strong>{room.creatorId}</strong>
-            <small>{waiting ? 'Waiting for opponent' : 'Locked in'}</small>
-          </div>
-        </div>
-        <div className="home-board-score">
-          <strong>{waiting ? 'OPEN' : 'VS'}</strong>
-          <small>{room.status}</small>
-        </div>
-        <div className="home-board-trainer home-board-foe">
-          <div>
-            <strong>{room.opponentId ?? 'Open slot'}</strong>
-            <small>{waiting ? 'Open queue' : 'Locked in'}</small>
-          </div>
-          <span className="home-avatar home-avatar-foe">{waiting ? 'P2' : trainerMark(room.opponentId!)}</span>
-        </div>
-      </div>
-      <div className="home-board-foot">
-        <span>Winner {formatPoke(room.economics.winnerPayout)}</span>
-        <Link href={roomHref(room)}>{room.status === 'open' ? 'JOIN ARENA →' : 'SPEC ARENA STREAM →'}</Link>
-      </div>
-    </article>
-  );
-}
-
 export default function LandingPage() {
-  const { client, snapshot, refreshSnapshot } = useArena();
+  const { client, playerId, snapshot, refreshSnapshot } = useArena();
+  const [saved, setSaved] = useState<SavedTeam | null>(null);
 
   useEffect(() => {
     void Promise.all([
@@ -233,214 +55,323 @@ export default function LandingPage() {
     ]).then(() => refreshSnapshot());
   }, [client, refreshSnapshot]);
 
-  const liveRooms = [...(snapshot?.openCasualRooms ?? [])].sort((a, b) => roomRank(a) - roomRank(b));
-  const featuredMatch = liveRooms[0];
-  const boardRooms = liveRooms.length > 1 ? liveRooms.slice(0, 2) : liveRooms;
+  useEffect(() => {
+    setSaved(readSavedTeam(playerId));
+  }, [playerId]);
 
+  const rooms = [...(snapshot?.openCasualRooms ?? [])].sort((a, b) => roomRank(a) - roomRank(b));
+  const featured = rooms[0];
+  const board = rooms.slice(0, 3);
   const tournaments = snapshot?.tournaments ?? [];
-  const featuredEvent = tournaments.find(item => item.status !== 'completed') ?? tournaments[0];
-  const featuredField = featuredEvent ? eventField(featuredEvent) : null;
-  const minorEvents = tournaments.filter(item => item.id !== featuredEvent?.id).slice(0, 3);
-
-  const prizePool = tournaments.reduce((sum, item) => sum + item.economics.prizePool, 0);
-  const livePot = liveRooms.reduce((sum, room) => sum + room.economics.totalPot, 0);
-  const staked = liveRooms.reduce((sum, room) => sum + room.collateral, 0)
-    + tournaments.reduce((sum, item) => sum + item.economics.totalEntries, 0);
+  const flagship = tournaments.find(item => item.status !== 'completed') ?? tournaments[0];
+  const minors = tournaments.filter(item => item.id !== flagship?.id).slice(0, 3);
   const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => sum + (room.payout?.amount ?? 0), 0);
-  const fundedCups = tournaments.filter(item => item.status !== 'completed' && item.status !== 'cancelled').length;
-  const vault = prizePool + livePot;
+  const waiting = featured ? !featured.opponentId : true;
 
   const flywheel = [
-    { step: '01. DEPOSIT', lane: 'TOKEN', title: 'POKE Staking', copy: 'Trainers lock POKE as match stake or cup entry.', stat: staked ? formatPoke(staked) : 'Open board' },
-    { step: '02. ACCUMULATE', lane: 'TREASURY', title: 'Stadium Treasury', copy: 'Prize liquidity from live pots and cup entries.', stat: vault ? formatPoke(vault) : 'Awaiting stake' },
-    { step: '03. ALLOCATE', lane: 'BRACKET', title: 'Tournament Funding', copy: 'Active cups carry the prize pool onto the bracket.', stat: `${fundedCups} cup${fundedCups === 1 ? '' : 's'} funded` },
-    { step: '04. COMBAT', lane: 'GEN 9 OU', title: 'Competitive Battle', copy: 'Showdown settles every match on the stadium floor.', stat: `${liveRooms.length} live on board` },
-    { step: '05. PAYOUT', lane: 'INSTANT', title: 'Champion Rewards', copy: 'Winners are paid the pot minus the 2% protocol fee.', stat: paidOut ? formatPoke(paidOut) : 'No payouts yet' },
+    { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards', copy: 'Token trading activity generates creator and developer rewards for the project.' },
+    { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Tournament Treasury', copy: 'Ninety percent of those rewards fund the Tournament Treasury that banks competition prizes.' },
+    { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw from the Treasury so players compete for substantial prizes without large collateral.' },
+    { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Low-entry tournaments put Gen 9 OU brackets on the stadium calendar.' },
+    { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: 'Champions take Treasury-funded prizes. Casual fights stay separate and player-funded.' },
   ];
 
   return (
-    <div className="home-world">
-      <section className="home-stadium">
-        <p className="home-kicker">
-          <span />
-          Battle Stadium · Gen 9 OU tier
-          <span />
-        </p>
+    <div className="pa-home">
+      <div className="pa-stadium-trainers" aria-hidden>
+        <span className="pa-stadium-trainer left">
+          <TrainerSprite label="" side="left" />
+        </span>
+        <span className="pa-stadium-trainer right">
+          <TrainerSprite label="" side="right" />
+        </span>
+      </div>
+      <section className="pa-hero">
+        <p className="pa-kicker"><i /> — Battle Stadium • Gen 9 OU tier —</p>
         <h1>POKEARENA</h1>
-        <HeroHud room={featuredMatch} />
-        <p className="home-tag">Battle. Compete. Climb.</p>
-        <div className="home-ctas">
-          <Link className="home-cta-primary" href={featuredEvent ? `/tournament/${featuredEvent.id}` : '/tournaments'}>
-            Enter tournament bracket
-          </Link>
-          <a className="home-cta-ghost" href="#stadium-loop">Explore treasury & staking</a>
-        </div>
-        <p className="home-explainer">
-          Compete in Gen 9 OU battles funded by the player-backed
-          {' '}
-          <strong>POKE Stadium Treasury</strong>
-          . 90% of cup entries seed prizes. Casual pots pay the winner minus a 2% fee.
+        <p className="pa-tag">Battle. Compete. Climb.</p>
+        <p className="pa-lead">
+          Two competitive paths on one Showdown-synced stadium: stake your own POKE in casual fights, or enter low-cost cups for Treasury-funded prizes.
         </p>
+        {saved?.species.some(Boolean) ? (
+          <div className="pa-protocol">
+            <span>Your team</span>
+            <TeamStrip species={saved.species} />
+          </div>
+        ) : null}
+        <div className="pa-ctas">
+          <Link className="pa-btn pa-btn-primary" href="/arena">Fight casually</Link>
+          <Link className="pa-btn pa-btn-surface" href={flagship ? `/tournament/${flagship.id}` : '/tournaments'}>
+            Enter a tournament
+          </Link>
+        </div>
       </section>
 
-      <section className="home-flywheel" id="stadium-loop">
-        <div className="home-section-head">
-          <h2>
-            <i className="home-diamond" />
-            The stadium flywheel · 5-stage economic engine
-          </h2>
-          <span>
-            <span className="home-pulse" />
-            Mock POKE live · 2% casual fee · 90% cup prize split
+      <section className="pa-duel">
+        <div className="pa-duel-rail">
+          <div>
+            <i className="pa-ping coral" />
+            <strong>{featured ? (featured.status === 'battling' ? 'LIVE CASUAL FIGHT' : 'OPEN CASUAL CHALLENGE') : 'CASUAL BOARD OPEN'} • GEN 9 OU</strong>
+            <span className="pa-chip">{featured ? featured.battleSize.toUpperCase() : '1V1'}</span>
+          </div>
+          <div>
+            <span className="pa-chip amber">
+              {featured ? `EACH ${formatPoke(featured.collateral)}` : flagship ? `ENTRY ${formatPoke(flagship.entryFee)}` : 'BOARD CLEAR'}
+            </span>
+          </div>
+        </div>
+        <div className="pa-duel-grid">
+          <article className="pa-side cyan">
+            <header>
+              <div>
+                <small>Challenger</small>
+                <strong>{featured?.creatorId ?? 'Open slot'}</strong>
+              </div>
+              <Dots filled={featured ? 3 : 0} tone="cyan" />
+            </header>
+            <div className="pa-mon">
+              <span className="pa-portrait">
+                <TrainerSprite label={featured?.creatorId ?? 'Open slot'} />
+              </span>
+              <div>
+                <div className="pa-mon-name">
+                  <b>{featured ? formatLabel(featured.format) : 'Open slot'}</b>
+                  <em>{featured ? 'LOCKED' : 'OPEN'}</em>
+                </div>
+                <div className="pa-bar"><span style={{ width: featured ? '100%' : '0%' }} /></div>
+                <div className="pa-mon-meta"><span>{featured ? featured.status : 'Waiting'}</span><span>Gen 9</span></div>
+              </div>
+            </div>
+            <div className="pa-pills">
+              <span className="hot">{featured ? `${formatPoke(featured.collateral)} each` : 'No collateral'}</span>
+              <span>Showdown</span>
+              <span>OU</span>
+            </div>
+          </article>
+          <div className="pa-vs">
+            <span className="pa-bo">{featured ? `${featured.battleSize.toUpperCase()} MATCH` : 'AWAITING MATCH'}</span>
+            <div className="pa-score">
+              <i>VS</i>
+            </div>
+            <span className="pa-timer">{featured ? featured.status.toUpperCase() : 'BOARD CLEAR'}</span>
+            <p className="pa-ticker">
+              {featured
+                ? <>{featured.creatorId} vs {featured.opponentId ?? 'open slot'} · winner {formatPoke(featured.economics.winnerPayout)} after 2% start fee</>
+                : 'No live fight on the board. Call a player-funded challenge from the Arena.'}
+            </p>
+          </div>
+          <article className="pa-side coral">
+            <header>
+              <Dots filled={waiting ? 0 : 3} tone="coral" />
+              <div>
+                <small>Rival</small>
+                <strong>{featured?.opponentId ?? 'Open slot'}</strong>
+              </div>
+            </header>
+            <div className="pa-mon foe">
+              <span className="pa-portrait foe">
+                <TrainerSprite label={featured?.opponentId ?? 'Open slot'} />
+              </span>
+              <div>
+                <div className="pa-mon-name">
+                  <b>{waiting ? 'Open slot' : formatLabel(featured.format)}</b>
+                  <em className="foe">{waiting ? 'OPEN' : 'READY'}</em>
+                </div>
+                <div className="pa-bar foe"><span style={{ width: waiting ? '0%' : '100%' }} /></div>
+                <div className="pa-mon-meta"><span>{waiting ? 'Open queue' : 'Locked in'}</span><span>Gen 9</span></div>
+              </div>
+            </div>
+            <div className="pa-pills end">
+              <span className="hot foe">{featured ? `Winner ${formatPoke(featured.economics.winnerPayout)}` : 'No pool'}</span>
+              <span>1v1</span>
+            </div>
+          </article>
+        </div>
+        <div className="pa-duel-foot">
+          <div>
+            {featured ? (
+              <Link className="pa-btn pa-btn-primary pa-btn-sm" href={roomHref(featured)}>
+                <i className="pa-ping" />
+                {featured.status === 'open' ? 'Join fight' : 'Spectate full screen'}
+              </Link>
+            ) : (
+              <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Find a fight</Link>
+            )}
+            <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/casual/create">Create challenge</Link>
+          </div>
+          <span className="pa-cheer">
+            {featured ? `Gross pool ${formatPoke(featured.economics.totalPot)}` : 'Casual board clear'}
           </span>
         </div>
-        <div className="home-flywheel-grid">
+      </section>
+
+      <section className="pa-fly">
+        <header>
+          <div>
+            <h2><span>◆</span> Two competitive paths</h2>
+            <p>Casual is player-funded collateral. Tournaments are Treasury-funded prizes.</p>
+          </div>
+          <span className="pa-live-pill"><i /> Mock POKE ledger</span>
+        </header>
+        <CompetitivePaths />
+      </section>
+
+      <section className="pa-fly" id="treasury">
+        <header>
+          <div>
+            <h2><span>◆</span> Tournament flywheel</h2>
+            <p>Creator and developer rewards fund cups. Casual collateral never enters this loop.</p>
+          </div>
+          <span className="pa-live-pill"><i /> 90% Treasury · 10% project</span>
+        </header>
+        <div className="pa-fly-grid">
           {flywheel.map(item => (
-            <article key={item.step}>
-              <header>
-                <span>{item.step}</span>
-                <small>{item.lane}</small>
-              </header>
+            <article key={item.n} className={`tone-${item.tone}`}>
+              <div className="pa-fly-top"><b>{item.n}</b><small>{item.kicker}</small></div>
               <strong>{item.title}</strong>
               <p>{item.copy}</p>
-              <div>{item.stat}</div>
             </article>
           ))}
         </div>
+        <p className="pa-econ-note" style={{ marginTop: '0.85rem' }}>
+          Separate track: casual fights take one 2% protocol fee from the gross player-funded pool at match start. No withdrawal tax.
+        </p>
       </section>
 
-      <div className="home-boards">
-        <section>
-          <div className="home-section-head">
-            <h2>
-              <i className="home-dot" />
-              Live on the board
-            </h2>
-            <Link href="/arena">View Arena →</Link>
-          </div>
-          {boardRooms.length ? (
-            boardRooms.map(room => <BoardCard key={room.id} room={room} />)
-          ) : (
-            <p className="home-empty">No open challenges right now.</p>
-          )}
-        </section>
-
-        <section>
-          <div className="home-section-head">
-            <h2>
-              <i className="home-dot home-dot-green" />
-              Treasury audit
-            </h2>
-            <span>Mock POKE</span>
-          </div>
-          <div className="home-treasury">
-            <div className="home-treasury-hero">
-              <small>Live vault on the board</small>
-              <strong>{vault ? formatPoke(vault) : '—'}</strong>
-              <p>
-                <span>{prizePool ? `${formatPoke(prizePool)} in cups` : 'No cup prize yet'}</span>
-                <span>{livePot ? `${formatPoke(livePot)} in open pots` : 'No casual pots'}</span>
-              </p>
-            </div>
-            <div className="home-treasury-grid">
+      <section className="pa-split">
+        <div>
+          <header>
+            <h2>Live casual board</h2>
+            <span>{rooms.length} {rooms.length === 1 ? 'fight' : 'fights'}</span>
+          </header>
+          {board.length ? board.map(room => (
+            <article key={room.id} className="pa-board">
+              <div className="pa-board-mark">{room.format === 'gen9ou' ? 'OU' : 'PA'}</div>
               <div>
-                <small>Distributed (recent)</small>
-                <strong>{paidOut ? formatPoke(paidOut) : '—'}</strong>
-                <span>Casual winner payouts</span>
+                <p className="pa-board-trainers">
+                  <TrainerSprite label={room.creatorId} />
+                  <b>{room.creatorId}</b>
+                  <span>vs</span>
+                  {room.opponentId ? <TrainerSprite label={room.opponentId} /> : null}
+                  <b>{room.opponentId ?? 'Open slot'}</b>
+                </p>
+                <small>{formatLabel(room.format)} • {room.battleSize} • {room.status}</small>
               </div>
-              <div>
-                <small>Active tournaments</small>
-                <strong>{fundedCups} funded</strong>
-                <span>On the radar</span>
+              <div className="pa-board-side">
+                <strong>{formatPoke(room.collateral)}</strong>
+                <small style={{ display: 'block', color: '#8ea0c0' }}>each</small>
+                <Link href={roomHref(room)}>{room.status === 'open' ? 'Join' : 'Watch live'}</Link>
               </div>
-            </div>
-            <div className="home-treasury-meta">
-              <div><span>Casual fee</span><strong>2%</strong></div>
-              <div><span>Cup prize share</span><strong>90%</strong></div>
-              <div><span>Stadium ops</span><strong>10%</strong></div>
-            </div>
-            <Link href="/tournaments">Open tournament ledger →</Link>
-          </div>
-        </section>
-      </div>
-
-      <section className="home-radar">
-        <div className="home-section-head">
-          <h2>
-            <i className="home-diamond home-diamond-coral" />
-            Tournaments radar
-          </h2>
-          <Link href="/tournaments">View all tournaments →</Link>
+            </article>
+          )) : <p className="pa-empty">No open challenges right now.</p>}
         </div>
-        {featuredEvent ? (
-          <article className="home-major">
-            <span className="home-major-bar" aria-hidden />
-            <div className="home-major-body">
-              <div className="home-major-id">
-                <span className="home-major-seal" aria-hidden>♛</span>
-                <div>
-                  <small>{formatLabel(featuredEvent.format)} · Championship event</small>
-                  <h3>{featuredEvent.title}</h3>
-                  {featuredEvent.winner ? <p>Champion {featuredEvent.winner}</p> : null}
-                </div>
+        <div id="treasury-audit">
+          <header>
+            <h2>Funding snapshot</h2>
+            <span className="ok">Mock ledger</span>
+          </header>
+          <div className="pa-vault">
+            <div className="pa-vault-grid">
+              <div>
+                <small>Treasury prize targets</small>
+                <strong>{flagship ? formatPoke(flagship.economics.prizePool) : '—'}</strong>
+                <span>Mock cup estimate · not a live vault balance</span>
               </div>
-              <dl>
-                <div>
-                  <dt>{featuredField?.label}</dt>
-                  <dd>{featuredField?.value}</dd>
-                  {featuredField?.hint ? <small>{featuredField.hint}</small> : null}
-                </div>
-                <div>
-                  <dt>Prize pool</dt>
-                  <dd>{formatPoke(featuredEvent.economics.prizePool)}</dd>
-                </div>
-                <div>
-                  <dt>Entry</dt>
-                  <dd>{formatPoke(featuredEvent.entryFee)}</dd>
-                </div>
-                <div>
-                  <dt>Status</dt>
-                  <dd>
-                    {eventStatus(featuredEvent)}
-                    {featuredEvent.status === 'registration' ? <i className="home-pulse" /> : null}
-                  </dd>
-                </div>
-              </dl>
-              <div className="home-major-actions">
-                <Link className="home-cta-ghost" href={`/tournament/${featuredEvent.id}`}>Watch bracket</Link>
-                {featuredEvent.status === 'registration' ? (
-                  <Link className="home-cta-register" href={`/tournament/${featuredEvent.id}`}>Register now</Link>
-                ) : null}
+              <div>
+                <small>Recent casual payouts</small>
+                <strong className="ok">{paidOut ? formatPoke(paidOut) : '—'}</strong>
+                <span>Player-funded wins after start fee</span>
               </div>
             </div>
-          </article>
-        ) : (
-          <p className="home-empty">No cup on deck yet.</p>
-        )}
-        {minorEvents.length ? (
-          <div className="home-minors">
-            {minorEvents.map(event => (
-              <article key={event.id}>
-                <header>
-                  <span>{formatLabel(event.format)}</span>
-                  <small>{eventStatus(event)}</small>
-                </header>
-                <h4>{event.title}</h4>
-                <p>{event.winner ? `Champion ${event.winner}` : `${event.playerCount}/${event.maxPlayers} on the field.`}</p>
-                <footer>
-                  <div>
-                    <small>Pool</small>
-                    <strong>{formatPoke(event.economics.prizePool)}</strong>
-                  </div>
-                  <Link href={`/tournament/${event.id}`}>
-                    {event.status === 'registration' ? `JOIN ${formatPoke(event.entryFee)} →` : 'WATCH →'}
-                  </Link>
-                </footer>
-              </article>
-            ))}
+            <div className="pa-legend">
+              <span><i className="escrow" /> Tournament Treasury 90%</span>
+              <span><i className="ops" /> Project funds 10%</span>
+              <span><i className="vault" /> Casual pools stay player-funded</span>
+            </div>
+            <div className="pa-contract">
+              <span>Casual fee 2% at match start · no withdrawal tax</span>
+              <span>Mock ledger</span>
+            </div>
+            <Link href="/treasury">Open Treasury map</Link>
           </div>
-        ) : null}
+        </div>
       </section>
+
+      <section className="pa-radar">
+        <header>
+          <div>
+            <h2><span>◆</span> Tournament radar</h2>
+            <p>Low entry. Large competitive prize from the Tournament Treasury.</p>
+          </div>
+          <Link href="/tournaments">View complete calendar →</Link>
+        </header>
+        {flagship ? (
+          <div className="pa-radar-grid">
+            <article className="pa-flagship">
+              <div className="pa-flag-top">
+                <span>Flagship circuit</span>
+                <small>{eventStatus(flagship)}</small>
+              </div>
+              <h3>{flagship.title}</h3>
+              <p>{flagship.winner ? `Champion ${flagship.winner}` : `${formatLabel(flagship.format)} · ${flagship.playerCount}/${flagship.maxPlayers} on the field.`}</p>
+              {flagship.playerCount > 0 ? (
+                <div className="ps-field" aria-hidden>
+                  {Array.from({ length: Math.min(flagship.playerCount, 4) }, (_, index) => (
+                    <TrainerSprite key={index} label="" />
+                  ))}
+                </div>
+              ) : null}
+              <TournamentEconomicsBlock
+                economics={flagship.economics}
+                entryFee={flagship.entryFee}
+                compact
+              />
+              <div className="pa-flag-actions">
+                {flagship.status === 'registration' ? (
+                  <Link className="pa-btn pa-btn-primary" href={`/tournament/${flagship.id}`}>Register now</Link>
+                ) : (
+                  <Link className="pa-btn pa-btn-primary" href={`/tournament/${flagship.id}`}>Watch bracket</Link>
+                )}
+                <Link className="pa-btn pa-btn-surface" href={`/tournament/${flagship.id}`}>Rules</Link>
+              </div>
+            </article>
+            <div className="pa-minors">
+              {minors.length ? minors.map(event => (
+                <article key={event.id}>
+                  <small>{formatLabel(event.format)}</small>
+                  <h4>{event.title}</h4>
+                  <p>{eventStatus(event)}{event.winner ? ` · ${event.winner}` : ''}</p>
+                  <strong>Entry {formatPoke(event.entryFee)}</strong>
+                  <span style={{ display: 'block', color: '#8ea0c0', fontSize: '0.7rem' }}>
+                    Treasury prize {formatPoke(event.economics.prizePool)}
+                  </span>
+                  <Link href={`/tournament/${event.id}`}>{event.status === 'registration' ? 'Join tier' : 'Watch'}</Link>
+                </article>
+              )) : <p className="pa-empty">No other cups on the calendar.</p>}
+            </div>
+          </div>
+        ) : <p className="pa-empty">No cup on deck yet.</p>}
+      </section>
+
+      <footer className="pa-foot">
+        <div>
+          <span className="pa-foot-mark">PA</span>
+          <div>
+            <strong>PokeArena Protocol</strong>
+            <small>Competitive stadium engine for Gen 9 tier play. Showdown synced.</small>
+          </div>
+        </div>
+        <div className="pa-foot-meta">
+          <span>◆ Mock POKE</span>
+          <span>◆ Gen 9 OU</span>
+          <span>◆ Local prototype</span>
+        </div>
+        <div className="pa-foot-badges">
+          <span>Smogon OU compliant</span>
+          <span className="ok">Showdown synced</span>
+          <small>PokeArena</small>
+        </div>
+      </footer>
     </div>
   );
 }

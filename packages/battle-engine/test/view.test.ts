@@ -37,6 +37,9 @@ test('BattleViewModel parses switch, turn, damage, status, and faint lines', () 
     undefined,
   );
   assert.equal(view.sides[1].active?.fainted, true);
+  assert.equal(view.sides[0].party.length, 1);
+  assert.equal(view.sides[1].party[0]?.species, 'Kingambit');
+  assert.equal(view.sides[1].party[0]?.fainted, true);
   assert.equal(view.request?.revision, 2);
   assert.equal(view.result?.winner, 'demo-player-1');
 

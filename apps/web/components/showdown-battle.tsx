@@ -170,10 +170,20 @@ function releaseShowdownRuntime(): void {
     }
     for (const name of SHOWDOWN_GLOBALS) {
       const previous = previousGlobals?.get(name);
-      if (previous === undefined) {
-        delete window[name];
-      } else {
-        window[name] = previous;
+      try {
+        if (previous === undefined) {
+          delete window[name];
+        } else {
+          window[name] = previous;
+        }
+      } catch {
+        // Showdown declares Battle and its siblings as global functions.
+        // Those window properties cannot be deleted.
+        try {
+          window[name] = previous;
+        } catch {
+          // Leave the non-configurable global in place.
+        }
       }
     }
     previousGlobals = null;
@@ -186,6 +196,19 @@ export const __showdownRuntimeForTest = {
   release: releaseShowdownRuntime,
   assetCount: ASSETS.length,
 };
+
+function quietMissingAudio(): void {
+  const sound = window.BattleSound as {
+    muted?: boolean;
+    bgmVolume?: number;
+    effectVolume?: number;
+  } | undefined;
+  if (!sound) return;
+  // The vendored client requests mp3 cries and BGM that are not shipped.
+  sound.muted = true;
+  sound.bgmVolume = 0;
+  sound.effectVolume = 0;
+}
 
 function getJQuery(element: HTMLElement): unknown {
   const jquery = window.jQuery ?? window.$;
@@ -205,10 +228,25 @@ function normalizeRequest(
   return request;
 }
 
-function moveLabel(move: ShowdownMove, index: number): string {
-  const pp = move.pp == null || move.maxpp == null ? '' : ` (${move.pp}/${move.maxpp})`;
-  return `${move.name || `Move ${index + 1}`}${pp}`;
+function speciesLabel(pokemon: {
+  ident?: string;
+  details?: string;
+}, index: number): string {
+  const fromDetails = pokemon.details?.split(',')[0]?.trim();
+  if (fromDetails) return fromDetails;
+  const fromIdent = pokemon.ident?.replace(/^p[12][a-z]?:\s*/i, '').trim();
+  return fromIdent || `Slot ${index + 1}`;
 }
+
+type ChoiceKind = 'move' | 'switch' | 'tera' | 'confirm';
+
+type FightChoice = {
+  key: string;
+  label: string;
+  choice: string;
+  kind: ChoiceKind;
+  detail?: string;
+};
 
 export function ShowdownBattle({
   playerId,
@@ -278,6 +316,7 @@ export function ShowdownBattle({
     void acquireShowdownRuntime()
       .then(() => {
         if (disposed || !frameRef.current || !logRef.current || !window.Battle) return;
+        quietMissingAudio();
         const battle = new window.Battle({
           id: `pokearena-${matchId}`,
           $frame: getJQuery(frameRef.current),
@@ -341,66 +380,138 @@ export function ShowdownBattle({
     }
   }, [battleInstanceId, client, matchId, onError]);
 
-  const choices = useMemo(() => {
+  const choices = useMemo((): FightChoice[] => {
+    if (battleView?.result || battleView?.failure) return [];
     if (!request || request.wait || request.requestType === 'wait') return [];
-    const result: Array<{ key: string; label: string; choice: string }> = [];
+
+    if (request.teamPreview || request.requestType === 'team') {
+      return [{
+        key: 'team',
+        label: 'Confirm team',
+        detail: 'Lock lead order and open the fight',
+        choice: 'default',
+        kind: 'confirm',
+      }];
+    }
+
+    const result: FightChoice[] = [];
     const active = request.active?.[0];
     for (const [index, move] of (active?.moves ?? []).entries()) {
       if (move.disabled) continue;
       result.push({
         key: `move-${index}`,
-        label: moveLabel(move, index),
+        label: move.name || `Move ${index + 1}`,
+        detail: move.pp == null || move.maxpp == null ? undefined : `${move.pp}/${move.maxpp} PP`,
         choice: `move ${index + 1}`,
+        kind: 'move',
       });
     }
     if (active?.canTerastallize) {
-      result.push({ key: 'tera', label: 'Tera + move 1', choice: 'move 1 terastallize' });
+      result.push({
+        key: 'tera',
+        label: `Terastallize · ${active.canTerastallize}`,
+        detail: 'Uses move 1',
+        choice: 'move 1 terastallize',
+        kind: 'tera',
+      });
     }
     if (!active?.trapped) {
       for (const [index, pokemon] of (request.side?.pokemon ?? []).entries()) {
         if (pokemon.active || String(pokemon.condition ?? '').endsWith(' fnt')) continue;
         result.push({
           key: `switch-${index}`,
-          label: `Switch ${pokemon.ident ?? pokemon.details ?? `#${index + 1}`}`,
+          label: speciesLabel(pokemon, index),
+          detail: 'Switch in',
           choice: `switch ${index + 1}`,
+          kind: 'switch',
         });
       }
     }
-    if (request.teamPreview || request.requestType === 'team') {
-      result.push({ key: 'team', label: 'Confirm team preview', choice: 'default' });
-    }
     return result;
-  }, [request]);
+  }, [battleView?.failure, battleView?.result, request]);
+
+  const phaseLabel = battleView?.result
+    ? 'Fight complete'
+    : !ready
+      ? 'Loading stage…'
+      : submitting
+        ? 'Sending choice…'
+        : request?.teamPreview || request?.requestType === 'team'
+          ? 'Team preview'
+          : choices.length
+            ? 'Your turn'
+            : 'Waiting on the next request';
+
+  const moves = choices.filter(choice => choice.kind === 'move' || choice.kind === 'tera');
+  const switches = choices.filter(choice => choice.kind === 'switch');
+  const confirms = choices.filter(choice => choice.kind === 'confirm');
 
   return (
     <section className="showdown-battle-root dark" data-testid="showdown-battle">
       <div className="showdown-battle-stage">
-        <div ref={frameRef} className="battle" data-testid="showdown-frame" />
+        <div className="showdown-battle-frame">
+          <div ref={frameRef} className="battle" data-testid="showdown-frame" />
+        </div>
         <div ref={logRef} className="battle-log" data-testid="showdown-log" />
       </div>
-      <div className="showdown-battle-controls">
+      <div className={`showdown-battle-controls${choices.length ? '' : ' is-idle'}`}>
         <div className="showdown-battle-controls-header">
-          <span className="micro-label">Showdown controls</span>
-          <span className="muted">
-            {ready ? (submitting ? 'Submitting choice…' : 'Choose your action') : 'Loading renderer…'}
-          </span>
+          <span className="showdown-controls-label">Fight controls</span>
+          <span className="showdown-phase">{phaseLabel}</span>
         </div>
         {choices.length ? (
-          <div className="showdown-choice-grid">
-            {choices.map(choice => (
-              <button
-                key={choice.key}
-                type="button"
-                className="btn btn-primary"
-                disabled={submitting || !ready}
-                onClick={() => void submitChoice(choice.choice)}
-              >
-                {choice.label}
-              </button>
-            ))}
+          <div className="showdown-choice-stack">
+            {confirms.length ? (
+              <div className="showdown-choice-confirm">
+                {confirms.map(choice => (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    className="pa-btn pa-btn-primary showdown-choice confirm"
+                    disabled={submitting || !ready}
+                    onClick={() => void submitChoice(choice.choice)}
+                  >
+                    <strong>{choice.label}</strong>
+                    {choice.detail ? <small>{choice.detail}</small> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {moves.length ? (
+              <div className="showdown-choice-grid moves">
+                {moves.map(choice => (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    className={`pa-btn showdown-choice ${choice.kind}`}
+                    disabled={submitting || !ready}
+                    onClick={() => void submitChoice(choice.choice)}
+                  >
+                    <strong>{choice.label}</strong>
+                    {choice.detail ? <small>{choice.detail}</small> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {switches.length ? (
+              <div className="showdown-choice-grid switches">
+                {switches.map(choice => (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    className="pa-btn showdown-choice switch"
+                    disabled={submitting || !ready}
+                    onClick={() => void submitChoice(choice.choice)}
+                  >
+                    <strong>{choice.label}</strong>
+                    {choice.detail ? <small>{choice.detail}</small> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : (
-          <p className="muted">
+          <p className="showdown-wait">
             {battleView?.result ? 'Battle complete.' : 'Waiting for the next private request.'}
           </p>
         )}

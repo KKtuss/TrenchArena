@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { CasualRoomService } from '../src/casual-service';
+import { DEMO_TEAM_TWO } from '../src/demo-teams';
 import { MockEconomics } from '../src/mock-economics';
 
 test('casual rooms support private/open creation, accept, full-room and over-balance rejection', () => {
@@ -113,4 +114,50 @@ test('casual 1v1 starts a real BattleEngine session and settles mock payout', as
   assert.equal(completed.status, 'completed');
   assert.ok(completed.payout?.mocked);
   assert.ok(completed.result);
+});
+
+test('forfeiting a live casual fight pays the opponent and ends the match', async () => {
+  const economics = new MockEconomics();
+  const casual = new CasualRoomService({ economics });
+  const room = casual.createRoom({
+    creatorId: 'demo-player-1',
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: 1_000,
+  });
+  casual.acceptRoom(room.id, 'demo-player-2');
+  casual.setReady(room.id, 'demo-player-1', true);
+  casual.setReady(room.id, 'demo-player-2', true);
+  const started = await casual.startBattle(room.id, 'demo-player-1');
+  const balanceBefore = economics.getWallet('demo-player-1').balance;
+
+  const settled = await casual.forfeit(room.id, 'demo-player-2');
+
+  assert.equal(settled.status, 'completed');
+  assert.equal(settled.winnerId, 'demo-player-1');
+  assert.equal(settled.payout?.reason, 'casual-win');
+  assert.ok(economics.getWallet('demo-player-1').balance > balanceBefore);
+  assert.equal(casual.getRoom(started.id).status, 'completed');
+});
+
+test('a locked Gen 9 OU paste is the team that enters the casual battle', async () => {
+  const casual = new CasualRoomService();
+  const room = casual.createRoom({
+    creatorId: 'demo-player-1',
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: 10_000,
+  });
+  casual.acceptRoom(room.id, 'demo-player-2');
+  assert.throws(
+    () => casual.setReady(room.id, 'demo-player-1', true, 'Pikachu\nAbility: Static\n- Splash'),
+    /valid Pokémon sets/,
+  );
+  casual.setReady(room.id, 'demo-player-1', true, DEMO_TEAM_TWO);
+  casual.setReady(room.id, 'demo-player-2', true);
+  const started = await casual.startBattle(room.id, 'demo-player-1');
+  const events = casual.getMatchEvents(started.matchId, 'demo-player-1');
+  const text = JSON.stringify(events);
+  assert.match(text, /Samurott/);
+  assert.doesNotMatch(text, /Great Tusk/);
 });

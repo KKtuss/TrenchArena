@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import { PageHeader, Panel } from '@/components/shell';
-import { EconomyBreakdown } from '@/components/ui';
+import { CasualPoolEquation, EconomyBreakdown } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
 import type { CasualEconomicsPreview, DemoPlayerId } from '@/lib/protocol';
 
@@ -59,9 +59,9 @@ export default function CreateCasualPage() {
   return (
     <div className="stack">
       <PageHeader
-        eyebrow="Casual // prepare for battle"
+        eyebrow="Casual // player-funded fight"
         title="Set the stakes."
-        description="Choose your format, call a rival, and put your trainer on the board."
+        description="Create a player-funded room. Every participant posts the same collateral before the fight starts."
       />
       <Panel eyebrow="Match setup" title="Prepare your fight" strong>
         <div className="setup-grid">
@@ -72,8 +72,15 @@ export default function CreateCasualPage() {
           <div className="field">
             <label>Battle size</label>
             <div className="segmented-control">
-              <button type="button" className="selected" onClick={() => setBattleSize('1v1')}>1v1 Singles</button>
-              <button type="button" disabled title="Coming soon">2v2 Multi <small>Soon</small></button>
+              <button type="button" className={battleSize === '1v1' ? 'selected' : ''} onClick={() => setBattleSize('1v1')}>1v1 Singles</button>
+              <button
+                type="button"
+                className={battleSize === '2v2' ? 'selected' : ''}
+                onClick={() => setBattleSize('2v2')}
+                title="Rooms can be configured; starts are not supported yet"
+              >
+                2v2 Multi <small>Soon</small>
+              </button>
             </div>
           </div>
           <div className="field">
@@ -84,7 +91,7 @@ export default function CreateCasualPage() {
             </div>
           </div>
           <div className="field">
-            <label htmlFor="collateral">Collateral (POKE)</label>
+            <label htmlFor="collateral">Collateral each (POKE)</label>
             <input
               id="collateral"
               type="number"
@@ -107,10 +114,17 @@ export default function CreateCasualPage() {
             </div>
           ) : null}
         </div>
-        {roomType === 'private' ? <p className="form-note">Private callout is sent to the selected development trainer.</p> : <p className="form-note">Open challenges are visible to every trainer in the queue.</p>}
+        {battleSize === '2v2' ? (
+          <p className="form-note">2v2 rooms can be configured, but battle start is not available yet.</p>
+        ) : roomType === 'private' ? (
+          <p className="form-note">Private callout is sent to the selected development trainer.</p>
+        ) : (
+          <p className="form-note">Open challenges are visible to every trainer in the queue.</p>
+        )}
       </Panel>
-      <Panel eyebrow="Match economics" title="If you win, you take the pot">
+      <Panel eyebrow="Match economics" title="Gross pool → one fee → winner payout">
         <div className="stack">
+          <CasualPoolEquation economics={preview} />
           <EconomyBreakdown economics={preview} />
           {overBalance ? <div className="error-banner">Collateral exceeds your development balance.</div> : null}
           {error ? <div className="error-banner">{error}</div> : null}

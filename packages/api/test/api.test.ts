@@ -354,3 +354,23 @@ test('keeps two simultaneous matches isolated', async () => {
   await Promise.all(clients.map(client => client.close()));
   await server.close();
 });
+
+test('inspects a Gen 9 OU paste and searches the dex', async () => {
+  const server = new ApiServer();
+  const port = await server.listen(0);
+  const client = new TestClient(port);
+  await client.open();
+  client.send({ type: 'identify', playerId: 'demo-player-1' });
+  await client.waitFor(message => message.type === 'ready');
+  client.send({ type: 'team.starter' });
+  const starter = await client.waitFor<any>(message => message.type === 'team.starter');
+  client.send({ type: 'team.inspect', team: starter.paste });
+  const inspected = await client.waitFor<any>(message => message.type === 'team.inspect');
+  assert.equal(inspected.inspection.sets.length, 6);
+  assert.ok(inspected.inspection.packed);
+  client.send({ type: 'team.search', kind: 'species', query: 'ghold' });
+  const search = await client.waitFor<any>(message => message.type === 'team.search');
+  assert.ok(search.results.includes('Gholdengo'));
+  await client.close();
+  await server.close();
+});

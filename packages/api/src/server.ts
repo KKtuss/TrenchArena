@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from 'node:stream';
 import { join } from 'node:path';
 
+import { inspectTeam, searchTeamOptions, validateAndPackTeam } from '@pokearena/battle-engine';
 import {
   type BattleInstanceId,
 } from '@pokearena/tournament';
@@ -206,13 +207,13 @@ export class ApiServer {
         return;
       }
       case 'casual.ready': {
-        const room = this.casual.setReady(message.roomId, playerId, message.ready);
+        const room = this.casual.setReady(message.roomId, playerId, message.ready, message.team);
         this.send(connection, { type: 'casual.state', room }, message.requestId);
         this.broadcastCasual(room.id);
         return;
       }
       case 'casual.start': {
-        const room = await this.casual.startBattle(message.roomId, playerId);
+        const room = await this.casual.startBattle(message.roomId, playerId, message.team);
         connection.matchIds.add(room.matchId);
         this.ensureCasualSubscription(room.id);
         this.send(connection, { type: 'casual.state', room }, message.requestId);
@@ -220,6 +221,17 @@ export class ApiServer {
         if (room.status === 'battling') {
           this.broadcastCasualMatch(room.matchId);
         }
+        return;
+      }
+      case 'casual.forfeit': {
+        const room = await this.casual.forfeit(message.roomId, playerId);
+        this.send(connection, { type: 'casual.state', room }, message.requestId);
+        this.broadcastCasual(room.id);
+        if (room.status === 'completed') {
+          this.broadcastCasualResult(room.id);
+          this.scheduleMatchBroadcast(room.matchId);
+        }
+        this.broadcastArenaSnapshots();
         return;
       }
       case 'casual.cancel': {
@@ -271,7 +283,8 @@ export class ApiServer {
         const tournamentId = message.tournamentId as TournamentId;
         const entryFee = this.tournamentEntryFees.get(tournamentId) ?? DEFAULT_TOURNAMENT_ENTRY_POKE;
         this.economics.assertAffordable(playerId, entryFee);
-        const team = playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO;
+        const team = message.team ?? (playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO);
+        validateAndPackTeam(team, 'gen9ou');
         this.tournaments.registerPlayer(tournamentId, {
           playerId,
           displayName: playerId,
@@ -335,6 +348,25 @@ export class ApiServer {
         this.sendTournamentMatch(connection, tournamentMatchId, 'match.subscribed', message.requestId);
         return;
       }
+      case 'team.starter':
+        this.send(connection, {
+          type: 'team.starter',
+          name: 'Demo Circuit',
+          paste: (playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO).trim(),
+        }, message.requestId);
+        return;
+      case 'team.inspect':
+        this.send(connection, {
+          type: 'team.inspect',
+          inspection: inspectTeam(message.team, 'gen9ou'),
+        }, message.requestId);
+        return;
+      case 'team.search':
+        this.send(connection, {
+          type: 'team.search',
+          results: searchTeamOptions(message.kind, message.query, message.species),
+        }, message.requestId);
+        return;
       case 'match.choice': {
         const matchId = message.matchId;
         if (!connection.matchIds.has(matchId)) throw new Error('Subscribe to the match first.');

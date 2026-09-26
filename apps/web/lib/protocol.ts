@@ -58,6 +58,10 @@ export interface CasualRoom {
   ready: Record<string, boolean>;
   battleInstanceId?: string;
   winnerId?: string;
+  rosters?: {
+    playerId: string;
+    pokemon: { species: string; fainted: boolean }[];
+  }[];
   payout?: MockPayoutResult;
 }
 
@@ -123,6 +127,10 @@ export interface BattleView {
     score: number[];
     turns: number;
   };
+  failure?: {
+    code: string;
+    message: string;
+  };
 }
 
 export interface MatchPayload {
@@ -161,7 +169,10 @@ export type ServerMessage =
       source: 'tournament' | 'casual';
       requestId?: string;
     }
-  | { type: 'match.choice.accepted'; matchId: string; requestId?: string };
+  | { type: 'match.choice.accepted'; matchId: string; requestId?: string }
+  | { type: 'team.starter'; name: string; paste: string; requestId?: string }
+  | { type: 'team.inspect'; inspection: import('./team').TeamInspection; requestId?: string }
+  | { type: 'team.search'; results: string[]; requestId?: string };
 
 export type ClientMessage =
   | { type: 'identify'; playerId: string }
@@ -175,14 +186,15 @@ export type ClientMessage =
     }
   | { type: 'casual.list' }
   | { type: 'casual.accept'; roomId: string }
-  | { type: 'casual.ready'; roomId: string; ready: boolean }
-  | { type: 'casual.start'; roomId: string }
+  | { type: 'casual.ready'; roomId: string; ready: boolean; team?: string }
+  | { type: 'casual.start'; roomId: string; team?: string }
   | { type: 'casual.cancel'; roomId: string }
+  | { type: 'casual.forfeit'; roomId: string }
   | { type: 'casual.subscribe'; roomId: string }
   | { type: 'casual.preview'; collateral: number }
   | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16; entryFee?: number }
   | { type: 'tournament.list' }
-  | { type: 'tournament.join'; tournamentId: string }
+  | { type: 'tournament.join'; tournamentId: string; team?: string }
   | { type: 'tournament.start'; tournamentId: string }
   | { type: 'tournament.subscribe'; tournamentId: string }
   | { type: 'match.subscribe'; matchId: string }
@@ -193,4 +205,12 @@ export type ClientMessage =
       requestRevision: number;
       choice: PlayerChoice;
     }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | { type: 'team.starter' }
+  | { type: 'team.inspect'; team: string }
+  | {
+      type: 'team.search';
+      kind: 'species' | 'move' | 'item' | 'ability';
+      query: string;
+      species?: string;
+    };

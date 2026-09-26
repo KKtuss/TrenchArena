@@ -1,6 +1,7 @@
 import { getPlayerStreams } from 'pokemon-showdown';
 
 import {
+  BattleEngineError,
   BattleTimeoutError,
   InvalidChoiceError,
   InvalidLifecycleTransitionError,
@@ -16,6 +17,7 @@ import {
 import {
   SHOWDOWN_GIT_HEAD,
   SHOWDOWN_VERSION,
+  teamSpeciesList,
 } from './teams';
 import { RecordingBattleStream, type ShowdownTerminalData } from './showdown-stream';
 import { BattleViewModel, type BattleView } from './view';
@@ -95,7 +97,10 @@ export class BattleSession {
       this.revisions.set(player.id, 0);
     }
 
-    this.viewModel = new BattleViewModel(setup.players);
+    this.viewModel = new BattleViewModel(setup.players, [
+      teamSpeciesList(setup.initialTeams[0] ?? ''),
+      teamSpeciesList(setup.initialTeams[1] ?? ''),
+    ]);
 
     this.ready = new Promise<void>((resolve, reject) => {
       this.resolveReady = resolve;
@@ -227,6 +232,20 @@ export class BattleSession {
       this.fail(error instanceof Error ? error : new Error(String(error)), 'simulator-error');
       throw error;
     }
+  }
+
+  /**
+   * The named player concedes. Showdown awards the win to the opponent and
+   * the normal terminal path settles the fight.
+   */
+  async forfeit(playerId: PlayerId): Promise<void> {
+    this.assertLifecycle('forfeit', ['started', 'awaiting-choice']);
+    this.assertViewer(playerId);
+    const slot = this.playerSlots.get(playerId);
+    if (!slot || !this.routed) {
+      throw new BattleEngineError('Battle is not ready to forfeit.');
+    }
+    await this.routed.omniscient.write(`>forcelose ${slot}\n`);
   }
 
   getReplay(): BattleReplay {

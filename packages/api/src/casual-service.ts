@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   BattleEngine,
+  validateAndPackTeam,
   type BattleEvent,
   type BattleResult,
   type BattleSession,
@@ -17,6 +18,16 @@ import {
   type CasualEconomicsPreview,
   type MockPayoutResult,
 } from './mock-economics';
+
+export interface CasualRosterMon {
+  species: string;
+  fainted: boolean;
+}
+
+export interface CasualRoster {
+  playerId: string;
+  pokemon: CasualRosterMon[];
+}
 
 export type CasualRoomId = string & { readonly __brand: 'CasualRoomId' };
 export type CasualMatchId = string & { readonly __brand: 'CasualMatchId' };
@@ -48,6 +59,7 @@ export interface CasualRoom {
   battleInstanceId?: CasualBattleInstanceId;
   winnerId?: string;
   result?: BattleResult;
+  rosters?: CasualRoster[];
   payout?: MockPayoutResult;
   createdAt: number;
   updatedAt: number;
@@ -74,6 +86,7 @@ export class CasualRoomService {
   private readonly rooms = new Map<CasualRoomId, CasualRoom>();
   private readonly roomsByMatchId = new Map<CasualMatchId, CasualRoomId>();
   private readonly activeBattles = new Map<CasualBattleInstanceId, ActiveCasualBattle>();
+  private readonly lockedTeams = new Map<string, string>();
   private readonly listeners = new Map<CasualRoomId, Set<CasualRoomListener>>();
   private readonly recentResults: CasualRoom[] = [];
   private readonly battleEngine: BattleEngine;
@@ -180,7 +193,7 @@ export class CasualRoomService {
     return cloneRoom(room);
   }
 
-  setReady(roomId: string, playerId: string, ready: boolean): CasualRoom {
+  setReady(roomId: string, playerId: string, ready: boolean, team?: string): CasualRoom {
     const room = this.requireRoom(roomId);
     if (playerId !== room.creatorId && playerId !== room.opponentId) {
       throw new Error('You are not a player in this casual room.');
@@ -188,6 +201,7 @@ export class CasualRoomService {
     if (room.status !== 'full' && room.status !== 'ready') {
       throw new Error('Room is not ready for readiness changes.');
     }
+    if (ready && team) this.lockTeam(room.id, playerId, team);
     room.ready[playerId] = ready;
     const opponentId = room.opponentId;
     const bothReady = Boolean(opponentId)
@@ -213,7 +227,28 @@ export class CasualRoomService {
     return cloneRoom(room);
   }
 
-  async startBattle(roomId: string, playerId: string): Promise<CasualRoom> {
+  async forfeit(roomId: string, playerId: string): Promise<CasualRoom> {
+    const room = this.requireRoom(roomId);
+    if (playerId !== room.creatorId && playerId !== room.opponentId) {
+      throw new Error('You are not a player in this casual room.');
+    }
+    if (room.status === 'completed') return cloneRoom(room);
+    if (room.status !== 'battling' || !room.battleInstanceId) {
+      throw new Error('This fight is not live.');
+    }
+    const battle = this.requireActiveBattle(room.battleInstanceId);
+    await battle.session.forfeit(playerId);
+    for (let attempt = 0; attempt < 10 && this.requireRoom(roomId).status === 'battling'; attempt += 1) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const settled = this.requireRoom(roomId);
+    if (settled.status !== 'completed') {
+      throw new Error('Forfeit did not end the fight.');
+    }
+    return cloneRoom(settled);
+  }
+
+  async startBattle(roomId: string, playerId: string, team?: string): Promise<CasualRoom> {
     const room = this.requireRoom(roomId);
     if (playerId !== room.creatorId && playerId !== room.opponentId) {
       throw new Error('You are not a player in this casual room.');
@@ -226,6 +261,13 @@ export class CasualRoomService {
     if (room.status !== 'ready' && room.status !== 'full') {
       throw new Error('Casual room is not ready to start.');
     }
+    if (team) this.lockTeam(room.id, playerId, team);
+    const teams = [
+      this.teamFor(room.id, room.creatorId),
+      this.teamFor(room.id, room.opponentId),
+    ] as const;
+    validateAndPackTeam(teams[0], 'gen9ou');
+    validateAndPackTeam(teams[1], 'gen9ou');
 
     this.economics.lockCollateral(room.creatorId, room.collateral);
     this.economics.lockCollateral(room.opponentId, room.collateral);
@@ -236,10 +278,7 @@ export class CasualRoomService {
         { id: room.creatorId, name: room.creatorId },
         { id: room.opponentId, name: room.opponentId },
       ],
-      teams: [
-        room.creatorId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO,
-        room.opponentId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO,
-      ],
+      teams,
       timeoutMs: 300_000,
     });
     await session.start();
@@ -337,6 +376,18 @@ export class CasualRoomService {
     room.completedAt = this.now();
     room.updatedAt = room.completedAt;
     room.status = 'completed';
+    if (room.battleInstanceId) {
+      const battle = this.activeBattles.get(room.battleInstanceId);
+      if (battle) {
+        room.rosters = battle.session.getView('spectator').sides.map(side => ({
+          playerId: side.playerId,
+          pokemon: side.party.map(mon => ({
+            species: mon.species,
+            fainted: Boolean(mon.fainted),
+          })),
+        }));
+      }
+    }
 
     if (terminal.result.status === 'win' && terminal.result.winner && room.opponentId) {
       room.winnerId = terminal.result.winner;
@@ -373,6 +424,16 @@ export class CasualRoomService {
     }
   }
 
+  private lockTeam(roomId: string, playerId: string, team: string): void {
+    validateAndPackTeam(team, 'gen9ou');
+    this.lockedTeams.set(`${roomId}:${playerId}`, team);
+  }
+
+  private teamFor(roomId: string, playerId: string): string {
+    return this.lockedTeams.get(`${roomId}:${playerId}`)
+      ?? (playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO);
+  }
+
   private requireRoom(roomId: string): CasualRoom {
     const room = this.rooms.get(roomId as CasualRoomId);
     if (!room) throw new Error(`Unknown casual room: ${roomId}`);
@@ -398,6 +459,12 @@ function cloneRoom(room: CasualRoom): CasualRoom {
     economics: { ...room.economics },
     ready: { ...room.ready },
     ...(room.result ? { result: { ...room.result, score: [...room.result.score] } } : {}),
+    ...(room.rosters ? {
+      rosters: room.rosters.map(roster => ({
+        playerId: roster.playerId,
+        pokemon: roster.pokemon.map(mon => ({ ...mon })),
+      })),
+    } : {}),
     ...(room.payout ? { payout: { ...room.payout } } : {}),
   };
 }

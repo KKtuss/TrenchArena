@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
-import { Barlow, Barlow_Condensed, JetBrains_Mono, Teko } from 'next/font/google';
+import { Anton, Barlow, Barlow_Condensed, Inter, JetBrains_Mono, Teko } from 'next/font/google';
 
 import { ArenaProvider } from '@/lib/arena-context';
 import { ArenaShell } from '@/components/shell';
 import './globals.css';
+import './stitch-home.css';
 
 const barlow = Barlow({
   subsets: ['latin'],
@@ -34,6 +35,20 @@ const jetbrains = JetBrains_Mono({
   variable: '--font-jetbrains',
 });
 
+const anton = Anton({
+  subsets: ['latin'],
+  weight: '400',
+  display: 'swap',
+  variable: '--font-anton',
+});
+
+const inter = Inter({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
+  variable: '--font-inter',
+});
+
 export const metadata: Metadata = {
   title: 'PokeArena',
   description: 'Playable Pokémon tournament arena with mocked POKE economics.',
@@ -41,7 +56,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={`${barlow.variable} ${barlowCondensed.variable} ${teko.variable} ${jetbrains.variable}`}>
+    <html lang="en" className={`${barlow.variable} ${barlowCondensed.variable} ${teko.variable} ${jetbrains.variable} ${anton.variable} ${inter.variable}`}>
       <body>
         <ArenaProvider>
           <ArenaShell>{children}</ArenaShell>

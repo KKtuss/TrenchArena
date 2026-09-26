@@ -21,14 +21,15 @@ export type ClientMessage =
     }
   | { type: 'casual.list'; requestId: string }
   | { type: 'casual.accept'; requestId: string; roomId: string }
-  | { type: 'casual.ready'; requestId: string; roomId: string; ready: boolean }
-  | { type: 'casual.start'; requestId: string; roomId: string }
+  | { type: 'casual.ready'; requestId: string; roomId: string; ready: boolean; team?: string }
+  | { type: 'casual.start'; requestId: string; roomId: string; team?: string }
   | { type: 'casual.cancel'; requestId: string; roomId: string }
+  | { type: 'casual.forfeit'; requestId: string; roomId: string }
   | { type: 'casual.subscribe'; requestId: string; roomId: string }
   | { type: 'casual.preview'; requestId: string; collateral: number }
   | { type: 'tournament.create'; requestId: string; title?: string; maxPlayers?: 4 | 8 | 16; entryFee?: number }
   | { type: 'tournament.list'; requestId: string }
-  | { type: 'tournament.join'; requestId: string; tournamentId: string }
+  | { type: 'tournament.join'; requestId: string; tournamentId: string; team?: string }
   | { type: 'tournament.start'; requestId: string; tournamentId: string }
   | { type: 'tournament.subscribe'; requestId: string; tournamentId: string }
   | { type: 'match.subscribe'; requestId: string; matchId: string }
@@ -40,7 +41,16 @@ export type ClientMessage =
       requestRevision: number;
       choice: PlayerChoice;
     }
-  | { type: 'ping'; requestId: string };
+  | { type: 'ping'; requestId: string }
+  | { type: 'team.starter'; requestId: string }
+  | { type: 'team.inspect'; requestId: string; team: string }
+  | {
+      type: 'team.search';
+      requestId: string;
+      kind: 'species' | 'move' | 'item' | 'ability';
+      query: string;
+      species?: string;
+    };
 
 export interface TournamentSummary {
   id: string;
@@ -93,6 +103,9 @@ export type ServerMessage = { requestId?: string } & (
       source: 'tournament' | 'casual';
     }
   | { type: 'match.choice.accepted'; matchId: string }
+  | { type: 'team.starter'; name: string; paste: string }
+  | { type: 'team.inspect'; inspection: import('@pokearena/battle-engine').TeamInspection }
+  | { type: 'team.search'; results: string[] }
 );
 
 export function parseClientMessage(raw: string): ClientMessage {
@@ -115,7 +128,27 @@ export function parseClientMessage(raw: string): ClientMessage {
     case 'casual.list':
     case 'tournament.list':
     case 'ping':
+    case 'team.starter':
       return { type: value.type, requestId: value.requestId as string };
+    case 'team.inspect':
+      requireString(value, 'team');
+      if ((value.team as string).length > 12_000) throw new Error('team paste is too long.');
+      return { type: 'team.inspect', requestId: value.requestId as string, team: value.team as string };
+    case 'team.search': {
+      if (value.kind !== 'species' && value.kind !== 'move' && value.kind !== 'item' && value.kind !== 'ability') {
+        throw new Error('kind must be species, move, item, or ability.');
+      }
+      const query = value.query === undefined ? '' : value.query;
+      if (typeof query !== 'string' || query.length > 40) throw new Error('query must be a string of at most 40 characters.');
+      if (value.species !== undefined) requireString(value, 'species');
+      return {
+        type: 'team.search',
+        requestId: value.requestId as string,
+        kind: value.kind,
+        query,
+        ...(value.species !== undefined ? { species: value.species as string } : {}),
+      };
+    }
     case 'casual.create': {
       if (value.roomType !== 'private' && value.roomType !== 'open') {
         throw new Error('roomType must be private or open.');
@@ -140,13 +173,21 @@ export function parseClientMessage(raw: string): ClientMessage {
     }
     case 'casual.accept':
     case 'casual.cancel':
+    case 'casual.forfeit':
     case 'casual.subscribe':
-    case 'casual.start':
       requireString(value, 'roomId');
       return {
         type: value.type,
         requestId: value.requestId as string,
         roomId: value.roomId as string,
+      };
+    case 'casual.start':
+      requireString(value, 'roomId');
+      return {
+        type: 'casual.start',
+        requestId: value.requestId as string,
+        roomId: value.roomId as string,
+        ...optionalTeam(value),
       };
     case 'casual.ready':
       requireString(value, 'roomId');
@@ -156,6 +197,7 @@ export function parseClientMessage(raw: string): ClientMessage {
         requestId: value.requestId as string,
         roomId: value.roomId as string,
         ready: value.ready,
+        ...optionalTeam(value),
       };
     case 'casual.preview':
       if (!Number.isInteger(value.collateral)) {
@@ -186,7 +228,6 @@ export function parseClientMessage(raw: string): ClientMessage {
         ...(value.maxPlayers !== undefined ? { maxPlayers: value.maxPlayers as 4 | 8 | 16 } : {}),
         ...(value.entryFee !== undefined ? { entryFee: value.entryFee as number } : {}),
       };
-    case 'tournament.join':
     case 'tournament.start':
     case 'tournament.subscribe':
       requireString(value, 'tournamentId');
@@ -194,6 +235,14 @@ export function parseClientMessage(raw: string): ClientMessage {
         type: value.type,
         requestId: value.requestId as string,
         tournamentId: value.tournamentId as string,
+      };
+    case 'tournament.join':
+      requireString(value, 'tournamentId');
+      return {
+        type: 'tournament.join',
+        requestId: value.requestId as string,
+        tournamentId: value.tournamentId as string,
+        ...optionalTeam(value),
       };
     case 'match.subscribe':
       requireString(value, 'matchId');
@@ -250,6 +299,15 @@ function parseChoice(value: unknown): PlayerChoice {
     default:
       throw new Error(`Unsupported choice type: ${value.type}`);
   }
+}
+
+function optionalTeam(value: Record<string, unknown>): { team?: string } {
+  if (value.team === undefined) return {};
+  if (typeof value.team !== 'string' || !value.team.trim()) {
+    throw new Error('team must be a non-empty string.');
+  }
+  if (value.team.length > 12_000) throw new Error('team paste is too long.');
+  return { team: value.team };
 }
 
 function requireString(value: Record<string, unknown>, key: string): void {

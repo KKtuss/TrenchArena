@@ -5,9 +5,9 @@ import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import { Panel } from '@/components/shell';
-import { BracketView } from '@/components/ui';
+import { BracketView, TournamentEconomicsBlock } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
 
 export default function TournamentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -16,6 +16,11 @@ export default function TournamentDetailPage() {
   const [tournament, setTournament] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<SavedTeam | null>(null);
+
+  useEffect(() => {
+    setSaved(readSavedTeam(playerId));
+  }, [playerId]);
 
   useEffect(() => {
     const unsubscribe = client.onMessage(message => {
@@ -60,12 +65,10 @@ export default function TournamentDetailPage() {
               <span className="badge badge-live">{tournament.format}</span>
               <span className="badge">{tournament.players?.filter((p: any) => p.status === 'registered').length}/{tournament.maxPlayers}</span>
             </div>
-            <div className="row">
-              <span className="muted">Entry / prize pool</span>
-              <strong>
-                {formatPoke(tournament.entryFee ?? 0)} / {formatPoke(tournament.economics?.prizePool ?? 0)}
-              </strong>
-            </div>
+            <TournamentEconomicsBlock
+              economics={tournament.economics}
+              entryFee={tournament.entryFee}
+            />
             {tournament.winner ? (
               <div className="row">
                 <span className="muted">Champion</span>
@@ -85,12 +88,26 @@ export default function TournamentDetailPage() {
             className="btn btn-primary"
             disabled={busy}
             onClick={() => void act(async () => {
-              const response = await client.request({ type: 'tournament.join', tournamentId });
+              const paste = battlePaste(playerId);
+              const response = await client.request({
+                type: 'tournament.join',
+                tournamentId,
+                ...(paste ? { team: paste } : {}),
+              });
               if (response.type === 'tournament.state') setTournament(response.tournament);
             })}
           >
             Join tournament
           </button>
+        ) : null}
+        {!registered && tournament?.status === 'registration' ? (
+          <span className="muted">
+            {saved?.validated
+              ? `Bringing ${saved.name}`
+              : saved
+                ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
+                : 'No saved protocol. The demo team will be brought.'}
+          </span>
         ) : null}
         {registered && (tournament?.status === 'registration' || tournament?.status === 'ready') ? (
           <button

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { TrainerSprite } from '@/components/showdown-visuals';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
@@ -29,7 +30,7 @@ export default function BattlePage() {
       setError(err instanceof Error ? err.message : String(err));
     });
     return () => setActiveMatchSubscription(null);
-  }, [client, matchId, setActiveMatchSubscription]);
+  }, [client, matchId, playerId, setActiveMatchSubscription]);
 
   const onRendererError = useCallback((message: string) => {
     setError(message);
@@ -45,9 +46,12 @@ export default function BattlePage() {
       : undefined),
     [match?.tournamentId, snapshot?.tournaments],
   );
+
+  const you = match?.player1 === playerId ? match.player1 : match?.player2;
+  const rival = match?.player1 === playerId ? match?.player2 : match?.player1;
   const contextLabel = match?.tournamentId
-    ? `${tournament?.title ?? 'Tournament'} · Round ${match?.round ?? '—'}`
-    : `Casual · ${casualRoom?.battleSize ?? '1v1'}`;
+    ? `${tournament?.title ?? 'Cup'} · R${match?.round ?? '—'}`
+    : `${casualRoom?.battleSize ?? '1v1'} · Gen 9 OU`;
 
   const resultHref = match?.roomId
     ? `/result/${match.roomId}`
@@ -56,34 +60,48 @@ export default function BattlePage() {
       : null;
 
   return (
-    <div className="battle-page">
-      <div className="battle-page-header row">
-        <div>
-          <div className="micro-label">{contextLabel}</div>
-          <h1 style={{ margin: '6px 0' }}>
-            {match?.player1 ?? 'P1'} vs {match?.player2 ?? 'P2'}
-          </h1>
+    <div className="pa-page battle-page">
+      <header className="pa-battle-bar">
+        <div className="pa-battle-bar-fighters">
+          <TrainerSprite label={you ?? 'You'} side="left" />
+          <div>
+            <b>{you ?? 'You'}</b>
+            <small>{contextLabel}</small>
+          </div>
+          <span className="pa-fight-vs">vs</span>
+          <div className="end">
+            <b>{rival ?? 'Opponent'}</b>
+            <small>Rival</small>
+          </div>
+          <TrainerSprite label={rival ?? 'Opponent'} side="right" />
         </div>
-        <div className="row">
-          <span className="badge badge-live">{match?.status ?? 'loading'}</span>
+        <div className="pa-battle-bar-meta">
+          {match?.tournamentId ? (
+            <span>Prize <strong>{tournament ? formatPoke(tournament.economics.prizePool) : '—'}</strong></span>
+          ) : (
+            <>
+              <span>Stake <strong>{casualRoom ? formatPoke(casualRoom.collateral) : '—'}</strong></span>
+              <span>Pot <strong>{casualRoom ? formatPoke(casualRoom.economics.totalPot) : '—'}</strong></span>
+            </>
+          )}
+          <span className={`pa-live-pill ${connectionState === 'open' ? '' : 'warn'}`}>
+            <i /> {connectionState}
+          </span>
+          <span className={`pa-chip ${match?.status === 'completed' ? 'amber' : ''}`}>
+            {(match?.status ?? 'loading').toUpperCase()}
+          </span>
+          <span className="pa-battle-id">#{matchId.slice(0, 8)}</span>
         </div>
-      </div>
-      <div className="battle-context-strip">
-        {match?.tournamentId ? (
-          <>
-            <span>Opponent <strong>{match.player1 === playerId ? match.player2 : match.player1}</strong></span>
-            <span>Round <strong>{match.round ?? '—'}</strong></span>
-            <span>Prize pool <strong>{tournament ? formatPoke(tournament.economics.prizePool) : '—'}</strong></span>
-          </>
-        ) : (
-          <>
-            <span>Opponent <strong>{match?.player1 === playerId ? match.player2 : match?.player1 ?? '—'}</strong></span>
-            <span>Collateral <strong>{casualRoom ? formatPoke(casualRoom.collateral) : '—'}</strong></span>
-            <span>Total pot <strong>{casualRoom ? formatPoke(casualRoom.economics.totalPot) : '—'}</strong></span>
-          </>
-        )}
-      </div>
+      </header>
+
       {error ? <div className="error-banner">{error}</div> : null}
+      {match?.status === 'completed' && resultHref ? (
+        <div className="live-fight-banner">
+          <span>This fight is over. {match.winner ? `${match.winner} takes it.` : 'The pot is settled.'}</span>
+          <Link className="pa-btn pa-btn-primary pa-btn-sm" href={resultHref}>View result</Link>
+        </div>
+      ) : null}
+
       <ShowdownBattle
         playerId={playerId}
         matchId={matchId}
@@ -93,17 +111,13 @@ export default function BattlePage() {
         client={client}
         onError={onRendererError}
       />
-      <div className="battle-page-footer row">
-        <div className="row">
-          <span className={`badge ${connectionState === 'reconnecting' ? 'badge-danger' : 'badge-success'}`}>
-            Connection: {connectionState}
-          </span>
-          <span className="badge">Match #{matchId.slice(0, 8)}</span>
+
+      {resultHref && match?.status === 'completed' ? (
+        <div className="pa-lobby-actions">
+          <Link className="pa-btn pa-btn-primary" href={resultHref}>View result</Link>
+          <Link className="pa-btn pa-btn-surface" href="/arena">Back to arena</Link>
         </div>
-        {resultHref && match?.status === 'completed' ? (
-          <Link className="btn btn-primary" href={resultHref}>View result</Link>
-        ) : null}
-      </div>
+      ) : null}
     </div>
   );
 }

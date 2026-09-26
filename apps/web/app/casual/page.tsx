@@ -18,14 +18,14 @@ export default function CasualLobbyPage() {
   return (
     <div className="stack">
       <PageHeader
-        eyebrow="Casual // trainer queue"
+        eyebrow="Casual // player-funded fights"
         title="Call your match."
-        description="Gen 9 Singles. Choose your stake, find a rival, and get to the battle."
+        description="Gen 9 Singles. Post collateral each, fill the room, then fight. One 2% fee comes off the gross pool at match start."
         action={<Link className="btn btn-primary" href="/casual/create">Create challenge</Link>}
       />
       <div className="queue-banner">
         <div><span className="micro-label">Available to stake</span><strong>{snapshot ? formatPoke(snapshot.wallet.balance) : 'Loading…'}</strong></div>
-        <span className="muted">Mock economics · 2% fee on total pot · winner receives 98%</span>
+        <span className="muted">Mock economics · 2% once from gross pool at match start · winner receives 98% · no withdrawal tax</span>
       </div>
       <section className="stack">
         <SectionHeader eyebrow="Open challenges" title="Pick a trainer" />

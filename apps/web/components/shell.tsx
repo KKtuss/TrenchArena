@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { useState, type ReactNode } from 'react';
 
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
@@ -12,51 +12,52 @@ export function ArenaShell({ children }: { children: ReactNode }) {
   const { playerId, setPlayerId, connectionState, snapshot, error, clearError, connected } = useArena();
   const pathname = usePathname();
   const navItems = [
-    { href: '/arena', label: 'Arena' },
-    { href: '/tournaments', label: 'Tournaments' },
+    { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
+    { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
+    { href: '/teams/builder', label: 'Team Builder', active: pathname.startsWith('/teams/builder') },
+    { href: '/tournaments', label: 'Tournaments', active: pathname.startsWith('/tournament') },
+    { href: '/treasury', label: 'Treasury & Economy', active: pathname.startsWith('/treasury') },
   ];
-  const arenaActive = pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle');
-  const tournamentsActive = pathname.startsWith('/tournament');
   const isHome = pathname === '/';
 
   return (
     <>
-      <header className={`shell-nav${isHome ? ' shell-nav-home' : ''}`}>
+      <header className="shell-nav shell-nav-stitch">
         <div className="shell-nav-inner">
           <Link href="/" className="brand">
             <span className="brand-mark" aria-hidden>PA</span>
             <span className="brand-copy">
               <strong>
                 PokeArena
-                {isHome ? <span className="brand-pulse" aria-hidden /> : null}
+                <span className="brand-pulse" aria-hidden />
               </strong>
               <small>Battle Stadium</small>
             </span>
           </Link>
           <nav className="nav-links" aria-label="Primary">
-            {navItems.map(item => {
-              const active = item.href === '/arena' ? arenaActive : tournamentsActive;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={active ? 'active' : ''}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
+            {navItems.map(item => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={item.active ? 'active' : ''}
+                aria-current={item.active ? 'page' : undefined}
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
           <div className="shell-actions">
-            <div className="trainer-control" title="Trainer profile (history coming soon)">
-              <svg className="trainer-figure trainer-figure-sm" viewBox="0 0 64 96" aria-hidden>
-                <ellipse cx="32" cy="12" rx="16" ry="5" fill="#0b192b" />
-                <rect x="18" y="4" width="28" height="10" rx="3" fill="#163a68" />
-                <circle cx="32" cy="20" r="9" fill="#f0d8b8" />
-                <path d="M18 34 L32 29 L46 34 L52 90 H12 Z" fill="#1c4a86" />
-                <path d="M24 34 L32 44 L40 34" fill="#0b192b" />
-                <rect x="26" y="50" width="12" height="6" fill="#35a7ff" />
-              </svg>
+            <span className="wallet-chip">
+              <small>Poke</small>
+              <strong>{snapshot ? formatPoke(snapshot.wallet.balance) : '—'}</strong>
+              <span
+                className={`connection-dot ${connected ? 'online' : ''}`}
+                title={connected ? connectionState : 'offline'}
+                aria-label={connected ? `Connection ${connectionState}` : 'offline'}
+              />
+            </span>
+            <label className="trainer-control" title="Trainer profile (history coming soon)">
+              <span className="trainer-avatar" aria-hidden>👤</span>
               <span className="trainer-control-copy">
                 <small>Profile</small>
                 <select
@@ -68,20 +69,12 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                   <option value="demo-player-2">demo-player-2</option>
                 </select>
               </span>
-            </div>
-            <span className="wallet-chip">
-              <small>POKE</small>
-              <strong>{snapshot ? formatPoke(snapshot.wallet.balance) : '—'}</strong>
-            </span>
-            <span
-              className={`connection-dot ${connected ? 'online' : ''}`}
-              title={connected ? connectionState : 'offline'}
-              aria-label={connected ? `Connection ${connectionState}` : 'offline'}
-            />
+            </label>
           </div>
         </div>
       </header>
       <main className={isHome ? 'is-home' : undefined}>
+        <LiveFightBanner />
         {error ? (
           <div className="error-banner">
             <div className="row">
@@ -93,6 +86,49 @@ export function ArenaShell({ children }: { children: ReactNode }) {
         {children}
       </main>
     </>
+  );
+}
+
+function LiveFightBanner() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { client, playerId, snapshot } = useArena();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fight = snapshot?.myCasualRooms.find(room => (
+    room.status === 'battling'
+    && room.matchId
+    && (room.creatorId === playerId || room.opponentId === playerId)
+  ));
+  if (!fight?.matchId || pathname === `/battle/${fight.matchId}`) return null;
+  const opponentId = fight.creatorId === playerId ? fight.opponentId : fight.creatorId;
+
+  return (
+    <div className="live-fight-banner">
+      <span>
+        You are still in a fight{opponentId ? ` against ${opponentId}` : ''}. Leaving the battle tab does not end it.
+        {error ? ` ${error}` : ''}
+      </span>
+      <span className="row">
+        <Link className="btn btn-primary" href={`/battle/${fight.matchId}`}>Rejoin fight</Link>
+        <button
+          type="button"
+          className="btn btn-danger"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            setError(null);
+            void client.request({ type: 'casual.forfeit', roomId: fight.id }).then(response => {
+              if (response.type === 'casual.state') router.push(`/result/${response.room.id}`);
+            }).catch(err => {
+              setError(err instanceof Error ? err.message : String(err));
+            }).finally(() => setBusy(false));
+          }}
+        >
+          {busy ? 'Forfeiting…' : 'Forfeit fight'}
+        </button>
+      </span>
+    </div>
   );
 }
 
