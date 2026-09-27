@@ -599,5 +599,21 @@ function isTerminalMatch(status: string): boolean {
 function sameTerminal(left: DurableTournamentMatch, right: DurableTournamentMatch): boolean {
   return left.status === right.status
     && left.winner === right.winner
-    && JSON.stringify(left.result) === JSON.stringify(right.result);
+    && stableJson(left.result) === stableJson(right.result);
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(orderJson(value));
+}
+
+function orderJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(orderJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, orderJson(nested)]),
+    );
+  }
+  return value;
 }

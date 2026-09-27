@@ -262,8 +262,8 @@ async function verifyInvariants(input: {
       });
     }
     const player = tournament.players.find(candidate => candidate.id === hold.playerId);
-    if (!player && hold.status !== 'reserved') {
-      fail('invariants', 'Terminal tournament hold has no matching player row.', {
+    if (!player && hold.status === 'consumed') {
+      fail('invariants', 'Consumed tournament hold has no matching player row.', {
         tournamentId: tournament.id,
         holdKey: hold.holdKey,
         playerId: hold.playerId,
@@ -284,9 +284,12 @@ async function settleCompletedTournaments(input: {
     if (tournament.status === 'cancelled') continue;
     if (tournament.status !== 'completed' || !tournament.winner) continue;
     const settlementKey = `${TOURNAMENT_SETTLEMENT_PREFIX}${tournament.id}`;
-    if (input.beforeSettleTournament) await input.beforeSettleTournament(tournament.id);
+    const alreadySettled = Boolean(await input.economics.getSettlement(settlementKey));
     const registered = tournament.players.filter(player => player.status === 'registered');
     const holdKeys = registered.map(player => `tournament:${tournament.id}:${player.id}`);
+    if (input.beforeSettleTournament && !alreadySettled) {
+      await input.beforeSettleTournament(tournament.id);
+    }
     try {
       await input.economics.completeTournamentWin({
         winnerId: tournament.winner,
@@ -301,6 +304,7 @@ async function settleCompletedTournaments(input: {
         tournamentId: tournament.id,
       });
     }
+    if (alreadySettled) continue;
     input.report.settledTournamentIds.push(tournament.id);
     input.log({
       level: 'info',
