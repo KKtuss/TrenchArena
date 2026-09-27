@@ -2,26 +2,26 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { ErrorToast } from '@/components/error-toast';
 
 import { PageHeader, Panel } from '@/components/shell';
 import { CasualPoolEquation, EconomyBreakdown } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
-import type { CasualEconomicsPreview, DemoPlayerId } from '@/lib/protocol';
+import type { CasualEconomicsPreview } from '@/lib/protocol';
 
 export default function CreateCasualPage() {
-  const { client, playerId, snapshot } = useArena();
+  const { client, snapshot, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
   const router = useRouter();
   const [roomType, setRoomType] = useState<'private' | 'open'>('open');
   const [battleSize, setBattleSize] = useState<'1v1' | '2v2'>('1v1');
   const [collateral, setCollateral] = useState(100_000);
-  const [invitedPlayerId, setInvitedPlayerId] = useState<DemoPlayerId>(
-    playerId === 'demo-player-1' ? 'demo-player-2' : 'demo-player-1',
-  );
+  const [invitedPlayerId, setInvitedPlayerId] = useState('');
   const [preview, setPreview] = useState<CasualEconomicsPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!walletConnected) return;
     let cancelled = false;
     void client.request({ type: 'casual.preview', collateral }).then(response => {
       if (!cancelled && response.type === 'casual.preview') setPreview(response.economics);
@@ -31,11 +31,15 @@ export default function CreateCasualPage() {
     return () => {
       cancelled = true;
     };
-  }, [client, collateral]);
+  }, [client, collateral, walletConnected]);
 
   const overBalance = Boolean(snapshot && collateral > snapshot.wallet.balance);
 
   const onCreate = async () => {
+    if (!walletConnected) {
+      setError('Connect a wallet before creating a challenge.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -44,7 +48,9 @@ export default function CreateCasualPage() {
         roomType,
         battleSize,
         collateral,
-        ...(roomType === 'private' ? { invitedPlayerId } : {}),
+        ...(roomType === 'private' && invitedPlayerId.trim()
+          ? { invitedPlayerId: invitedPlayerId.trim() }
+          : {}),
       });
       if (response.type === 'casual.created') {
         router.push(`/casual/${response.room.id}`);
@@ -102,22 +108,20 @@ export default function CreateCasualPage() {
           </div>
           {roomType === 'private' ? (
             <div className="field">
-              <label htmlFor="invite">Invite opponent</label>
-              <select
+              <label htmlFor="invite">Invite opponent wallet</label>
+              <input
                 id="invite"
                 value={invitedPlayerId}
-                onChange={event => setInvitedPlayerId(event.target.value as DemoPlayerId)}
-              >
-                <option value="demo-player-1">demo-player-1</option>
-                <option value="demo-player-2">demo-player-2</option>
-              </select>
+                onChange={event => setInvitedPlayerId(event.target.value)}
+                placeholder="Solana wallet address"
+              />
             </div>
           ) : null}
         </div>
         {battleSize === '2v2' ? (
           <p className="form-note">2v2 rooms can be configured, but battle start is not available yet.</p>
         ) : roomType === 'private' ? (
-          <p className="form-note">Private callout is sent to the selected development trainer.</p>
+          <p className="form-note">Private callout is limited to the invited wallet address.</p>
         ) : (
           <p className="form-note">Open challenges are visible to every trainer in the queue.</p>
         )}
@@ -126,16 +130,28 @@ export default function CreateCasualPage() {
         <div className="stack">
           <CasualPoolEquation economics={preview} />
           <EconomyBreakdown economics={preview} />
+          {!walletConnected ? <div className="error-banner">Connect a wallet to create a challenge.</div> : null}
           {overBalance ? <div className="error-banner">Collateral exceeds your development balance.</div> : null}
-          {error ? <div className="error-banner">{error}</div> : null}
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy || overBalance || collateral <= 0}
-            onClick={() => void onCreate()}
-          >
-            {busy ? 'Calling trainer…' : 'Create challenge'}
-          </button>
+          <ErrorToast error={error} onDismiss={() => setError(null)} />
+          {!walletConnected ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={connectingWallet}
+              onClick={() => void connectInjectedWallet()}
+            >
+              {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || overBalance || collateral <= 0 || (roomType === 'private' && !invitedPlayerId.trim())}
+              onClick={() => void onCreate()}
+            >
+              {busy ? 'Calling trainer…' : 'Create challenge'}
+            </button>
+          )}
         </div>
       </Panel>
     </div>

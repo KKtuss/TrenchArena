@@ -93,6 +93,7 @@ const ATTACK_TYPES = [
 export interface InspectedStat {
   stat: StatId;
   base: number;
+  iv: number;
   ev: number;
   value: number;
   nature: 'up' | 'down' | 'neutral';
@@ -105,6 +106,18 @@ export interface InspectedMove {
   basePower: number;
   accuracy: number | null;
   pp: number;
+  description: string;
+}
+
+export interface TeamSearchHit {
+  name: string;
+  description?: string;
+  type?: string;
+  types?: string[];
+  category?: string;
+  power?: number;
+  accuracy?: number | null;
+  pp?: number;
 }
 
 export interface InspectedSet {
@@ -116,6 +129,7 @@ export interface InspectedSet {
   level: number;
   moves: string[];
   evs: Record<StatId, number>;
+  ivs: Record<StatId, number>;
   types: string[];
   dexNum: number | null;
   heightM: number | null;
@@ -140,6 +154,11 @@ export interface TeamSpeed {
   speed: number;
 }
 
+export interface SpeedBenchmark {
+  label: string;
+  speed: number;
+}
+
 export interface TeamInspection {
   format: SupportedFormat;
   sets: InspectedSet[];
@@ -148,6 +167,7 @@ export interface TeamInspection {
   evTotal: number;
   threats: TeamThreat[];
   speeds: TeamSpeed[];
+  benchmarks: SpeedBenchmark[];
 }
 
 export type TeamSearchKind = 'species' | 'move' | 'item' | 'ability';
@@ -189,6 +209,10 @@ export function inspectTeam(teamText: string, format: SupportedFormat): TeamInsp
         speed: set.stats.find(stat => stat.stat === 'spe')?.value ?? 0,
       }))
       .sort((a, b) => b.speed - a.speed),
+    benchmarks: SPEED_MARKS.map(mark => ({
+      label: mark.label,
+      speed: calcStat('spe', mark.base, 31, mark.ev, 100, mark.plus ? 1.1 : 1),
+    })),
   };
 }
 
@@ -197,66 +221,113 @@ export function searchTeamOptions(
   query: string,
   speciesName?: string,
 ): string[] {
+  return searchTeamHits(kind, query, speciesName).hits.map(hit => hit.name);
+}
+
+export function searchTeamHits(
+  kind: TeamSearchKind,
+  query: string,
+  speciesName?: string,
+): { hits: TeamSearchHit[]; scoped: boolean } {
   const needle = query.trim().toLowerCase();
   if (kind === 'ability' && speciesName) {
     const species = Dex.species.get(speciesName);
-    const abilities = species?.exists
-      ? Object.values(species.abilities).filter((name): name is string => typeof name === 'string' && name.length > 0)
-      : [];
-    return (needle ? abilities.filter(name => name.toLowerCase().includes(needle)) : abilities).slice(0, 8);
+    if (species?.exists) {
+      const abilities = Object.values(species.abilities)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0);
+      const filtered = needle
+        ? abilities.filter(name => name.toLowerCase().includes(needle))
+        : abilities;
+      return { scoped: true, hits: filtered.slice(0, 8).map(describeAbility) };
+    }
   }
-  if (!needle) return [];
-  if (kind === 'species') {
-    return Dex.species.all()
-      .filter(species => (
-        species.exists
-        && species.num > 0
-        && !species.isNonstandard
-        && species.name.toLowerCase().includes(needle)
+  if (kind === 'move' && speciesName && Dex.species.get(speciesName)?.exists) {
+    const legal = legalMoveHits(speciesName);
+    const filtered = needle
+      ? legal.filter(hit => (
+        hit.name.toLowerCase().includes(needle)
+        || (hit.type ?? '').toLowerCase().includes(needle)
+        || (hit.description ?? '').toLowerCase().includes(needle)
       ))
-      .slice(0, 8)
-      .map(species => species.name);
+      : legal;
+    return { scoped: true, hits: filtered.slice(0, needle ? 24 : 120) };
+  }
+  if (!needle) return { scoped: false, hits: [] };
+  if (kind === 'species') {
+    return {
+      scoped: false,
+      hits: Dex.species.all()
+        .filter(species => (
+          species.exists
+          && species.num > 0
+          && !species.isNonstandard
+          && species.name.toLowerCase().includes(needle)
+        ))
+        .slice(0, 8)
+        .map(species => ({ name: species.name, types: [...species.types] })),
+    };
   }
   if (kind === 'move') {
-    return Dex.moves.all()
-      .filter(move => (
-        move.exists
-        && !move.isNonstandard
-        && !move.isZ
-        && !move.isMax
-        && move.name.toLowerCase().includes(needle)
-      ))
-      .slice(0, 8)
-      .map(move => move.name);
+    return {
+      scoped: false,
+      hits: Dex.moves.all()
+        .filter(move => (
+          move.exists
+          && !move.isNonstandard
+          && !move.isZ
+          && !move.isMax
+          && (
+            move.name.toLowerCase().includes(needle)
+            || move.type.toLowerCase().includes(needle)
+          )
+        ))
+        .slice(0, 12)
+        .map(move => describeMove(move.name))
+        .filter((hit): hit is TeamSearchHit => hit !== null),
+    };
   }
   if (kind === 'item') {
-    return Dex.items.all()
-      .filter(item => item.exists && !item.isNonstandard && item.name.toLowerCase().includes(needle))
-      .slice(0, 8)
-      .map(item => item.name);
+    return {
+      scoped: false,
+      hits: Dex.items.all()
+        .filter(item => item.exists && !item.isNonstandard && item.name.toLowerCase().includes(needle))
+        .slice(0, 8)
+        .map(item => ({
+          name: item.name,
+          description: readShortDesc(item),
+        })),
+    };
   }
-  return Dex.abilities.all()
-    .filter(ability => ability.exists && !ability.isNonstandard && ability.name.toLowerCase().includes(needle))
-    .slice(0, 8)
-    .map(ability => ability.name);
+  return {
+    scoped: false,
+    hits: Dex.abilities.all()
+      .filter(ability => ability.exists && !ability.isNonstandard && ability.name.toLowerCase().includes(needle))
+      .slice(0, 8)
+      .map(ability => describeAbility(ability.name)),
+  };
 }
 
 function inspectSet(set: ImportedSet): InspectedSet {
   const species = Dex.species.get(set.species);
   const exists = Boolean(species?.exists);
   const evs = emptyEvs();
-  for (const stat of STATS) evs[stat] = clampEv(set.evs?.[stat] ?? 0);
+  const ivs = emptyIvs();
+  for (const stat of STATS) {
+    evs[stat] = clampEv(set.evs?.[stat] ?? 0);
+    ivs[stat] = clampIv(set.ivs?.[stat] ?? 31);
+  }
   const natureName = set.nature && NATURES[set.nature] ? set.nature : 'Serious';
   const nature = NATURES[natureName] ?? {};
   const level = set.level || 100;
   const stats: InspectedStat[] = exists
     ? STATS.map(stat => {
-      const iv = set.ivs?.[stat] ?? 31;
+      const iv = ivs[stat];
       const natureTone = nature.up === stat ? 'up' : nature.down === stat ? 'down' : 'neutral';
       const multiplier = natureTone === 'up' ? 1.1 : natureTone === 'down' ? 0.9 : 1;
       return {
         stat,
         base: species.baseStats[stat],
+        iv,
         ev: evs[stat],
         value: calcStat(stat, species.baseStats[stat], iv, evs[stat], level, multiplier),
         nature: natureTone,
@@ -276,6 +347,7 @@ function inspectSet(set: ImportedSet): InspectedSet {
     level,
     moves,
     evs,
+    ivs,
     types: exists ? [...species.types] : [],
     dexNum: exists ? species.num : null,
     heightM: exists ? species.heightm : null,
@@ -292,16 +364,52 @@ function inspectSet(set: ImportedSet): InspectedSet {
 }
 
 function inspectMove(name: string): InspectedMove | null {
+  const described = describeMove(name);
+  if (!described) return { name, type: '', category: '', basePower: 0, accuracy: null, pp: 0, description: '' };
+  return {
+    name: described.name,
+    type: described.type ?? '',
+    category: described.category ?? '',
+    basePower: described.power ?? 0,
+    accuracy: described.accuracy ?? null,
+    pp: described.pp ?? 0,
+    description: described.description ?? '',
+  };
+}
+
+function legalMoveHits(speciesName: string): TeamSearchHit[] {
+  return legalMoveNames(speciesName)
+    .map(describeMove)
+    .filter((hit): hit is TeamSearchHit => hit !== null)
+    .sort((left, right) => (
+      (left.type ?? '').localeCompare(right.type ?? '')
+      || left.name.localeCompare(right.name)
+    ));
+}
+
+function describeMove(name: string): TeamSearchHit | null {
   const move = Dex.moves.get(name);
-  if (!move?.exists) return { name, type: '', category: '', basePower: 0, accuracy: null, pp: 0 };
+  if (!move?.exists || move.isNonstandard || move.isZ || move.isMax) return null;
   return {
     name: move.name,
     type: move.type,
     category: move.category,
-    basePower: move.basePower,
+    power: move.basePower,
     accuracy: move.accuracy === true ? null : move.accuracy,
     pp: move.pp,
+    description: readShortDesc(move),
   };
+}
+
+function describeAbility(name: string): TeamSearchHit {
+  const ability = Dex.abilities.get(name);
+  if (!ability?.exists) return { name };
+  return { name: ability.name, description: readShortDesc(ability) };
+}
+
+function readShortDesc(entry: object): string {
+  const description = (entry as { shortDesc?: unknown }).shortDesc;
+  return typeof description === 'string' ? description : '';
 }
 
 function collectProblems(imported: ImportedSet[] | null, format: SupportedFormat): string[] {
@@ -323,7 +431,7 @@ function teamThreats(sets: InspectedSet[]): TeamThreat[] {
   for (const attack of ATTACK_TYPES) {
     const ratings = sets.map(set => ({
       species: set.species,
-      multiplier: effectiveness(attack, set.types),
+      multiplier: abilityModifier(set.ability, attack, effectiveness(attack, set.types)),
     }));
     const worst = Math.max(...ratings.map(rating => rating.multiplier));
     if (worst < 2) continue;
@@ -346,6 +454,69 @@ function effectiveness(attack: string, defenderTypes: readonly string[]): number
     else if (taken === 3) return 0;
   }
   return modifier;
+}
+
+function legalMoveNames(speciesName: string): string[] {
+  const species = Dex.species.get(speciesName);
+  if (!species?.exists) return [];
+  const full = Dex.species.getFullLearnset(species.id) as
+    | [{ learnset?: Record<string, string[]> } | undefined, unknown]
+    | undefined;
+  const learnset = full?.[0]?.learnset;
+  if (!learnset) return [];
+  const names: string[] = [];
+  for (const [id, sources] of Object.entries(learnset)) {
+    if (!sources.some(source => source.startsWith('9'))) continue;
+    const move = Dex.moves.get(id);
+    if (move?.exists && !move.isNonstandard && !move.isZ && !move.isMax) names.push(move.name);
+  }
+  names.sort((left, right) => left.localeCompare(right));
+  return names;
+}
+
+const SPEED_MARKS: { label: string; base: number; plus: boolean; ev: number }[] = [
+  { label: 'Dragapult +Spe', base: 142, plus: true, ev: 252 },
+  { label: 'Iron Bundle +Spe', base: 136, plus: true, ev: 252 },
+  { label: 'Meowscarada +Spe', base: 123, plus: true, ev: 252 },
+  { label: 'Garchomp +Spe', base: 102, plus: true, ev: 252 },
+  { label: 'Gholdengo +Spe', base: 84, plus: true, ev: 252 },
+  { label: 'Base 100 neutral', base: 100, plus: false, ev: 0 },
+];
+
+function abilityModifier(ability: string, attack: string, multiplier: number): number {
+  const immune: Record<string, readonly string[]> = {
+    Levitate: ['Ground'],
+    'Earth Eater': ['Ground'],
+    'Flash Fire': ['Fire'],
+    'Well-Baked Body': ['Fire'],
+    'Water Absorb': ['Water'],
+    'Dry Skin': ['Water'],
+    'Storm Drain': ['Water'],
+    'Volt Absorb': ['Electric'],
+    'Lightning Rod': ['Electric'],
+    'Motor Drive': ['Electric'],
+    'Sap Sipper': ['Grass'],
+  };
+  if (immune[ability]?.includes(attack)) return 0;
+  let next = multiplier;
+  if (ability === 'Thick Fat' && (attack === 'Fire' || attack === 'Ice')) next *= 0.5;
+  if (ability === 'Heatproof' && attack === 'Fire') next *= 0.5;
+  if (ability === 'Water Bubble' && attack === 'Fire') next *= 0.5;
+  if (ability === 'Fluffy' && attack === 'Fire') next *= 2;
+  if (ability === 'Purifying Salt' && attack === 'Ghost') next *= 0.5;
+  if ((ability === 'Filter' || ability === 'Solid Rock' || ability === 'Prism Armor') && next > 1) {
+    next *= 0.75;
+  }
+  return next;
+}
+
+function emptyIvs(): Record<StatId, number> {
+  return { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
+}
+
+function clampIv(value: number): number {
+  if (!Number.isFinite(value)) return 31;
+  return Math.max(0, Math.min(31, Math.floor(value)));
 }
 
 function calcStat(stat: StatId, base: number, iv: number, ev: number, level: number, nature: number): number {

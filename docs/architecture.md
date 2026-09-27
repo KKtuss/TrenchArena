@@ -87,3 +87,10 @@ even for regular files. Workarounds in this repo:
 
 The same workspace is expected to install and build normally on a
 symlink-capable developer mode or CI environment.
+
+## Public internet
+
+The first public topology is documented in `docs/deployment.md`: HTTPS/Caddy
+in front of Next.js and a **single** loopback Node API process. Live battle
+state is in memory; two API processes cannot share a match. Default bind
+address remains `127.0.0.1`.

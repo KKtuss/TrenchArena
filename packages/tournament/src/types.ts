@@ -32,7 +32,9 @@ export type TournamentMatchStatus =
   | 'battle-created'
   | 'active'
   | 'completed'
-  | 'forfeited';
+  | 'forfeited'
+  | 'tied'
+  | 'interrupted';
 
 export type RegisteredPlayerStatus = 'registered' | 'withdrawn';
 
@@ -78,10 +80,12 @@ export interface Tournament {
   id: TournamentId;
   title: string;
   format: SupportedFormat;
-  maxPlayers: 4 | 8 | 16;
+  maxPlayers: 4 | 8 | 16 | 32;
   bracketSeed: string;
   matchTimeoutMs: number;
   status: TournamentStatus;
+  hostId: string;
+  entryFee: number;
   players: TournamentPlayer[];
   matchIds: TournamentMatchId[];
   winner?: TournamentPlayerId;
@@ -94,9 +98,11 @@ export interface Tournament {
 export interface CreateTournamentInput {
   title: string;
   format: SupportedFormat;
-  maxPlayers: 4 | 8 | 16;
+  maxPlayers: 4 | 8 | 16 | 32;
   bracketSeed?: string;
   matchTimeoutMs?: number;
+  hostId?: string;
+  entryFee?: number;
 }
 
 export interface RegisterPlayerInput {

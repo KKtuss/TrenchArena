@@ -2,3 +2,8 @@ packages:
   - "packages/*"
   - "apps/*"
   - "poc/*"
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  sharp: true
+  sqlite3: true

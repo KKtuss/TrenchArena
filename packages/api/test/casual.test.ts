@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CasualRoomService } from '../src/casual-service';
-import { DEMO_TEAM_TWO } from '../src/demo-teams';
+import {
+  CasualNotReadyError,
+  CasualRoomService,
+  CasualTeamRequiredError,
+} from '../src/casual-service';
+import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from '../src/demo-teams';
 import { MockEconomics } from '../src/mock-economics';
 
-test('casual rooms support private/open creation, accept, full-room and over-balance rejection', () => {
+test('casual rooms support private/open creation, accept, full-room and over-balance rejection', async () => {
   const economics = new MockEconomics();
   const casual = new CasualRoomService({ economics });
 
-  const open = casual.createRoom({
+  const open = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'open',
     battleSize: '1v1',
@@ -18,36 +22,36 @@ test('casual rooms support private/open creation, accept, full-room and over-bal
   assert.equal(open.status, 'open');
   assert.equal(casual.listOpenRooms().length, 1);
 
-  const accepted = casual.acceptRoom(open.id, 'demo-player-2');
+  const accepted = await casual.acceptRoom(open.id, 'demo-player-2');
   assert.equal(accepted.status, 'full');
-  assert.throws(() => casual.acceptRoom(open.id, 'demo-player-1'));
+  await assert.rejects(() => casual.acceptRoom(open.id, 'demo-player-1'));
 
-  assert.throws(() => casual.createRoom({
+  await assert.rejects(() => casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'open',
     battleSize: '1v1',
     collateral: 99_000_000,
   }));
 
-  const privateRoom = casual.createRoom({
+  const privateRoom = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'private',
     battleSize: '1v1',
     collateral: 25_000,
     invitedPlayerId: 'demo-player-2',
   });
-  assert.throws(() => casual.acceptRoom(privateRoom.id, 'demo-player-1'));
+  await assert.rejects(() => casual.acceptRoom(privateRoom.id, 'demo-player-1'));
 });
 
 test('2v2 rooms can be configured but start is unsupported', async () => {
   const casual = new CasualRoomService();
-  const room = casual.createRoom({
+  const room = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'open',
     battleSize: '2v2',
     collateral: 10_000,
   });
-  casual.acceptRoom(room.id, 'demo-player-2');
+  await casual.acceptRoom(room.id, 'demo-player-2');
   casual.setReady(room.id, 'demo-player-1', true);
   casual.setReady(room.id, 'demo-player-2', true);
   await assert.rejects(
@@ -59,14 +63,14 @@ test('2v2 rooms can be configured but start is unsupported', async () => {
 
 test('casual 1v1 starts a real BattleEngine session and settles mock payout', async () => {
   const economics = new MockEconomics();
-  const casual = new CasualRoomService({ economics });
-  const room = casual.createRoom({
+  const casual = new CasualRoomService({ economics, allowDemoAuth: true });
+  const room = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'open',
     battleSize: '1v1',
     collateral: 100_000,
   });
-  casual.acceptRoom(room.id, 'demo-player-2');
+  await casual.acceptRoom(room.id, 'demo-player-2');
   casual.setReady(room.id, 'demo-player-1', true);
   casual.setReady(room.id, 'demo-player-2', true);
   const started = await casual.startBattle(room.id, 'demo-player-1');
@@ -118,14 +122,14 @@ test('casual 1v1 starts a real BattleEngine session and settles mock payout', as
 
 test('forfeiting a live casual fight pays the opponent and ends the match', async () => {
   const economics = new MockEconomics();
-  const casual = new CasualRoomService({ economics });
-  const room = casual.createRoom({
+  const casual = new CasualRoomService({ economics, allowDemoAuth: true });
+  const room = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'open',
     battleSize: '1v1',
     collateral: 1_000,
   });
-  casual.acceptRoom(room.id, 'demo-player-2');
+  await casual.acceptRoom(room.id, 'demo-player-2');
   casual.setReady(room.id, 'demo-player-1', true);
   casual.setReady(room.id, 'demo-player-2', true);
   const started = await casual.startBattle(room.id, 'demo-player-1');
@@ -135,20 +139,20 @@ test('forfeiting a live casual fight pays the opponent and ends the match', asyn
 
   assert.equal(settled.status, 'completed');
   assert.equal(settled.winnerId, 'demo-player-1');
-  assert.equal(settled.payout?.reason, 'casual-win');
+  assert.equal(settled.payout?.reason, 'casual-forfeit');
   assert.ok(economics.getWallet('demo-player-1').balance > balanceBefore);
   assert.equal(casual.getRoom(started.id).status, 'completed');
 });
 
 test('a locked Gen 9 OU paste is the team that enters the casual battle', async () => {
-  const casual = new CasualRoomService();
-  const room = casual.createRoom({
+  const casual = new CasualRoomService({ allowDemoAuth: true });
+  const room = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'open',
     battleSize: '1v1',
     collateral: 10_000,
   });
-  casual.acceptRoom(room.id, 'demo-player-2');
+  await casual.acceptRoom(room.id, 'demo-player-2');
   assert.throws(
     () => casual.setReady(room.id, 'demo-player-1', true, 'Pikachu\nAbility: Static\n- Splash'),
     /valid Pokémon sets/,
@@ -160,4 +164,84 @@ test('a locked Gen 9 OU paste is the team that enters the casual battle', async 
   const text = JSON.stringify(events);
   assert.match(text, /Samurott/);
   assert.doesNotMatch(text, /Great Tusk/);
+});
+
+async function openCasualRoom(casual: CasualRoomService, creatorId = 'demo-player-1', opponentId = 'demo-player-2') {
+  const room = await casual.createRoom({
+    creatorId,
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: 1_000,
+  });
+  await casual.acceptRoom(room.id, opponentId);
+  return room;
+}
+
+test('a full casual room cannot start until both players are ready', async () => {
+  const economics = new MockEconomics();
+  const casual = new CasualRoomService({ economics });
+  const room = await openCasualRoom(casual);
+  const before = economics.getBalance('demo-player-1');
+
+  await assert.rejects(() => casual.startBattle(room.id, 'demo-player-1'), CasualNotReadyError);
+  assert.equal(casual.getRoom(room.id).status, 'full');
+  assert.equal(economics.getBalance('demo-player-1'), before);
+
+  casual.setReady(room.id, 'demo-player-1', true, DEMO_TEAM_ONE);
+  await assert.rejects(() => casual.startBattle(room.id, 'demo-player-1'), CasualNotReadyError);
+  assert.equal(casual.getRoom(room.id).status, 'full');
+
+  casual.setReady(room.id, 'demo-player-1', false);
+  casual.setReady(room.id, 'demo-player-2', true, DEMO_TEAM_TWO);
+  await assert.rejects(() => casual.startBattle(room.id, 'demo-player-2'), CasualNotReadyError);
+  assert.equal(casual.getRoom(room.id).status, 'full');
+  assert.equal(economics.getBalance('demo-player-2'), before);
+});
+
+test('both players must lock a valid team before a casual battle starts', async () => {
+  const economics = new MockEconomics();
+  const casual = new CasualRoomService({ economics });
+  const room = await openCasualRoom(casual);
+
+  casual.setReady(room.id, 'demo-player-1', true, DEMO_TEAM_ONE);
+  casual.setReady(room.id, 'demo-player-2', true);
+  assert.equal(casual.getRoom(room.id).status, 'ready');
+  const before = economics.getBalance('demo-player-1');
+  await assert.rejects(() => casual.startBattle(room.id, 'demo-player-1'), CasualTeamRequiredError);
+  assert.equal(casual.getRoom(room.id).status, 'ready');
+  assert.equal(economics.getBalance('demo-player-1'), before);
+  assert.equal(economics.getBalance('demo-player-2'), before);
+
+  const missingCreator = await openCasualRoom(casual);
+  casual.setReady(missingCreator.id, 'demo-player-1', true);
+  casual.setReady(missingCreator.id, 'demo-player-2', true, DEMO_TEAM_TWO);
+  await assert.rejects(() => casual.startBattle(missingCreator.id, 'demo-player-2'), CasualTeamRequiredError);
+  assert.notEqual(casual.getRoom(missingCreator.id).status, 'battling');
+});
+
+test('both ready players with locked teams can start a casual battle', async () => {
+  const casual = new CasualRoomService();
+  const room = await openCasualRoom(casual);
+  casual.setReady(room.id, 'demo-player-1', true, DEMO_TEAM_ONE);
+  casual.setReady(room.id, 'demo-player-2', true, DEMO_TEAM_TWO);
+  const started = await casual.startBattle(room.id, 'demo-player-1');
+  assert.equal(started.status, 'battling');
+  assert.ok(started.battleInstanceId);
+});
+
+test('a wallet player never receives an implicit demo team', async () => {
+  const economics = new MockEconomics({ devFaucet: true });
+  const creatorId = 'WalletCreator111111111111111111111111';
+  const opponentId = 'WalletOpponent11111111111111111111111';
+  economics.ensureWallet(creatorId);
+  economics.ensureWallet(opponentId);
+  const casual = new CasualRoomService({ economics, allowDemoAuth: true });
+  const room = await openCasualRoom(casual, creatorId, opponentId);
+  casual.setReady(room.id, creatorId, true);
+  casual.setReady(room.id, opponentId, true);
+  const before = economics.getBalance(creatorId);
+  await assert.rejects(() => casual.startBattle(room.id, creatorId), CasualTeamRequiredError);
+  assert.equal(casual.getRoom(room.id).status, 'ready');
+  assert.equal(economics.getBalance(creatorId), before);
+  assert.equal(economics.getBalance(opponentId), before);
 });

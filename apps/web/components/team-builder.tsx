@@ -4,21 +4,38 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
+import { isDemoAuthEnabled } from '@/lib/demo-auth';
+import type { TeamSearchHit } from '@/lib/protocol';
 import {
   NATURES,
   STATS,
   TERA_TYPES,
+  activateTeam,
+  addBlankTeam,
   emptySet,
+  natureLabel,
+  readRoster,
   readSavedTeam,
+  clearSavedTeam,
   setsFromInspection,
   setsToPaste,
   writeSavedTeam,
   type EditorSet,
+  type SavedRoster,
   type StatId,
   type TeamInspection,
 } from '@/lib/team';
 
 type SearchField = `species` | `item` | `ability` | `move-${number}`;
+type SearchKind = 'species' | 'move' | 'item' | 'ability';
+
+interface SuggestionMenu {
+  field: SearchField;
+  kind: SearchKind;
+  hits: TeamSearchHit[];
+  scoped: boolean;
+  hint?: string;
+}
 
 const STAT_LABEL: Record<StatId, string> = {
   hp: 'HP',
@@ -38,8 +55,11 @@ export function TeamBuilder() {
   const [notice, setNotice] = useState('Loading the Gen 9 OU validator.');
   const [importOpen, setImportOpen] = useState(false);
   const [paste, setPaste] = useState('');
-  const [suggestions, setSuggestions] = useState<{ field: SearchField; results: string[] } | null>(null);
+  const [suggestions, setSuggestions] = useState<SuggestionMenu | null>(null);
+  const [knownMoves, setKnownMoves] = useState<Record<string, TeamSearchHit>>({});
   const [saved, setSaved] = useState(false);
+  const [teamId, setTeamId] = useState('');
+  const [roster, setRoster] = useState<SavedRoster>({ activeId: '', teams: [] });
   const [hydrated, setHydrated] = useState(false);
   const inspectGeneration = useRef(0);
   const searchGeneration = useRef(0);
@@ -48,12 +68,20 @@ export function TeamBuilder() {
     let cancelled = false;
     setHydrated(false);
     async function load() {
+      if (!playerId || !connected) {
+        setNotice('Connect a wallet to edit and save a trainer-scoped team.');
+        setHydrated(true);
+        return;
+      }
+      const roster = readRoster(playerId);
+      setRoster(roster);
       const stored = readSavedTeam(playerId);
       try {
         if (stored) {
           const message = await client.request({ type: 'team.inspect', team: stored.paste });
           if (cancelled || message.type !== 'team.inspect') return;
           setName(stored.name);
+          setTeamId(stored.id);
           setSets(setsFromInspection(message.inspection));
           setInspection(message.inspection);
           setPaste(stored.paste);
@@ -83,10 +111,10 @@ export function TeamBuilder() {
     return () => {
       cancelled = true;
     };
-  }, [client, playerId]);
+  }, [client, playerId, connected]);
 
   useEffect(() => {
-    if (!hydrated) return undefined;
+    if (!hydrated || !connected) return undefined;
     const generation = ++inspectGeneration.current;
     const handle = window.setTimeout(() => {
       const nextPaste = setsToPaste(sets);
@@ -116,8 +144,15 @@ export function TeamBuilder() {
   }
 
   function updateEv(stat: StatId, raw: string) {
-    const value = Math.max(0, Math.min(252, Number(raw) || 0));
+    const requested = Math.max(0, Math.min(252, Number(raw) || 0));
+    const others = STATS.reduce((sum, item) => sum + (item.id === stat ? 0 : (current.evs[item.id] || 0)), 0);
+    const value = Math.min(requested, Math.max(0, 510 - others));
     updateSet({ evs: { ...current.evs, [stat]: value } });
+  }
+
+  function updateIv(stat: StatId, raw: string) {
+    const value = Math.max(0, Math.min(31, Number(raw) || 0));
+    updateSet({ ivs: { ...current.ivs, [stat]: value } });
   }
 
   function updateMove(slot: number, value: string) {
@@ -126,9 +161,25 @@ export function TeamBuilder() {
     updateSet({ moves });
   }
 
-  async function search(field: SearchField, kind: 'species' | 'move' | 'item' | 'ability', query: string) {
-    if (query.trim().length < 1 && kind !== 'ability') {
-      setSuggestions(null);
+  function rememberMoves(hits: TeamSearchHit[]) {
+    setKnownMoves(current => {
+      const next = { ...current };
+      for (const hit of hits) next[hit.name.toLowerCase()] = hit;
+      return next;
+    });
+  }
+
+  async function search(field: SearchField, kind: SearchKind, query: string) {
+    if (query.trim().length < 1 && kind !== 'ability' && !(kind === 'move' && current.species.trim())) {
+      setSuggestions(kind === 'move'
+        ? {
+            field,
+            kind,
+            hits: [],
+            scoped: false,
+            hint: 'Choose a Pokémon first. This list will show only the attacks it can learn.',
+          }
+        : null);
       return;
     }
     const generation = ++searchGeneration.current;
@@ -137,21 +188,76 @@ export function TeamBuilder() {
         type: 'team.search',
         kind,
         query,
-        ...(kind === 'ability' && current.species.trim() ? { species: current.species.trim() } : {}),
+        ...( (kind === 'ability' || kind === 'move') && current.species.trim()
+          ? { species: current.species.trim() }
+          : {}),
       });
+      if (generation !== searchGeneration.current || message.type !== 'team.search') return;
+      const hits = message.hits?.length
+        ? message.hits
+        : message.results.map(name => ({ name }));
+      if (kind === 'move') rememberMoves(hits);
+      setSuggestions({
+        field,
+        kind,
+        hits,
+        scoped: Boolean(message.scoped),
+        hint: hits.length ? undefined : 'Nothing matches that.',
+      });
+    } catch (error) {
       if (generation !== searchGeneration.current) return;
-      if (message.type === 'team.search') setSuggestions({ field, results: message.results });
-    } catch {
-      if (generation === searchGeneration.current) setSuggestions(null);
+      const raw = error instanceof Error ? error.message : 'The list could not be loaded.';
+      setSuggestions({
+        field,
+        kind,
+        hits: [],
+        scoped: false,
+        hint: /authenticate|identify/i.test(raw)
+          ? 'Connect your wallet to load this list.'
+          : raw,
+      });
     }
   }
 
   function applySuggestion(field: SearchField, value: string) {
-    if (field === 'species') updateSet({ species: value });
-    else if (field === 'item') updateSet({ item: value });
+    if (field === 'species') {
+      void adoptSpecies(value);
+    } else if (field === 'item') updateSet({ item: value });
     else if (field === 'ability') updateSet({ ability: value });
     else updateMove(Number(field.slice(5)), value);
     setSuggestions(null);
+  }
+
+  async function adoptSpecies(species: string) {
+    const slot = selected;
+    setSuggestions(null);
+    setSaved(false);
+    try {
+      const [abilities, moves] = await Promise.all([
+        client.request({ type: 'team.search', kind: 'ability', query: '', species }),
+        client.request({ type: 'team.search', kind: 'move', query: '', species }),
+      ]);
+      const abilityNames = abilities.type === 'team.search' ? abilities.results : [];
+      const moveNames = moves.type === 'team.search' ? moves.results : [];
+      if (moves.type === 'team.search' && moves.hits?.length) rememberMoves(moves.hits);
+      const legal = new Set(moveNames.map(move => move.toLowerCase()));
+      setSets(existing => existing.map((set, index) => {
+        if (index !== slot) return set;
+        const keptAbility = abilityNames.some(name => name.toLowerCase() === set.ability.trim().toLowerCase())
+          ? set.ability
+          : (abilityNames[0] ?? '');
+        return {
+          ...set,
+          species,
+          ability: keptAbility,
+          moves: set.moves.map(move => (
+            move.trim() && legal.size && !legal.has(move.trim().toLowerCase()) ? '' : move
+          )) as EditorSet['moves'],
+        };
+      }));
+    } catch {
+      updateSet({ species });
+    }
   }
 
   async function applyPaste() {
@@ -168,18 +274,93 @@ export function TeamBuilder() {
     }
   }
 
-  function save() {
-    const nextPaste = setsToPaste(sets);
-    writeSavedTeam(playerId, {
-      name: name.trim() || 'Untitled protocol',
-      paste: nextPaste,
+  function blankEditor(nextName: string) {
+    setName(nextName);
+    setSets(Array.from({ length: 6 }, emptySet));
+    setSelected(0);
+    setPaste('');
+    setInspection(null);
+    setSuggestions(null);
+    setImportOpen(false);
+    setSaved(false);
+  }
+
+  function snapshotTeam(id: string) {
+    return {
+      id,
+      name: name.trim() || 'Untitled',
+      paste: setsToPaste(sets),
       species: sets.map(set => set.species.trim()).filter(Boolean),
       validated: Boolean(inspection?.packed),
-    });
+    };
+  }
+
+  async function loadPaste(nextName: string, nextPaste: string, id: string) {
+    setTeamId(id);
+    setName(nextName);
+    setPaste(nextPaste);
+    setSuggestions(null);
+    setSaved(true);
+    if (!nextPaste.trim()) {
+      blankEditor(nextName);
+      setTeamId(id);
+      return;
+    }
+    const message = await client.request({ type: 'team.inspect', team: nextPaste });
+    if (message.type !== 'team.inspect') return;
+    setSets(setsFromInspection(message.inspection));
+    setInspection(message.inspection);
+    setSelected(0);
+    setNotice(message.inspection.packed ? 'Saved team passes Gen 9 OU.' : 'Saved draft still has clause problems.');
+  }
+
+  async function switchTeam(id: string) {
+    if (!playerId || id === teamId) return;
+    writeSavedTeam(playerId, snapshotTeam(teamId || `team-${Date.now().toString(36)}`));
+    activateTeam(playerId, id);
+    const next = readRoster(playerId);
+    setRoster(next);
+    const team = next.teams.find(item => item.id === id);
+    if (!team) return;
+    await loadPaste(team.name, team.paste, team.id);
+  }
+
+  function startNewTeam() {
+    if (playerId) {
+      const currentId = teamId || `team-${Date.now().toString(36)}`;
+      writeSavedTeam(playerId, snapshotTeam(currentId));
+      const created = addBlankTeam(playerId);
+      setRoster(readRoster(playerId));
+      setTeamId(created.id);
+    }
+    blankEditor('New team');
+    setNotice('Blank team. Choose a species in slot 1.');
+  }
+
+  function clearTeam() {
+    const occupied = sets.some(set => set.species.trim());
+    if (occupied && !window.confirm('Clear this team and start from scratch?')) return;
+    blankEditor('New team');
+    if (playerId) clearSavedTeam(playerId);
+    if (playerId) setRoster(readRoster(playerId));
+    setNotice('Blank team. Choose a species in slot 1.');
+  }
+
+  function save() {
+    if (!playerId) {
+      setNotice('Connect a wallet before saving a team.');
+      return;
+    }
+    const id = teamId || `team-${Date.now().toString(36)}`;
+    writeSavedTeam(playerId, snapshotTeam(id));
+    setTeamId(id);
+    setRoster(readRoster(playerId));
     setSaved(true);
     setNotice(inspection?.packed
-      ? 'Saved on this browser. Ready up or register to bring this protocol.'
-      : 'Draft saved. It does not pass Gen 9 OU, so a match will bring the demo team.');
+      ? 'Saved on this browser. Ready up or register to bring this team.'
+      : isDemoAuthEnabled()
+        ? 'Draft saved. It does not pass Gen 9 OU, so a match will bring the demo team.'
+        : 'Draft saved. It does not pass Gen 9 OU, so it cannot be locked for a match.');
   }
 
   return (
@@ -191,11 +372,18 @@ export function TeamBuilder() {
         </div>
         <div className="tb-file-actions">
           <span>Format: Gen 9 Overused</span>
+          {roster.teams.length > 1 ? (
+            <select aria-label="Saved teams" value={teamId} onChange={event => void switchTeam(event.target.value)}>
+              {roster.teams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}
+            </select>
+          ) : null}
+          <button type="button" onClick={startNewTeam}>New team</button>
           <button type="button" onClick={() => {
             setPaste(setsToPaste(sets));
             setImportOpen(open => !open);
           }}>Import / export</button>
-          <button type="button" className="primary" onClick={save}>{saved ? 'Saved' : 'Save protocol'}</button>
+          <button type="button" onClick={clearTeam}>Clear team</button>
+          <button type="button" className="primary" onClick={save}>{saved ? 'Saved' : 'Save team'}</button>
         </div>
       </header>
 
@@ -262,6 +450,7 @@ export function TeamBuilder() {
             Species
             <input
               value={current.species}
+              placeholder="Type a Pokémon name"
               onChange={event => {
                 updateSet({ species: event.target.value });
                 void search('species', 'species', event.target.value);
@@ -269,7 +458,7 @@ export function TeamBuilder() {
               onFocus={() => void search('species', 'species', current.species)}
             />
           </label>
-          {suggestions?.field === 'species' ? <Suggestions results={suggestions.results} onPick={value => applySuggestion('species', value)} /> : null}
+          {suggestions?.field === 'species' ? <Suggestions menu={suggestions} onPick={value => applySuggestion('species', value)} /> : null}
 
           <label>
             Held item
@@ -281,7 +470,7 @@ export function TeamBuilder() {
               }}
             />
           </label>
-          {suggestions?.field === 'item' ? <Suggestions results={suggestions.results} onPick={value => applySuggestion('item', value)} /> : null}
+          {suggestions?.field === 'item' ? <Suggestions menu={suggestions} onPick={value => applySuggestion('item', value)} /> : null}
 
           <label>
             Ability
@@ -294,7 +483,21 @@ export function TeamBuilder() {
               onFocus={() => void search('ability', 'ability', current.ability)}
             />
           </label>
-          {suggestions?.field === 'ability' ? <Suggestions results={suggestions.results} onPick={value => applySuggestion('ability', value)} /> : null}
+          {suggestions?.field === 'ability' ? <Suggestions menu={suggestions} onPick={value => applySuggestion('ability', value)} /> : null}
+          {detail?.abilities?.length ? (
+            <div className="tb-choices">
+              {detail.abilities.map(ability => (
+                <button
+                  key={ability}
+                  type="button"
+                  className={ability.toLowerCase() === current.ability.trim().toLowerCase() ? 'active' : ''}
+                  onClick={() => updateSet({ ability })}
+                >
+                  {ability}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <label>
             Tera type
@@ -306,28 +509,35 @@ export function TeamBuilder() {
 
           <div className="tb-moves">
             <header>
-              <strong>Active move loadout</strong>
+              <strong>Attacks</strong>
               <span>{current.moves.filter(move => move.trim()).length} / 4</span>
             </header>
+            <ul className="tb-attack-key">
+              <li><span className="tb-cat is-physical">Physical</span><span>Attack vs Defense</span></li>
+              <li><span className="tb-cat is-special">Special</span><span>Sp. Atk vs Sp. Def</span></li>
+              <li><span className="tb-cat is-status">Status</span><span>No direct damage</span></li>
+            </ul>
             {current.moves.map((move, index) => {
               const field = `move-${index}` as SearchField;
-              const info = detail?.moveDetails.find(item => item.name.toLowerCase() === move.trim().toLowerCase());
+              const fact = moveFact(move, knownMoves, detail?.moveDetails);
               return (
                 <div key={index} className="tb-move">
                   <input
                     aria-label={`Move ${index + 1}`}
+                    placeholder={current.species.trim() ? 'Search this Pokémon’s attacks' : 'Attack name'}
                     value={move}
                     onChange={event => {
                       updateMove(index, event.target.value);
                       void search(field, 'move', event.target.value);
                     }}
+                    onFocus={() => void search(field, 'move', move)}
                   />
-                  {suggestions?.field === field ? <Suggestions results={suggestions.results} onPick={value => applySuggestion(field, value)} /> : null}
-                  {info ? (
-                    <small>
-                      {info.type || '—'} · {info.category || '—'} · {info.basePower ? `${info.basePower} BP` : 'Status'} · {info.accuracy == null ? '—' : `${info.accuracy}%`} · PP {info.pp}
-                    </small>
-                  ) : null}
+                  {suggestions?.field === field ? (
+                    <Suggestions
+                      menu={suggestions}
+                      onPick={value => applySuggestion(field, value)}
+                    />
+                  ) : fact ? <AttackCard hit={fact} /> : null}
                 </div>
               );
             })}
@@ -337,15 +547,21 @@ export function TeamBuilder() {
         <section className="tb-stats">
           <header>
             <strong>Stat and EV calibration</strong>
-            <span>{Math.max(0, 510 - evSpent)} / 510 EVs left</span>
+            <span>{510 - evSpent} / 510 EVs left</span>
           </header>
           <label>
             Nature
             <select value={current.nature} onChange={event => updateSet({ nature: event.target.value })}>
-              {NATURES.map(nature => <option key={nature}>{nature}</option>)}
+              {NATURES.map(nature => <option key={nature} value={nature}>{natureLabel(nature)}</option>)}
             </select>
           </label>
           <ul>
+            <li className="tb-stat-head">
+              <span>Stat</span>
+              <span>EV</span>
+              <span>IV</span>
+              <b>Final</b>
+            </li>
             {STATS.map(stat => {
               const row = detail?.stats.find(item => item.stat === stat.id);
               return (
@@ -362,15 +578,20 @@ export function TeamBuilder() {
                     value={current.evs[stat.id]}
                     onChange={event => updateEv(stat.id, event.target.value)}
                   />
+                  <input
+                    aria-label={`${STAT_LABEL[stat.id]} IVs`}
+                    inputMode="numeric"
+                    value={current.ivs[stat.id]}
+                    onChange={event => updateIv(stat.id, event.target.value)}
+                  />
                   <b>{row ? row.value : '—'}</b>
                 </li>
               );
             })}
           </ul>
-          <dl>
-            <div><dt>Physical bulk</dt><dd>{detail?.physicalBulk?.toLocaleString('en-US') ?? '—'}</dd></div>
-            <div><dt>Special bulk</dt><dd>{detail?.specialBulk?.toLocaleString('en-US') ?? '—'}</dd></div>
-          </dl>
+          <p className="tb-spread">
+            {natureLabel(current.nature)} · {STATS.filter(stat => current.evs[stat.id] > 0).map(stat => `${current.evs[stat.id]} ${STAT_LABEL[stat.id]}`).join(' / ') || 'No EVs'}
+          </p>
         </section>
       </div>
 
@@ -398,23 +619,120 @@ export function TeamBuilder() {
               ))}
             </ol>
           ) : <p>Speed appears after a species resolves.</p>}
+          {inspection?.benchmarks?.length ? (
+            <ul className="tb-benchmarks">
+              {inspection.benchmarks.map(mark => (
+                <li key={mark.label}><span>{mark.label}</span><b>{mark.speed}</b></li>
+              ))}
+            </ul>
+          ) : null}
         </section>
       </div>
     </div>
   );
 }
 
-function Suggestions({ results, onPick }: { results: string[]; onPick: (value: string) => void }) {
-  if (!results.length) return null;
+function Suggestions({ menu, onPick }: { menu: SuggestionMenu; onPick: (value: string) => void }) {
+  const title = menu.kind === 'move'
+    ? (menu.scoped ? 'Attacks this Pokémon can learn' : 'Matching attacks')
+    : menu.kind === 'species'
+      ? 'Pokémon'
+      : menu.kind === 'ability'
+        ? (menu.scoped ? 'Abilities this Pokémon can have' : 'Matching abilities')
+        : 'Matching items';
   return (
-    <div className="tb-suggest" role="listbox">
-      {results.map(result => (
-        <button key={result} type="button" onMouseDown={event => event.preventDefault()} onClick={() => onPick(result)}>
-          {result}
+    <div className="tb-suggest" role="listbox" aria-label={title}>
+      <p className="tb-plain">{title}</p>
+      {menu.hint ? <p className="tb-plain">{menu.hint}</p> : null}
+      {menu.hits.map(hit => (
+        <button
+          key={hit.name}
+          type="button"
+          onMouseDown={event => event.preventDefault()}
+          onClick={() => onPick(hit.name)}
+        >
+          {menu.kind === 'species' ? <SpeciesHit hit={hit} /> : menu.kind === 'move' ? <AttackCard hit={hit} showName /> : <HitBody hit={hit} />}
         </button>
       ))}
     </div>
   );
+}
+
+function SpeciesHit({ hit }: { hit: TeamSearchHit }) {
+  return (
+    <span className="tb-hit-row">
+      <PokemonIcon name={hit.name} />
+      <span>
+        <span className="tb-hit-name">{hit.name}</span>
+        {hit.types?.length ? (
+          <span className="tb-hit-meta">
+            {hit.types.map(type => (
+              <span key={type}><TypeMark type={type} />{type}</span>
+            ))}
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
+function HitBody({ hit }: { hit: TeamSearchHit }) {
+  return (
+    <span className="tb-hit-copy">
+      <span className="tb-hit-name">{hit.name}</span>
+      {hit.description ? <span className="tb-hit-desc">{hit.description}</span> : null}
+    </span>
+  );
+}
+
+function AttackCard({ hit, showName = false }: { hit: TeamSearchHit; showName?: boolean }) {
+  const category = hit.category?.toLowerCase();
+  const power = hit.category === 'Status' ? '—' : hit.power ? String(hit.power) : 'Var';
+  const accuracy = hit.accuracy == null ? 'Always' : `${hit.accuracy}%`;
+  const pp = hit.pp != null ? String(hit.pp) : '—';
+  return (
+    <span className="tb-attack">
+      <span className="tb-attack-top">
+        {showName ? (
+          <span className="tb-hit-name">
+            {hit.type ? <TypeMark type={hit.type} /> : null}
+            {hit.name}
+          </span>
+        ) : hit.type ? (
+          <span className="tb-type-chip"><TypeMark type={hit.type} /></span>
+        ) : <span />}
+        {category ? <span className={`tb-cat is-${category}`}>{hit.category}</span> : null}
+      </span>
+      <span className="tb-attack-stats">
+        <span><b>{power}</b><small>Power</small></span>
+        <span><b>{accuracy}</b><small>{hit.accuracy == null ? 'Hits' : 'Acc'}</small></span>
+        <span><b>{pp}</b><small>PP</small></span>
+      </span>
+      {hit.description ? <span className="tb-hit-desc">{hit.description}</span> : null}
+    </span>
+  );
+}
+
+function moveFact(
+  name: string,
+  known: Record<string, TeamSearchHit>,
+  inspected: { name: string; type: string; category: string; basePower: number; accuracy: number | null; pp: number; description?: string }[] | undefined,
+): TeamSearchHit | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const remembered = known[trimmed.toLowerCase()];
+  if (remembered) return remembered;
+  const info = inspected?.find(item => item.name.toLowerCase() === trimmed.toLowerCase());
+  if (!info) return null;
+  return {
+    name: info.name,
+    type: info.type,
+    category: info.category,
+    power: info.basePower,
+    accuracy: info.accuracy,
+    pp: info.pp,
+    description: info.description,
+  };
 }
 
 function formatMultiplier(value: number): string {

@@ -1,0 +1,65 @@
+# PokeArena API — production systemd unit
+#
+# Live battle/session state is process-local. Run exactly one instance of this
+# unit. Do not instantiate templates (pokearena-api@.service) or start a second
+# copy.
+#
+# Placeholders — replace before enabling (Batch 6I host setup):
+#   User / Group          pokearena
+#   WorkingDirectory      /opt/pokearena/packages/api
+#   ReadWritePaths        /opt/pokearena
+#   EnvironmentFile       /etc/pokearena/api.env
+#   ExecStart node path   /usr/bin/node
+#
+# Secrets must live in EnvironmentFile, not in this unit.
+# Copy deploy/env/api.env.example → /etc/pokearena/api.env (mode 0640).
+
+[Unit]
+Description=PokeArena API (single process; live battles are in-memory)
+Documentation=file:///opt/pokearena/docs/deployment.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Wants, not Requires, for postgresql.service: distro unit names differ
+# (postgresql.service vs postgresql@16-main.service). The API already refuses
+# to listen when PostgreSQL, migrations, or recovery fail; Restart=on-failure
+# retries instead of masking that contract.
+
+[Service]
+Type=simple
+User=pokearena
+Group=pokearena
+WorkingDirectory=/opt/pokearena/packages/api
+Environment=NODE_ENV=production
+Environment=POKEARENA_ECONOMICS=postgres
+EnvironmentFile=/etc/pokearena/api.env
+ExecStartPre=/usr/bin/test -f /opt/pokearena/packages/api/dist/src/server.js
+ExecStart=/usr/bin/node dist/src/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+KillMode=mixed
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pokearena-api
+
+# Hardening that does not break Node or WebSocket (no MemoryDenyWriteExecute:
+# V8 needs executable anonymous mappings). PrivateNetwork would block loopback
+# PostgreSQL and Caddy, so it is not set.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pokearena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

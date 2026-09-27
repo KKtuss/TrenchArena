@@ -3,11 +3,13 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ErrorToast } from '@/components/error-toast';
 
-import { TrainerSprite } from '@/components/showdown-visuals';
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
+import { shortenAddress } from '@/lib/trainer-profile';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
@@ -25,6 +27,7 @@ export default function BattlePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!playerId) return;
     setActiveMatchSubscription(matchId);
     void client.request({ type: 'match.subscribe', matchId }).catch(err => {
       setError(err instanceof Error ? err.message : String(err));
@@ -63,17 +66,17 @@ export default function BattlePage() {
     <div className="pa-page battle-page">
       <header className="pa-battle-bar">
         <div className="pa-battle-bar-fighters">
-          <TrainerSprite label={you ?? 'You'} side="left" />
+          <ProfileTrainerSprite label={you ?? 'You'} side="left" />
           <div>
-            <b>{you ?? 'You'}</b>
+            <b>{you ? shortenAddress(you) : 'You'}</b>
             <small>{contextLabel}</small>
           </div>
           <span className="pa-fight-vs">vs</span>
           <div className="end">
-            <b>{rival ?? 'Opponent'}</b>
+            <b>{rival ? shortenAddress(rival) : 'Opponent'}</b>
             <small>Rival</small>
           </div>
-          <TrainerSprite label={rival ?? 'Opponent'} side="right" />
+          <ProfileTrainerSprite label={rival ?? 'Opponent'} side="right" />
         </div>
         <div className="pa-battle-bar-meta">
           {match?.tournamentId ? (
@@ -94,7 +97,7 @@ export default function BattlePage() {
         </div>
       </header>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      <ErrorToast error={error} onDismiss={() => setError(null)} />
       {match?.status === 'completed' && resultHref ? (
         <div className="live-fight-banner">
           <span>This fight is over. {match.winner ? `${match.winner} takes it.` : 'The pot is settled.'}</span>
@@ -102,15 +105,19 @@ export default function BattlePage() {
         </div>
       ) : null}
 
-      <ShowdownBattle
-        playerId={playerId}
-        matchId={matchId}
-        battleInstanceId={match?.battleInstanceId}
-        battleView={battleView}
-        events={events}
-        client={client}
-        onError={onRendererError}
-      />
+      {playerId ? (
+        <ShowdownBattle
+          playerId={playerId}
+          matchId={matchId}
+          battleInstanceId={match?.battleInstanceId}
+          battleView={battleView}
+          events={events}
+          client={client}
+          onError={onRendererError}
+        />
+      ) : (
+        <div className="error-banner">Connect a wallet to join this fight.</div>
+      )}
 
       {resultHref && match?.status === 'completed' ? (
         <div className="pa-lobby-actions">

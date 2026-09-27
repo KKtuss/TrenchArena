@@ -3,12 +3,16 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { ErrorToast } from '@/components/error-toast';
 
-import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
+import { TeamStrip } from '@/components/showdown-visuals';
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
+import { isDemoAuthEnabled } from '@/lib/demo-auth';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
+import { shortenAddress } from '@/lib/trainer-profile';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
@@ -17,7 +21,7 @@ function formatLabel(format: string): string {
 export default function CasualRoomPage() {
   const params = useParams<{ roomId: string }>();
   const roomId = params.roomId;
-  const { client, playerId } = useArena();
+  const { client, playerId, connected } = useArena();
   const router = useRouter();
   const [room, setRoom] = useState<CasualRoom | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,10 +29,11 @@ export default function CasualRoomPage() {
   const [saved, setSaved] = useState<SavedTeam | null>(null);
 
   useEffect(() => {
-    setSaved(readSavedTeam(playerId));
+    setSaved(playerId ? readSavedTeam(playerId) : null);
   }, [playerId]);
 
   useEffect(() => {
+    if (!connected) return;
     const unsubscribe = client.onMessage(message => {
       if ((message.type === 'casual.state' || message.type === 'casual.created') && message.room.id === roomId) {
         setRoom(message.room);
@@ -41,19 +46,21 @@ export default function CasualRoomPage() {
       if (response.type === 'casual.state') setRoom(response.room);
     }).catch(err => setError(err instanceof Error ? err.message : String(err)));
     return unsubscribe;
-  }, [client, roomId]);
+  }, [client, connected, roomId]);
 
-  const paste = saved?.validated ? battlePaste(playerId) : undefined;
-  const isPlayer = room && (room.creatorId === playerId || room.opponentId === playerId);
-  const canAccept = room && room.status === 'open' && room.creatorId !== playerId
-    && (!room.invitedPlayerId || room.invitedPlayerId === playerId);
+  const paste = playerId && saved?.validated ? battlePaste(playerId) : undefined;
+  const isPlayer = Boolean(room && playerId && (room.creatorId === playerId || room.opponentId === playerId));
+  const canAccept = Boolean(room && playerId && room.status === 'open' && room.creatorId !== playerId
+    && (!room.invitedPlayerId || room.invitedPlayerId === playerId));
 
-  const youAreCreator = room?.creatorId === playerId;
-  const yourId = room ? (youAreCreator ? room.creatorId : (room.opponentId ?? playerId)) : playerId;
+  const youAreCreator = Boolean(room && playerId && room.creatorId === playerId);
+  const yourId = room
+    ? (youAreCreator ? room.creatorId : (room.opponentId ?? playerId ?? 'You'))
+    : (playerId ?? 'You');
   const rivalId = room
     ? (youAreCreator ? room.opponentId : room.creatorId)
     : undefined;
-  const youReady = Boolean(room?.ready[playerId]);
+  const youReady = Boolean(playerId && room?.ready[playerId]);
   const rivalReady = Boolean(
     room && rivalId ? room.ready[rivalId] : false,
   );
@@ -97,9 +104,11 @@ export default function CasualRoomPage() {
             <p className="pa-lobby-note">
               {paste
                 ? `Bringing ${saved?.name ?? 'saved team'}: ${(saved?.species ?? []).filter(Boolean).join(' · ')}`
-                : saved
-                  ? 'This draft does not pass Gen 9 OU, so the locked demo team will be brought instead.'
-                  : 'No saved team. The locked demo team will be brought.'}
+                : isDemoAuthEnabled()
+                  ? (saved
+                    ? 'This draft does not pass Gen 9 OU, so the locked demo team will be brought instead.'
+                    : 'No saved team. The locked demo team will be brought.')
+                  : 'Lock a legal Gen 9 OU team before you ready up.'}
             </p>
 
             {paste && saved?.species.some(Boolean) ? (
@@ -112,8 +121,8 @@ export default function CasualRoomPage() {
             <div className="pa-lobby-vs">
               <article className="pa-lobby-side cyan">
                 <small>Your trainer</small>
-                <TrainerSprite label={yourId} side="left" />
-                <strong>{yourId}</strong>
+                <ProfileTrainerSprite label={yourId} side="left" />
+                <strong>{shortenAddress(yourId)}</strong>
                 <span className={`pa-lobby-ready ${youReady ? 'on' : ''}`}>
                   {youReady ? 'Ready' : 'Preparing'}
                 </span>
@@ -123,8 +132,8 @@ export default function CasualRoomPage() {
               </div>
               <article className="pa-lobby-side coral">
                 <small>Opponent</small>
-                {rivalId ? <TrainerSprite label={rivalId} side="right" /> : <span className="pa-fight-open" aria-hidden />}
-                <strong>{rivalId ?? 'Waiting…'}</strong>
+                {rivalId ? <ProfileTrainerSprite label={rivalId} side="right" /> : <span className="pa-fight-open" aria-hidden />}
+                <strong>{rivalId ? shortenAddress(rivalId) : 'Waiting…'}</strong>
                 <span className={`pa-lobby-ready ${rivalReady ? 'on' : ''}`}>
                   {rivalId ? (rivalReady ? 'Ready' : 'Joined') : 'Open queue'}
                 </span>
@@ -171,7 +180,7 @@ export default function CasualRoomPage() {
         </section>
       ) : null}
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <div className="pa-lobby-actions">
         {canAccept ? (
@@ -193,6 +202,7 @@ export default function CasualRoomPage() {
             className="pa-btn pa-btn-surface"
             disabled={busy}
             onClick={() => void act(async () => {
+              if (!playerId) return;
               const response = await client.request({
                 type: 'casual.ready',
                 roomId,
@@ -202,10 +212,10 @@ export default function CasualRoomPage() {
               if (response.type === 'casual.state') setRoom(response.room);
             })}
           >
-            {room.ready[playerId] ? 'Unready' : 'Ready up'}
+            {playerId && room.ready[playerId] ? 'Unready' : 'Ready up'}
           </button>
         ) : null}
-        {isPlayer && room && room.battleSize === '1v1' && (room.status === 'ready' || room.status === 'full') ? (
+        {isPlayer && room && room.battleSize === '1v1' && room.status === 'ready' ? (
           <button
             type="button"
             className="pa-btn pa-btn-primary"

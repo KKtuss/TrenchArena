@@ -19,6 +19,8 @@ for (const method of ['readlink', 'readlinkSync']) {
   };
 }
 
+const { securityHeaders } = require('./lib/security-headers');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -27,6 +29,14 @@ const nextConfig = {
     config.resolve.symlinks = false;
     config.cache = false;
     return config;
+  },
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: securityHeaders(),
+      },
+    ];
   },
 };
 

@@ -122,7 +122,7 @@ export class BattleSession {
     }
 
     this.timeout = setTimeout(
-      () => this.fail(new BattleTimeoutError(this.timeoutMs), 'timeout'),
+      () => this.expireByTimeout(),
       this.timeoutMs,
     );
 
@@ -177,6 +177,13 @@ export class BattleSession {
 
   getResult(): BattleResult | undefined {
     return this.result;
+  }
+
+  /** Players who currently owe a decision. Wait requests are not inactivity. */
+  actionablePendingPlayerIds(): PlayerId[] {
+    return [...this.pendingRequests.entries()]
+      .filter(([, request]) => request.kind !== 'wait')
+      .map(([playerId]) => playerId);
   }
 
   subscribe(listener: (terminal: BattleTerminal) => void): () => void {
@@ -340,6 +347,65 @@ export class BattleSession {
       this.resolveReadyOnce();
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)), 'invalid-output');
+    }
+  }
+
+  /**
+   * The existing battle timer is a whole-fight deadline, not a separate
+   * per-turn clock. When it fires, the inactive player is whoever still has
+   * an actionable pending request. That result is authoritative for casual
+   * and tournament settlement. Player 1 is never used as a fallback.
+   */
+  private expireByTimeout(): void {
+    if (this.result || this.failure || this.lifecycle === 'ended' || this.lifecycle === 'failed') {
+      return;
+    }
+
+    const inactive = this.actionablePendingPlayerIds();
+    if (inactive.length === 1) {
+      const loser = inactive[0];
+      const winner = this.players.find(player => player.id !== loser);
+      if (winner) {
+        this.finishWithResult({
+          status: 'win',
+          winner: winner.id,
+          score: this.viewModel.remainingPokemon(),
+          turns: this.viewModel.currentTurn(),
+          endedBy: 'timeout',
+        });
+        return;
+      }
+    }
+
+    if (this.readySettled || this.lifecycle === 'awaiting-choice') {
+      this.finishWithResult({
+        status: 'tie',
+        score: this.viewModel.remainingPokemon(),
+        turns: this.viewModel.currentTurn(),
+        endedBy: 'timeout',
+      });
+      return;
+    }
+
+    this.fail(new BattleTimeoutError(this.timeoutMs), 'timeout');
+  }
+
+  private finishWithResult(result: BattleResult): void {
+    if (this.result || this.failure) return;
+    this.result = result;
+    this.pendingRequests.clear();
+    this.lifecycle = 'ended';
+    if (this.timeout) clearTimeout(this.timeout);
+    this.appendEvent({
+      scope: 'public',
+      kind: 'result',
+      data: JSON.stringify(result),
+    });
+    this.notifyTerminal({ type: 'completed', result });
+    this.eventListeners.clear();
+    this.resolveReadyOnce();
+    if (this.stream && !this.stream.atEOF) {
+      void this.stream.writeEnd().catch(() => undefined);
     }
   }
 

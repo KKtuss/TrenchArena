@@ -31,10 +31,69 @@ test('mock economics rejects over-balance collateral and settles winner credits'
   assert.equal(economics.getBalance('demo-player-2'), 10_000_000 - 100_000);
 });
 
-test('tournament treasury uses 90/10 split', () => {
+test('production wallets start at zero and the dev faucet pays a known wallet once', () => {
+  const address = '8qbHbw2BbbRYBWQyPgemYbUqueezHPYmEkFNmUgHEf3g';
+  const production = new MockEconomics();
+  assert.equal(production.getBalance(address), 0);
+  const unfunded = production.ensureWallet(address);
+  assert.equal(unfunded.playerId, address);
+  assert.equal(unfunded.balance, 0);
+  assert.equal(unfunded.eligible, false);
+  assert.equal(production.ensureWallet(address).balance, 0);
+
+  const dev = new MockEconomics({ devFaucet: true });
+  const funded = dev.ensureWallet(address);
+  assert.equal(funded.balance, 10_000_000);
+  assert.equal(funded.eligible, true);
+  assert.equal(dev.ensureWallet(address).balance, 10_000_000);
+});
+
+test('paired reservations debit both players or neither', () => {
   const economics = new MockEconomics();
-  const preview = economics.previewTournament(100_000, 4);
-  assert.equal(preview.totalEntries, 400_000);
-  assert.equal(preview.prizePool, 360_000);
-  assert.equal(preview.devOpsShare, 40_000);
+  economics.lockCollateral('demo-player-2', 10_000_000);
+  assert.throws(() => economics.reserveAll([
+    { holdKey: 'creator', playerId: 'demo-player-1', amount: 1_000 },
+    { holdKey: 'opponent', playerId: 'demo-player-2', amount: 1_000 },
+  ]), /Collateral exceeds/);
+  assert.equal(economics.getBalance('demo-player-1'), 10_000_000);
+  assert.equal(economics.getBalance('demo-player-2'), 0);
+  assert.equal(economics.hasHold('creator'), false);
+  assert.equal(economics.hasHold('opponent'), false);
+
+  assert.throws(() => economics.reserveAll([
+    { holdKey: 'first', playerId: 'demo-player-1', amount: 6_000_000 },
+    { holdKey: 'second', playerId: 'demo-player-1', amount: 6_000_000 },
+  ]), /Collateral exceeds/);
+  assert.equal(economics.getBalance('demo-player-1'), 10_000_000);
+  assert.equal(economics.hasHold('first'), false);
+});
+
+test('a hold refunds once and a settlement key pays once', () => {
+  const economics = new MockEconomics();
+  assert.equal(economics.reserve('creator', 'demo-player-1', 100_000), true);
+  assert.equal(economics.reserve('creator', 'demo-player-1', 100_000), false);
+  assert.equal(economics.getBalance('demo-player-1'), 10_000_000 - 100_000);
+  assert.equal(economics.release('missing'), 0);
+  assert.equal(economics.getBalance('demo-player-1'), 10_000_000 - 100_000);
+
+  economics.reserve('opponent', 'demo-player-2', 100_000);
+  economics.consume('creator');
+  economics.consume('opponent');
+  assert.equal(economics.release('creator'), 0);
+  const payout = economics.settleCasualWin({
+    winnerId: 'demo-player-1',
+    loserId: 'demo-player-2',
+    collateral: 100_000,
+    settlementKey: 'fight-1',
+  });
+  const repeat = economics.settleCasualWin({
+    winnerId: 'demo-player-1',
+    loserId: 'demo-player-2',
+    collateral: 100_000,
+    settlementKey: 'fight-1',
+  });
+  assert.equal(payout.amount, 196_000);
+  assert.equal(repeat.amount, 196_000);
+  assert.equal(economics.getBalance('demo-player-1'), 10_000_000 - 100_000 + 196_000);
+  assert.equal(economics.getBalance('demo-player-2'), 10_000_000 - 100_000);
 });

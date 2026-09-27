@@ -12,12 +12,13 @@ import {
   type PlayerChoice,
 } from '@pokearena/battle-engine';
 
+import { previewCasual } from '@pokearena/db';
+import type { EconomicsStore, PayoutResult } from '@pokearena/db';
+
 import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from './demo-teams';
-import {
-  MockEconomics,
-  type CasualEconomicsPreview,
-  type MockPayoutResult,
-} from './mock-economics';
+import { InMemoryEconomicsStore } from './memory-economics-store';
+import { MockEconomics, type CasualEconomicsPreview } from './mock-economics';
+import { isDemoPlayerId } from './wallet-auth';
 
 export interface CasualRosterMon {
   species: string;
@@ -39,6 +40,7 @@ export type CasualRoomStatus =
   | 'open'
   | 'full'
   | 'ready'
+  | 'starting'
   | 'battling'
   | 'completed'
   | 'cancelled';
@@ -60,7 +62,7 @@ export interface CasualRoom {
   winnerId?: string;
   result?: BattleResult;
   rosters?: CasualRoster[];
-  payout?: MockPayoutResult;
+  payout?: PayoutResult;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -72,6 +74,20 @@ export interface CreateCasualRoomInput {
   battleSize: CasualBattleSize;
   collateral: number;
   invitedPlayerId?: string;
+}
+
+export class CasualNotReadyError extends Error {
+  constructor() {
+    super('Both players must be ready before the battle can start.');
+    this.name = 'CasualNotReadyError';
+  }
+}
+
+export class CasualTeamRequiredError extends Error {
+  constructor() {
+    super('Both players must lock a valid team before the battle can start.');
+    this.name = 'CasualTeamRequiredError';
+  }
 }
 
 export type CasualRoomListener = (room: CasualRoom) => void;
@@ -89,21 +105,30 @@ export class CasualRoomService {
   private readonly lockedTeams = new Map<string, string>();
   private readonly listeners = new Map<CasualRoomId, Set<CasualRoomListener>>();
   private readonly recentResults: CasualRoom[] = [];
+  private readonly forfeitedRooms = new Set<CasualRoomId>();
+  private readonly battleStarts = new Map<CasualRoomId, Promise<CasualRoom>>();
+  private readonly terminalJobs = new Map<CasualRoomId, Promise<void>>();
   private readonly battleEngine: BattleEngine;
-  private readonly economics: MockEconomics;
+  private readonly economics: EconomicsStore;
   private readonly now: () => number;
+  private readonly allowDemoAuth: boolean;
+  private readonly matchTimeoutMs: number;
 
   constructor(options: {
     battleEngine?: BattleEngine;
-    economics?: MockEconomics;
+    economics?: EconomicsStore | MockEconomics;
     now?: () => number;
+    allowDemoAuth?: boolean;
+    matchTimeoutMs?: number;
   } = {}) {
     this.battleEngine = options.battleEngine ?? new BattleEngine();
-    this.economics = options.economics ?? new MockEconomics();
+    this.economics = toEconomicsStore(options.economics);
     this.now = options.now ?? Date.now;
+    this.allowDemoAuth = options.allowDemoAuth ?? false;
+    this.matchTimeoutMs = options.matchTimeoutMs ?? 300_000;
   }
 
-  createRoom(input: CreateCasualRoomInput): CasualRoom {
+  async createRoom(input: CreateCasualRoomInput): Promise<CasualRoom> {
     if (input.battleSize !== '1v1' && input.battleSize !== '2v2') {
       throw new Error('battleSize must be 1v1 or 2v2.');
     }
@@ -116,11 +141,19 @@ export class CasualRoomService {
     if (input.invitedPlayerId && input.invitedPlayerId === input.creatorId) {
       throw new Error('Cannot challenge yourself.');
     }
-    this.economics.assertAffordable(input.creatorId, input.collateral);
-    const economics = this.economics.previewCasual(input.collateral);
+    const economics = previewCasual(input.collateral);
     const timestamp = this.now();
     const id = randomUUID() as CasualRoomId;
     const matchId = `casual-${id}` as CasualMatchId;
+    await this.economics.createCasualRoomWithHold({
+      id,
+      matchId,
+      roomType: input.roomType,
+      battleSize: input.battleSize,
+      creatorId: input.creatorId,
+      ...(input.invitedPlayerId ? { invitedPlayerId: input.invitedPlayerId } : {}),
+      collateral: input.collateral,
+    });
     const room: CasualRoom = {
       id,
       matchId,
@@ -176,7 +209,7 @@ export class CasualRoomService {
     return room ? cloneRoom(room) : undefined;
   }
 
-  acceptRoom(roomId: string, playerId: string): CasualRoom {
+  async acceptRoom(roomId: string, playerId: string): Promise<CasualRoom> {
     const room = this.requireRoom(roomId);
     if (room.status !== 'open') throw new Error('This casual room is no longer open.');
     if (room.opponentId) throw new Error('This casual room is already full.');
@@ -184,7 +217,11 @@ export class CasualRoomService {
     if (room.roomType === 'private' && room.invitedPlayerId && room.invitedPlayerId !== playerId) {
       throw new Error('You were not invited to this private challenge.');
     }
-    this.economics.assertAffordable(playerId, room.collateral);
+    await this.economics.acceptCasualRoomWithHold({
+      roomId: room.id,
+      opponentId: playerId,
+      collateral: room.collateral,
+    });
     room.opponentId = playerId;
     room.ready[playerId] = false;
     room.status = 'full';
@@ -213,14 +250,16 @@ export class CasualRoomService {
     return cloneRoom(room);
   }
 
-  cancelRoom(roomId: string, playerId: string): CasualRoom {
+  async cancelRoom(roomId: string, playerId: string): Promise<CasualRoom> {
     const room = this.requireRoom(roomId);
     if (playerId !== room.creatorId && playerId !== room.opponentId) {
       throw new Error('You are not a player in this casual room.');
     }
-    if (room.status === 'battling' || room.status === 'completed') {
+    if (room.status === 'starting' || room.status === 'battling' || room.status === 'completed') {
       throw new Error('Cannot cancel a room after battle start.');
     }
+    if (room.status === 'cancelled') return cloneRoom(room);
+    await this.economics.cancelCasualRoom(room.id);
     room.status = 'cancelled';
     room.updatedAt = this.now();
     this.notify(room);
@@ -237,10 +276,17 @@ export class CasualRoomService {
       throw new Error('This fight is not live.');
     }
     const battle = this.requireActiveBattle(room.battleInstanceId);
-    await battle.session.forfeit(playerId);
+    this.forfeitedRooms.add(room.id);
+    try {
+      await battle.session.forfeit(playerId);
+    } catch (error) {
+      this.forfeitedRooms.delete(room.id);
+      throw error;
+    }
     for (let attempt = 0; attempt < 10 && this.requireRoom(roomId).status === 'battling'; attempt += 1) {
       await new Promise(resolve => setImmediate(resolve));
     }
+    await this.flushTerminal(room.id);
     const settled = this.requireRoom(roomId);
     if (settled.status !== 'completed') {
       throw new Error('Forfeit did not end the fight.');
@@ -258,45 +304,39 @@ export class CasualRoomService {
       throw new Error('2v2 battles are not supported yet. Configure the room, but start is unavailable.');
     }
     if (room.status === 'battling' && room.battleInstanceId) return cloneRoom(room);
-    if (room.status !== 'ready' && room.status !== 'full') {
-      throw new Error('Casual room is not ready to start.');
+    const inflight = this.battleStarts.get(room.id);
+    if (inflight) return inflight.then(started => cloneRoom(started));
+    if (room.status !== 'ready') {
+      throw new CasualNotReadyError();
     }
     if (team) this.lockTeam(room.id, playerId, team);
-    const teams = [
-      this.teamFor(room.id, room.creatorId),
-      this.teamFor(room.id, room.opponentId),
-    ] as const;
+    const creatorTeam = this.teamFor(room.id, room.creatorId);
+    const opponentTeam = this.teamFor(room.id, room.opponentId);
+    if (!creatorTeam || !opponentTeam) {
+      throw new CasualTeamRequiredError();
+    }
+    const teams = [creatorTeam, opponentTeam] as const;
     validateAndPackTeam(teams[0], 'gen9ou');
     validateAndPackTeam(teams[1], 'gen9ou');
 
-    this.economics.lockCollateral(room.creatorId, room.collateral);
-    this.economics.lockCollateral(room.opponentId, room.collateral);
-
-    const session = await this.battleEngine.createBattle({
-      format: 'gen9ou',
-      players: [
-        { id: room.creatorId, name: room.creatorId },
-        { id: room.opponentId, name: room.opponentId },
-      ],
-      teams,
-      timeoutMs: 300_000,
-    });
-    await session.start();
-
-    const battleInstanceId = session.id as CasualBattleInstanceId;
-    const unsubscribe = session.subscribe(terminal => {
-      this.handleTerminal(room.id, terminal);
-    });
-    session.subscribeEvents(() => {
-      queueMicrotask(() => this.notify(this.requireRoom(room.id)));
-    });
-
-    this.activeBattles.set(battleInstanceId, { battleInstanceId, session, unsubscribe });
-    room.battleInstanceId = battleInstanceId;
-    room.status = 'battling';
+    room.status = 'starting';
     room.updatedAt = this.now();
-    this.notify(room);
-    return cloneRoom(room);
+    const run = (async () => {
+      try {
+        await this.economics.setCasualRoomStatus(room.id, 'starting');
+      } catch (error) {
+        room.status = 'ready';
+        throw error;
+      }
+      return this.launchBattle(room, teams);
+    })();
+    this.battleStarts.set(room.id, run);
+    try {
+      const started = await run;
+      return cloneRoom(started);
+    } finally {
+      this.battleStarts.delete(room.id);
+    }
   }
 
   getMatchState(matchId: string, viewer: string | 'spectator'): BattleState | undefined {
@@ -357,21 +397,90 @@ export class CasualRoomService {
     };
   }
 
-  private handleTerminal(roomId: CasualRoomId, terminal: BattleTerminal): void {
+  private async launchBattle(room: CasualRoom, teams: readonly [string, string]): Promise<CasualRoom> {
+    const opponentId = room.opponentId;
+    if (!opponentId) throw new Error('Waiting for an opponent before battle start.');
+    let session: BattleSession;
+    try {
+      session = await this.battleEngine.createBattle({
+        format: 'gen9ou',
+        players: [
+          { id: room.creatorId, name: room.creatorId },
+          { id: opponentId, name: opponentId },
+        ],
+        teams,
+        timeoutMs: this.matchTimeoutMs,
+      });
+      await session.start();
+    } catch (error) {
+      await this.abortRoom(room);
+      throw error;
+    }
+
+    const battleInstanceId = session.id as CasualBattleInstanceId;
+    room.battleInstanceId = battleInstanceId;
+    room.status = 'battling';
+    room.updatedAt = this.now();
+    await this.economics.setCasualRoomStatus(room.id, 'battling', { battleInstanceId });
+    const unsubscribe = session.subscribe(terminal => {
+      this.enqueueTerminal(room.id, terminal);
+    });
+    session.subscribeEvents(() => {
+      queueMicrotask(() => this.notify(this.requireRoom(room.id)));
+    });
+    this.activeBattles.set(battleInstanceId, { battleInstanceId, session, unsubscribe });
+    await this.flushTerminal(room.id);
+    if (room.status === 'battling') this.notify(room);
+    return room;
+  }
+
+  private enqueueTerminal(roomId: CasualRoomId, terminal: BattleTerminal): Promise<void> {
+    const previous = this.terminalJobs.get(roomId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.handleTerminal(roomId, terminal));
+    this.terminalJobs.set(roomId, next);
+    void next.catch(() => undefined);
+    return next;
+  }
+
+  private async flushTerminal(roomId: CasualRoomId): Promise<void> {
+    const job = this.terminalJobs.get(roomId);
+    if (job) await job;
+  }
+
+  private async handleTerminal(roomId: CasualRoomId, terminal: BattleTerminal): Promise<void> {
     const room = this.rooms.get(roomId);
-    if (!room || room.status === 'completed') return;
+    if (!room || room.status === 'completed' || room.status === 'cancelled') return;
 
     if (terminal.type === 'failed') {
-      room.status = 'cancelled';
-      room.updatedAt = this.now();
-      if (room.opponentId) {
-        this.economics.credit(room.creatorId, room.collateral);
-        this.economics.credit(room.opponentId, room.collateral);
-      }
-      this.notify(room);
+      await this.abortRoom(room);
       return;
     }
 
+    if (terminal.result.status === 'win' && terminal.result.winner && room.opponentId) {
+      room.winnerId = terminal.result.winner;
+      room.payout = await this.economics.completeCasualWin({
+        roomId: room.id,
+        winnerId: terminal.result.winner,
+        loserId: terminal.result.winner === room.creatorId ? room.opponentId : room.creatorId,
+        collateral: room.collateral,
+        reason: this.forfeitedRooms.has(room.id) || terminal.result.endedBy === 'timeout'
+          ? 'casual-forfeit'
+          : 'casual-win',
+      });
+    } else if (room.opponentId) {
+      delete room.winnerId;
+      room.payout = await this.economics.completeCasualTie({
+        roomId: room.id,
+        player1Id: room.creatorId,
+        player2Id: room.opponentId,
+        collateral: room.collateral,
+      });
+    } else {
+      await this.abortRoom(room);
+      return;
+    }
     room.result = terminal.result;
     room.completedAt = this.now();
     room.updatedAt = room.completedAt;
@@ -389,23 +498,16 @@ export class CasualRoomService {
       }
     }
 
-    if (terminal.result.status === 'win' && terminal.result.winner && room.opponentId) {
-      room.winnerId = terminal.result.winner;
-      room.payout = this.economics.settleCasualWin({
-        winnerId: terminal.result.winner,
-        loserId: terminal.result.winner === room.creatorId ? room.opponentId : room.creatorId,
-        collateral: room.collateral,
-      });
-    } else if (room.opponentId) {
-      room.payout = this.economics.settleCasualTie({
-        player1Id: room.creatorId,
-        player2Id: room.opponentId,
-        collateral: room.collateral,
-      });
-    }
-
     this.recentResults.unshift(cloneRoom(room));
     if (this.recentResults.length > 25) this.recentResults.pop();
+    this.notify(room);
+  }
+
+  private async abortRoom(room: CasualRoom): Promise<void> {
+    if (room.status === 'completed' || room.status === 'cancelled') return;
+    await this.economics.abortCasualRoom(room.id);
+    room.status = 'cancelled';
+    room.updatedAt = this.now();
     this.notify(room);
   }
 
@@ -429,9 +531,11 @@ export class CasualRoomService {
     this.lockedTeams.set(`${roomId}:${playerId}`, team);
   }
 
-  private teamFor(roomId: string, playerId: string): string {
-    return this.lockedTeams.get(`${roomId}:${playerId}`)
-      ?? (playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO);
+  private teamFor(roomId: string, playerId: string): string | undefined {
+    const locked = this.lockedTeams.get(`${roomId}:${playerId}`);
+    if (locked) return locked;
+    if (!this.allowDemoAuth || !isDemoPlayerId(playerId)) return undefined;
+    return playerId === 'demo-player-1' ? DEMO_TEAM_ONE : DEMO_TEAM_TWO;
   }
 
   private requireRoom(roomId: string): CasualRoom {
@@ -467,4 +571,10 @@ function cloneRoom(room: CasualRoom): CasualRoom {
     } : {}),
     ...(room.payout ? { payout: { ...room.payout } } : {}),
   };
+}
+
+function toEconomicsStore(value: EconomicsStore | MockEconomics | undefined): EconomicsStore {
+  if (!value) return new InMemoryEconomicsStore();
+  if (value instanceof MockEconomics) return new InMemoryEconomicsStore(value);
+  return value;
 }

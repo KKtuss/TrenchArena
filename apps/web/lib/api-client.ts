@@ -1,6 +1,12 @@
+import { isDemoAuthEnabled } from './demo-auth';
 import type { ClientMessage, ServerMessage } from './protocol';
 
 type MessageHandler = (message: ServerMessage) => void;
+
+type WalletAuthHandlers = {
+  address: string;
+  signMessage: (message: string) => Promise<string>;
+};
 
 function createRequestId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -29,6 +35,8 @@ export class ArenaApiClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionallyClosed = false;
   private identity: string | null = null;
+  private authMode: 'demo' | 'wallet' | null = null;
+  private walletAuth: WalletAuthHandlers | null = null;
   private resubscribeIds: string[] = [];
   connectionState: 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' = 'idle';
 
@@ -39,18 +47,46 @@ export class ArenaApiClient {
     return () => this.handlers.delete(handler);
   }
 
+  getIdentity(): string | null {
+    return this.identity;
+  }
+
   async connect(playerId?: string): Promise<ServerMessage> {
+    if (!isDemoAuthEnabled()) {
+      throw new Error('Demo authentication is disabled.');
+    }
     this.intentionallyClosed = false;
-    if (playerId) this.identity = playerId;
+    if (playerId) {
+      this.identity = playerId;
+      this.authMode = 'demo';
+      this.walletAuth = null;
+    }
     await this.openSocket({ restore: false });
-    if (!this.identity) {
+    if (!this.identity || this.authMode !== 'demo') {
       throw new Error('Identify with a development player before using the arena API.');
     }
     return this.request({ type: 'identify', playerId: this.identity });
   }
 
+  async authenticateWallet(handlers: WalletAuthHandlers): Promise<ServerMessage> {
+    this.intentionallyClosed = false;
+    this.identity = handlers.address;
+    this.authMode = 'wallet';
+    this.walletAuth = handlers;
+    await this.openSocket({ restore: false });
+    return this.runWalletAuth(handlers);
+  }
+
+  clearAuth(): void {
+    this.identity = null;
+    this.authMode = null;
+    this.walletAuth = null;
+  }
+
   setIdentity(playerId: string): void {
     this.identity = playerId;
+    this.authMode = 'demo';
+    this.walletAuth = null;
   }
 
   rememberSubscriptions(ids: string[]): void {
@@ -84,6 +120,20 @@ export class ArenaApiClient {
     this.socket?.close();
     this.socket = null;
     this.connectionState = 'closed';
+  }
+
+  private async runWalletAuth(handlers: WalletAuthHandlers): Promise<ServerMessage> {
+    const challenge = await this.request({ type: 'auth.challenge', address: handlers.address });
+    if (challenge.type !== 'auth.challenge') {
+      throw new Error('Server did not return an authentication challenge.');
+    }
+    const signature = await handlers.signMessage(challenge.message);
+    return this.request({
+      type: 'auth.verify',
+      address: handlers.address,
+      signature,
+      nonce: challenge.nonce,
+    });
   }
 
   private openSocket(options: { restore?: boolean } = {}): Promise<void> {
@@ -141,7 +191,13 @@ export class ArenaApiClient {
   private async restoreSession(): Promise<void> {
     if (!this.identity) return;
     try {
-      await this.request({ type: 'identify', playerId: this.identity });
+      if (this.authMode === 'wallet' && this.walletAuth) {
+        await this.runWalletAuth(this.walletAuth);
+      } else if (this.authMode === 'demo') {
+        await this.request({ type: 'identify', playerId: this.identity });
+      } else {
+        return;
+      }
       for (const matchId of this.resubscribeIds) {
         await this.request({ type: 'match.subscribe', matchId });
       }

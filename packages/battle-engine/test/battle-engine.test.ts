@@ -248,19 +248,101 @@ test('finalization is idempotent', async () => {
   assert.deepEqual(battle.getResult(), first);
 });
 
-test('transitions to failed when a battle times out', async () => {
+test('a timeout never stays unresolved and never invents a player-one winner', async () => {
   const engine = new BattleEngine();
   const battle = await engine.createBattle(createInput('1,2,3,4', 5));
 
   try {
     await battle.start();
   } catch {
-    // The timeout may fire before the initial request routing settles.
+    // The deadline can fire before start() finishes routing the first requests.
   }
   await new Promise(resolve => setTimeout(resolve, 25));
 
-  assert.equal(battle.getState().lifecycle, 'failed');
-  assert.equal(battle.getState().failure?.code, 'timeout');
+  const result = battle.getResult();
+  const failure = battle.getState().failure;
+  assert.ok(result || failure, 'timeout must fail pre-live or settle from pending decisions');
+  if (failure) {
+    assert.equal(failure.code, 'timeout');
+    assert.equal(result, undefined);
+    assert.equal(battle.getState().lifecycle, 'failed');
+    return;
+  }
+
+  assert.equal(battle.getState().lifecycle, 'ended');
+  assert.equal(result?.endedBy, 'timeout');
+  if (result?.status === 'win') {
+    assert.ok(result.winner === PLAYER_ONE || result.winner === PLAYER_TWO);
+  } else {
+    assert.equal(result?.status, 'tie');
+    assert.equal(result?.winner, undefined);
+  }
+});
+
+async function waitForBattleEnd(battle: BattleSession, timeoutMs = 2_000): Promise<void> {
+  if (battle.getResult() || battle.getState().failure) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Battle did not end before the test deadline.')), timeoutMs);
+    battle.subscribe(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+async function timeoutSilentPlayer(silentPlayerId: string, winnerId: string): Promise<BattleSession> {
+  const engine = new BattleEngine();
+  const battle = await engine.createBattle(createInput('1,2,3,4', 400));
+  await battle.start();
+  const activeId = silentPlayerId === PLAYER_ONE ? PLAYER_TWO : PLAYER_ONE;
+  const request = battle.getState(activeId).request;
+  assert.ok(request?.choices.length);
+  await battle.submitChoice({
+    battleId: battle.id,
+    playerId: activeId,
+    revision: request.revision,
+    choice: choiceFor(request.choices[0]),
+  });
+  await waitForBattleEnd(battle);
+  const result = battle.getResult();
+  assert.ok(result);
+  assert.equal(result.status, 'win');
+  assert.equal(result.winner, winnerId);
+  assert.equal(result.endedBy, 'timeout');
+  assert.equal(battle.getState().lifecycle, 'ended');
+  assert.equal(battle.actionablePendingPlayerIds().length, 0);
+  return battle;
+}
+
+test('player one loses when they fail to make the pending decision', async () => {
+  await timeoutSilentPlayer(PLAYER_ONE, PLAYER_TWO);
+});
+
+test('player two loses when they fail to make the pending decision', async () => {
+  await timeoutSilentPlayer(PLAYER_TWO, PLAYER_ONE);
+});
+
+test('a finished battle is not rewritten as a timeout', async () => {
+  const engine = new BattleEngine();
+  const battle = await createStartedBattle(engine);
+  await playBattle(battle);
+  const result = battle.getResult();
+  assert.ok(result);
+  assert.notEqual(result.endedBy, 'timeout');
+  assert.equal(battle.getState().lifecycle, 'ended');
+  assert.equal(battle.getState().failure, undefined);
+});
+
+test('a live timeout settles once even if observers subscribe twice', async () => {
+  const battle = await timeoutSilentPlayer(PLAYER_ONE, PLAYER_TWO);
+  const first = battle.getResult();
+  const seen: unknown[] = [];
+  battle.subscribe(terminal => seen.push(terminal));
+  battle.subscribe(terminal => seen.push(terminal));
+  await tick();
+  assert.equal(seen.length, 2);
+  assert.deepEqual(battle.finalize(), first);
+  assert.deepEqual(battle.getResult(), first);
 });
 
 test('replays a completed battle and verifies its terminal result', async () => {

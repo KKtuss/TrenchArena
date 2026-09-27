@@ -54,6 +54,8 @@ export interface BattleResult {
   winner?: PlayerId;
   score: readonly number[];
   turns: number;
+  /** Set when the process timeout ended the fight from pending decision state. */
+  endedBy?: 'timeout';
 }
 
 export interface BattleFailure {

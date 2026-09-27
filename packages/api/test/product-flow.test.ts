@@ -79,7 +79,7 @@ function choiceFor(choice: any): any {
 }
 
 test('product flow exposes arena snapshot, casual rooms, battle view, and tournament discovery', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const port = await server.listen(0);
   const clients: [TestClient, TestClient] = [new TestClient(port), new TestClient(port)];
   await Promise.all(clients.map(client => client.open()));
@@ -146,6 +146,11 @@ test('product flow exposes arena snapshot, casual rooms, battle view, and tourna
   ));
   clients[1].send({ type: 'casual.accept', roomId: twoVTwo.room.id });
   await clients[1].waitFor(message => message.type === 'casual.state' && message.room.id === twoVTwo.room.id);
+  clients[0].send({ type: 'casual.ready', roomId: twoVTwo.room.id, ready: true });
+  clients[1].send({ type: 'casual.ready', roomId: twoVTwo.room.id, ready: true });
+  await Promise.all(clients.map(client => client.waitFor(message => (
+    message.type === 'casual.state' && message.room.id === twoVTwo.room.id && message.room.status === 'ready'
+  ))));
   clients[0].send({ type: 'casual.start', roomId: twoVTwo.room.id });
   const unsupported = await clients[0].waitFor<any>(message => message.type === 'error');
   assert.match(unsupported.message, /2v2/);
@@ -155,7 +160,7 @@ test('product flow exposes arena snapshot, casual rooms, battle view, and tourna
 });
 
 test('stale casual choices are rejected and valid choices are accepted', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const port = await server.listen(0);
   const clients: [TestClient, TestClient] = [new TestClient(port), new TestClient(port)];
   await Promise.all(clients.map(client => client.open()));
@@ -172,6 +177,11 @@ test('stale casual choices are rejected and valid choices are accepted', async (
   const created = await clients[0].waitFor<any>(message => message.type === 'casual.created');
   clients[1].send({ type: 'casual.accept', roomId: created.room.id });
   await clients[1].waitFor(message => message.type === 'casual.state');
+  clients[0].send({ type: 'casual.ready', roomId: created.room.id, ready: true });
+  clients[1].send({ type: 'casual.ready', roomId: created.room.id, ready: true });
+  await Promise.all(clients.map(client => client.waitFor(message => (
+    message.type === 'casual.state' && message.room.status === 'ready'
+  ))));
   clients[0].send({ type: 'casual.start', roomId: created.room.id });
   const started = await clients[0].waitFor<any>(message => (
     message.type === 'casual.state' && message.room.status === 'battling'

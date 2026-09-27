@@ -3,11 +3,13 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
+import { TeamStrip } from '@/components/showdown-visuals';
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
+import { shortenAddress } from '@/lib/trainer-profile';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
@@ -37,11 +39,12 @@ export default function ArenaPage() {
   const [saved, setSaved] = useState<SavedTeam | null>(null);
 
   useEffect(() => {
-    void client.request({ type: 'casual.list' }).then(() => refreshSnapshot());
-  }, [client, refreshSnapshot]);
+    if (!connected) return;
+    void client.request({ type: 'casual.list' }).then(() => refreshSnapshot()).catch(() => undefined);
+  }, [client, connected, refreshSnapshot]);
 
   useEffect(() => {
-    setSaved(readSavedTeam(playerId));
+    setSaved(playerId ? readSavedTeam(playerId) : null);
   }, [playerId]);
 
   const rooms = [...(snapshot?.openCasualRooms ?? [])].sort((a, b) => roomRank(a) - roomRank(b));
@@ -80,20 +83,20 @@ export default function ArenaPage() {
             <article key={room.id} className="pa-fight-card">
               <div className="pa-fight-trainers">
                 <div className="pa-fight-fighter">
-                  <TrainerSprite label={room.creatorId} side="left" />
+                  <ProfileTrainerSprite label={room.creatorId} side="left" />
                   <div>
-                    <b>{room.creatorId}</b>
+                    <b>{shortenAddress(room.creatorId)}</b>
                     <small>Challenger</small>
                   </div>
                 </div>
                 <span className="pa-fight-vs">vs</span>
                 <div className="pa-fight-fighter end">
                   <div>
-                    <b>{room.opponentId ?? 'Open slot'}</b>
+                    <b>{room.opponentId ? shortenAddress(room.opponentId) : 'Open slot'}</b>
                     <small>{room.opponentId ? 'Rival' : 'Waiting'}</small>
                   </div>
                   {room.opponentId ? (
-                    <TrainerSprite label={room.opponentId} side="right" />
+                    <ProfileTrainerSprite label={room.opponentId} side="right" />
                   ) : (
                     <span className="pa-fight-open" aria-hidden />
                   )}

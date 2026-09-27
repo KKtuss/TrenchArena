@@ -1,0 +1,61 @@
+# PokeArena Web — production systemd unit (Next.js)
+#
+# Binds only to 127.0.0.1:3001. Caddy is the public listener on :80/:443.
+#
+# Placeholders — replace before enabling (Batch 6I host setup):
+#   User / Group          pokearena
+#   WorkingDirectory      /opt/pokearena/apps/web
+#   ReadWritePaths        /opt/pokearena
+#   EnvironmentFile       /etc/pokearena/web.env
+#   ExecStart node path   /usr/bin/node
+#
+# NEXT_PUBLIC_WS_URL is a BUILD-TIME Next.js variable. Putting it in web.env
+# does not change an already-built apps/web/.next bundle. Rebuild the web app
+# with the production value before starting this unit.
+#
+# Copy deploy/env/web.env.example → /etc/pokearena/web.env (mode 0640).
+
+[Unit]
+Description=PokeArena Next.js web (localhost only)
+Documentation=file:///opt/pokearena/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+# Not After=pokearena-api.service: the UI can start without the API. Avoid
+# circular dependencies. Recommended host order is PostgreSQL → API → web → Caddy.
+
+[Service]
+Type=simple
+User=pokearena
+Group=pokearena
+WorkingDirectory=/opt/pokearena/apps/web
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+EnvironmentFile=/etc/pokearena/web.env
+ExecStartPre=/usr/bin/test -d /opt/pokearena/apps/web/.next
+ExecStart=/usr/bin/node -r ./scripts/patch-fs.js ./node_modules/next/dist/bin/next start -p 3001 -H 127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+KillMode=mixed
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pokearena-web
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pokearena
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

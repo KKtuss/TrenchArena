@@ -11,11 +11,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/server.js",
+    "dev": "node ./scripts/dev-server.js",
     "test": "npm run build && node --test --test-force-exit dist/test/**/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@pokearena/battle-engine": "workspace:*",
+    "@pokearena/db": "workspace:*",
     "@pokearena/tournament": "workspace:*",
     "ws": "8.21.3"
   },

@@ -1,0 +1,53 @@
+# PokeArena production Caddyfile
+#
+# Internet → Caddy :80/:443 (TLS + HTTP→HTTPS via Caddy automatic HTTPS)
+#   /ws      → API  127.0.0.1:3000  (path preserved; WebSocket upgrade)
+#   /health  → API  127.0.0.1:3000  (process liveness, not DB readiness)
+#   *        → Next 127.0.0.1:3001
+#
+# Substitute pokearena.example with the real public hostname before going live.
+# Do not invent a production domain in this repository.
+#
+# Caddy must be the only public-facing listener. Do not expose:
+#   API        :3000
+#   Next.js    :3001
+#   PostgreSQL :5432
+#
+# WebSocket notes:
+#   - Use `handle`, never `handle_path`, so /ws is not stripped (the API
+#     matches pathname === "/ws").
+#   - reverse_proxy forwards Upgrade/Connection; do not buffer or gzip /ws.
+#   - read/write timeouts are unlimited here; battle/session timeouts live
+#     in the API process.
+#   - gzip is applied only to the Next.js handle.
+
+pokearena.example {
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+	}
+
+	handle /ws {
+		reverse_proxy 127.0.0.1:3000 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+			flush_interval -1
+			transport http {
+				versions 1.1
+				compression off
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 10s
+			}
+		}
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		encode gzip
+		reverse_proxy 127.0.0.1:3001
+	}
+}

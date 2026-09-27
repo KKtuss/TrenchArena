@@ -1,0 +1,603 @@
+import type { Pool, PoolClient } from 'pg';
+
+import { mapPgError } from './pg-errors';
+import { pokeFromPg, pokeToPg } from './poke';
+import type {
+  DurableTournament,
+  DurableTournamentMatch,
+  DurableTournamentPlayer,
+  MatchOutcomeInput,
+  RegisterTournamentPlayerInput,
+  TournamentStore,
+} from './tournament-store';
+
+function epoch(value: Date | string | number | null | undefined): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'number') return value;
+  const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(time) ? time : undefined;
+}
+
+function requireEpoch(value: Date | string | number | null | undefined): number {
+  const time = epoch(value);
+  if (time === undefined) throw new Error('Request could not be processed.');
+  return time;
+}
+
+export interface PostgresTournamentStoreOptions {
+  beforeCommit?: () => Promise<void> | void;
+}
+
+/**
+ * PostgreSQL tournament adapter. Registration debits the entry fee and
+ * inserts `tournament_players` in one transaction. Live Showdown state is
+ * not stored.
+ */
+export class PostgresTournamentStore implements TournamentStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly options: PostgresTournamentStoreOptions = {},
+  ) {}
+
+  async saveTournament(tournament: DurableTournament): Promise<void> {
+    await this.transact(async client => {
+      await this.ensureWallet(client, tournament.hostId);
+      for (const player of tournament.players) {
+        await this.ensureWallet(client, player.id);
+      }
+      if (tournament.winner) await this.ensureWallet(client, tournament.winner);
+      await this.upsertTournament(client, tournament);
+      for (const player of tournament.players) {
+        await this.upsertPlayer(client, tournament.id, player);
+      }
+    });
+  }
+
+  async getTournament(id: string): Promise<DurableTournament | undefined> {
+    return this.withMapped(async client => this.loadTournament(client, id));
+  }
+
+  async listTournaments(): Promise<DurableTournament[]> {
+    return this.withMapped(async client => {
+      const result = await client.query(
+        `SELECT * FROM tournaments ORDER BY created_at DESC`,
+      );
+      const listed: DurableTournament[] = [];
+      for (const row of result.rows) {
+        const loaded = await this.loadTournament(client, String(row.id));
+        if (loaded) listed.push(loaded);
+      }
+      return listed;
+    });
+  }
+
+  async saveMatch(match: DurableTournamentMatch): Promise<void> {
+    await this.transact(async client => {
+      await this.lockTournament(client, match.tournamentId);
+      const existing = await this.lockMatch(client, match.id);
+      if (existing && isTerminalMatch(existing.status) && !isTerminalMatch(match.status)) {
+        if (match.battleInstanceId && !existing.battleInstanceId) {
+          await client.query(
+            `UPDATE tournament_matches
+             SET battle_instance_id = $2, updated_at = now()
+             WHERE id = $1`,
+            [match.id, match.battleInstanceId],
+          );
+        }
+        return;
+      }
+      await this.upsertMatch(client, match);
+    });
+  }
+
+  async getMatch(id: string): Promise<DurableTournamentMatch | undefined> {
+    return this.withMapped(async client => {
+      const result = await client.query(`SELECT * FROM tournament_matches WHERE id = $1`, [id]);
+      return result.rows[0] ? this.mapMatch(result.rows[0]) : undefined;
+    });
+  }
+
+  async listMatches(tournamentId: string): Promise<DurableTournamentMatch[]> {
+    return this.withMapped(async client => this.loadMatches(client, tournamentId));
+  }
+
+  async registerPlayer(input: RegisterTournamentPlayerInput): Promise<DurableTournamentPlayer> {
+    return this.transact(async client => {
+      const tournament = await this.lockTournament(client, input.tournamentId);
+      if (!tournament) throw new Error(`Unknown tournament: ${input.tournamentId}`);
+      if (tournament.status !== 'registration') {
+        throw new Error('Tournament registration is closed.');
+      }
+      const existing = await client.query(
+        `SELECT player_id FROM tournament_players
+         WHERE tournament_id = $1 AND player_id = $2
+         FOR UPDATE`,
+        [input.tournamentId, input.playerId],
+      );
+      if (existing.rows[0]) {
+        throw new Error(`Player is already registered: ${input.playerId}`);
+      }
+      const registered = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM tournament_players
+         WHERE tournament_id = $1 AND status = 'registered'`,
+        [input.tournamentId],
+      );
+      if (Number(registered.rows[0]?.count ?? 0) >= tournament.maxPlayers) {
+        throw new Error('Tournament player limit has been reached.');
+      }
+      if (!input.displayName.trim() || !input.team.trim()) {
+        throw new Error('Player display name and team are required.');
+      }
+
+      const order = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM tournament_players WHERE tournament_id = $1`,
+        [input.tournamentId],
+      );
+      const registrationOrder = Number(order.rows[0]?.count ?? 0);
+      await this.ensureWallet(client, input.playerId);
+
+      if (tournament.entryFee > 0) {
+        const holdKey = `tournament:${input.tournamentId}:${input.playerId}`;
+        await this.debit(client, input.playerId, tournament.entryFee);
+        await client.query(
+          `INSERT INTO holds (
+             hold_key, player_id, amount, purpose, status, tournament_id
+           ) VALUES ($1, $2, $3::bigint, 'tournament_entry', 'reserved', $4)`,
+          [holdKey, input.playerId, pokeToPg(tournament.entryFee), input.tournamentId],
+        );
+      }
+
+      const player: DurableTournamentPlayer = {
+        id: input.playerId,
+        displayName: input.displayName,
+        team: input.team,
+        eligible: true,
+        status: 'registered',
+        registrationOrder,
+      };
+      await client.query(
+        `INSERT INTO tournament_players (
+           tournament_id, player_id, display_name, team, eligible, status, registration_order
+         ) VALUES ($1, $2, $3, $4, TRUE, 'registered', $5)`,
+        [input.tournamentId, input.playerId, input.displayName, input.team, registrationOrder],
+      );
+      await client.query(
+        `UPDATE tournaments SET updated_at = now() WHERE id = $1`,
+        [input.tournamentId],
+      );
+      return player;
+    });
+  }
+
+  async saveBracket(tournament: DurableTournament, matches: DurableTournamentMatch[]): Promise<void> {
+    await this.transact(async client => {
+      const current = await this.lockTournament(client, tournament.id);
+      if (!current) throw new Error(`Unknown tournament: ${tournament.id}`);
+      if (current.status === 'in-progress' && tournament.status === 'in-progress') {
+        return;
+      }
+      if (current.status === 'ready' && tournament.status === 'ready') {
+        return;
+      }
+      if (current.status !== 'registration' && !(current.status === 'ready' && tournament.status === 'in-progress')) {
+        throw new Error(`Cannot prepare a tournament in the "${current.status}" state.`);
+      }
+      await this.upsertTournament(client, tournament);
+      for (const match of matches) {
+        await this.upsertMatch(client, match);
+      }
+    });
+  }
+
+  async beginMatchStart(matchId: string): Promise<DurableTournamentMatch> {
+    return this.transact(async client => {
+      const lookup = await client.query<{ tournament_id: string }>(
+        `SELECT tournament_id FROM tournament_matches WHERE id = $1`,
+        [matchId],
+      );
+      if (!lookup.rows[0]) throw new Error(`Unknown tournament match: ${matchId}`);
+      const tournament = await this.lockTournament(client, lookup.rows[0].tournament_id);
+      if (!tournament) throw new Error(`Unknown tournament: ${lookup.rows[0].tournament_id}`);
+      const match = await this.lockMatch(client, matchId);
+      if (!match) throw new Error(`Unknown tournament match: ${matchId}`);
+      if (tournament.status !== 'in-progress') {
+        throw new Error(`Cannot start a tournament in the "${tournament.status}" state.`);
+      }
+      if (match.status !== 'ready' && match.status !== 'tied' && match.status !== 'interrupted') {
+        throw new Error(`Cannot start match ${match.id} in the "${match.status}" state.`);
+      }
+      await client.query(
+        `UPDATE tournament_matches
+         SET status = 'battle-created',
+             winner_id = NULL,
+             result_kind = NULL,
+             result_summary = NULL,
+             completed_at = NULL,
+             battle_instance_id = NULL,
+             started_at = now(),
+             updated_at = now()
+         WHERE id = $1`,
+        [matchId],
+      );
+      const updated = await this.lockMatch(client, matchId);
+      if (!updated) throw new Error(`Unknown tournament match: ${matchId}`);
+      return updated;
+    });
+  }
+
+  async attachBattleInstance(matchId: string, battleInstanceId: string): Promise<DurableTournamentMatch> {
+    return this.transact(async client => {
+      const match = await this.lockMatch(client, matchId);
+      if (!match) throw new Error(`Unknown tournament match: ${matchId}`);
+      await client.query(
+        `UPDATE tournament_matches
+         SET battle_instance_id = $2, updated_at = now()
+         WHERE id = $1`,
+        [matchId, battleInstanceId],
+      );
+      const updated = await this.lockMatch(client, matchId);
+      if (!updated) throw new Error(`Unknown tournament match: ${matchId}`);
+      return updated;
+    });
+  }
+
+  async markMatchActive(matchId: string): Promise<DurableTournamentMatch> {
+    return this.transact(async client => {
+      const match = await this.lockMatch(client, matchId);
+      if (!match) throw new Error(`Unknown tournament match: ${matchId}`);
+      await client.query(
+        `UPDATE tournament_matches
+         SET status = 'active', updated_at = now()
+         WHERE id = $1 AND status = 'battle-created'`,
+        [matchId],
+      );
+      const updated = await this.lockMatch(client, matchId);
+      if (!updated) throw new Error(`Unknown tournament match: ${matchId}`);
+      return updated;
+    });
+  }
+
+  async interruptMatch(matchId: string): Promise<DurableTournamentMatch> {
+    return this.transact(async client => {
+      const lookup = await client.query<{ tournament_id: string }>(
+        `SELECT tournament_id FROM tournament_matches WHERE id = $1`,
+        [matchId],
+      );
+      if (!lookup.rows[0]) throw new Error(`Unknown tournament match: ${matchId}`);
+      await this.lockTournament(client, lookup.rows[0].tournament_id);
+      const match = await this.lockMatch(client, matchId);
+      if (!match) throw new Error(`Unknown tournament match: ${matchId}`);
+      if (match.status !== 'battle-created' && match.status !== 'active') {
+        return match;
+      }
+      await client.query(
+        `UPDATE tournament_matches
+         SET status = 'interrupted',
+             winner_id = NULL,
+             result_kind = NULL,
+             result_summary = NULL,
+             battle_instance_id = NULL,
+             completed_at = COALESCE(completed_at, now()),
+             updated_at = now()
+         WHERE id = $1 AND status IN ('battle-created', 'active')`,
+        [matchId],
+      );
+      const updated = await this.lockMatch(client, matchId);
+      if (!updated) throw new Error(`Unknown tournament match: ${matchId}`);
+      return updated;
+    });
+  }
+
+  async commitMatchOutcome(input: MatchOutcomeInput): Promise<DurableTournamentMatch> {
+    return this.transact(async client => {
+      const tournamentId = input.match.tournamentId;
+      await this.lockTournament(client, tournamentId);
+      const current = await this.lockMatch(client, input.match.id);
+      if (!current) throw new Error(`Unknown tournament match: ${input.match.id}`);
+      if (isTerminalMatch(current.status)) {
+        if (sameTerminal(current, input.match)) return current;
+        throw new Error('A completed match cannot receive a different result.');
+      }
+      if (input.nextMatch) await this.lockMatch(client, input.nextMatch.id);
+      await this.upsertMatch(client, input.match);
+      if (input.nextMatch) await this.upsertMatch(client, input.nextMatch);
+      if (input.tournament) {
+        await this.upsertTournament(client, input.tournament);
+      }
+      const stored = await this.lockMatch(client, input.match.id);
+      if (!stored) throw new Error(`Unknown tournament match: ${input.match.id}`);
+      return stored;
+    });
+  }
+
+  private async loadTournament(client: PoolClient, id: string): Promise<DurableTournament | undefined> {
+    const result = await client.query({
+      text: `SELECT * FROM tournaments WHERE id = $1`,
+      values: [id],
+    });
+    const row = result.rows[0];
+    if (!row) return undefined;
+    const players = await client.query(
+      `SELECT * FROM tournament_players
+       WHERE tournament_id = $1
+       ORDER BY registration_order`,
+      [id],
+    );
+    const matches = await this.loadMatches(client, id);
+    return this.mapTournament(row, players.rows, matches);
+  }
+
+  private async loadMatches(client: PoolClient, tournamentId: string): Promise<DurableTournamentMatch[]> {
+    const result = await client.query(
+      `SELECT * FROM tournament_matches
+       WHERE tournament_id = $1
+       ORDER BY round, bracket_position`,
+      [tournamentId],
+    );
+    return result.rows.map(row => this.mapMatch(row));
+  }
+
+  private async upsertTournament(client: PoolClient, tournament: DurableTournament): Promise<void> {
+    await client.query(
+      `INSERT INTO tournaments (
+         id, title, format, max_players, bracket_seed, match_timeout_ms, status,
+         host_id, entry_fee, winner_id, created_at, updated_at, started_at, completed_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, $10, $11, $12, $13, $14
+       )
+       ON CONFLICT (id) DO UPDATE SET
+         title = EXCLUDED.title,
+         status = EXCLUDED.status,
+         winner_id = EXCLUDED.winner_id,
+         updated_at = EXCLUDED.updated_at,
+         started_at = EXCLUDED.started_at,
+         completed_at = EXCLUDED.completed_at`,
+      [
+        tournament.id,
+        tournament.title,
+        tournament.format,
+        tournament.maxPlayers,
+        tournament.bracketSeed,
+        tournament.matchTimeoutMs,
+        tournament.status,
+        tournament.hostId,
+        pokeToPg(tournament.entryFee),
+        tournament.winner ?? null,
+        new Date(tournament.createdAt),
+        new Date(tournament.updatedAt),
+        tournament.startedAt === undefined ? null : new Date(tournament.startedAt),
+        tournament.completedAt === undefined ? null : new Date(tournament.completedAt),
+      ],
+    );
+  }
+
+  private async upsertPlayer(
+    client: PoolClient,
+    tournamentId: string,
+    player: DurableTournamentPlayer,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO tournament_players (
+         tournament_id, player_id, display_name, team, eligible, status, registration_order
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (tournament_id, player_id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         team = EXCLUDED.team,
+         eligible = EXCLUDED.eligible,
+         status = EXCLUDED.status`,
+      [
+        tournamentId,
+        player.id,
+        player.displayName,
+        player.team,
+        player.eligible,
+        player.status,
+        player.registrationOrder,
+      ],
+    );
+  }
+
+  private async upsertMatch(client: PoolClient, match: DurableTournamentMatch): Promise<void> {
+    for (const playerId of [match.player1, match.player2, match.winner]) {
+      if (playerId) await this.ensureWallet(client, playerId);
+    }
+    await client.query(
+      `INSERT INTO tournament_matches (
+         id, tournament_id, round, bracket_position, player1_id, player2_id, status,
+         battle_instance_id, winner_id, result_kind, result_summary,
+         created_at, updated_at, started_at, completed_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+       )
+       ON CONFLICT (id) DO UPDATE SET
+         player1_id = EXCLUDED.player1_id,
+         player2_id = EXCLUDED.player2_id,
+         status = EXCLUDED.status,
+         battle_instance_id = EXCLUDED.battle_instance_id,
+         winner_id = EXCLUDED.winner_id,
+         result_kind = EXCLUDED.result_kind,
+         result_summary = EXCLUDED.result_summary,
+         updated_at = EXCLUDED.updated_at,
+         started_at = EXCLUDED.started_at,
+         completed_at = EXCLUDED.completed_at`,
+      [
+        match.id,
+        match.tournamentId,
+        match.round,
+        match.bracketPosition,
+        match.player1 ?? null,
+        match.player2 ?? null,
+        match.status,
+        match.battleInstanceId ?? null,
+        match.winner ?? null,
+        resultKind(match.result),
+        match.result === undefined ? null : match.result,
+        new Date(match.createdAt),
+        new Date(match.updatedAt),
+        match.startedAt === undefined ? null : new Date(match.startedAt),
+        match.completedAt === undefined ? null : new Date(match.completedAt),
+      ],
+    );
+  }
+
+  private async lockTournament(client: PoolClient, id: string): Promise<DurableTournament | undefined> {
+    const result = await client.query(`SELECT * FROM tournaments WHERE id = $1 FOR UPDATE`, [id]);
+    if (!result.rows[0]) return undefined;
+    const players = await client.query(
+      `SELECT * FROM tournament_players
+       WHERE tournament_id = $1
+       ORDER BY registration_order`,
+      [id],
+    );
+    const matches = await this.loadMatches(client, id);
+    return this.mapTournament(result.rows[0], players.rows, matches);
+  }
+
+  private async lockMatch(client: PoolClient, id: string): Promise<DurableTournamentMatch | undefined> {
+    const result = await client.query(
+      `SELECT * FROM tournament_matches WHERE id = $1 FOR UPDATE`,
+      [id],
+    );
+    return result.rows[0] ? this.mapMatch(result.rows[0]) : undefined;
+  }
+
+  private async debit(client: PoolClient, playerId: string, amount: number): Promise<void> {
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new Error('Amount must be a positive integer POKE value.');
+    }
+    const updated = await client.query(
+      `UPDATE wallets
+       SET balance = balance - $2::bigint, updated_at = now()
+       WHERE player_id = $1 AND balance >= $2::bigint`,
+      [playerId, pokeToPg(amount)],
+    );
+    if ((updated.rowCount ?? 0) === 0) {
+      throw new Error('Collateral exceeds development POKE balance.');
+    }
+  }
+
+  private mapTournament(
+    row: Record<string, unknown>,
+    playerRows: Record<string, unknown>[],
+    matches: DurableTournamentMatch[],
+  ): DurableTournament {
+    return {
+      id: String(row.id),
+      title: String(row.title),
+      format: String(row.format),
+      maxPlayers: Number(row.max_players) as 4 | 8 | 16 | 32,
+      bracketSeed: String(row.bracket_seed),
+      matchTimeoutMs: Number(row.match_timeout_ms),
+      status: String(row.status),
+      hostId: String(row.host_id),
+      entryFee: pokeFromPg(row.entry_fee),
+      players: playerRows.map(player => ({
+        id: String(player.player_id),
+        displayName: String(player.display_name),
+        team: String(player.team),
+        eligible: true,
+        status: player.status as DurableTournamentPlayer['status'],
+        registrationOrder: Number(player.registration_order),
+      })),
+      matchIds: matches.map(match => match.id),
+      ...(row.winner_id ? { winner: String(row.winner_id) } : {}),
+      createdAt: requireEpoch(row.created_at as Date),
+      updatedAt: requireEpoch(row.updated_at as Date),
+      ...(epoch(row.started_at as Date | null) === undefined
+        ? {}
+        : { startedAt: epoch(row.started_at as Date) }),
+      ...(epoch(row.completed_at as Date | null) === undefined
+        ? {}
+        : { completedAt: epoch(row.completed_at as Date) }),
+    };
+  }
+
+  private mapMatch(row: Record<string, unknown>): DurableTournamentMatch {
+    return {
+      id: String(row.id),
+      tournamentId: String(row.tournament_id),
+      round: Number(row.round),
+      bracketPosition: Number(row.bracket_position),
+      ...(row.player1_id ? { player1: String(row.player1_id) } : {}),
+      ...(row.player2_id ? { player2: String(row.player2_id) } : {}),
+      status: String(row.status),
+      ...(row.battle_instance_id ? { battleInstanceId: String(row.battle_instance_id) } : {}),
+      ...(row.winner_id ? { winner: String(row.winner_id) } : {}),
+      ...(row.result_summary ? { result: parseResult(row.result_summary) } : {}),
+      createdAt: requireEpoch(row.created_at as Date),
+      updatedAt: requireEpoch(row.updated_at as Date),
+      ...(epoch(row.started_at as Date | null) === undefined
+        ? {}
+        : { startedAt: epoch(row.started_at as Date) }),
+      ...(epoch(row.completed_at as Date | null) === undefined
+        ? {}
+        : { completedAt: epoch(row.completed_at as Date) }),
+    };
+  }
+
+  private async ensureWallet(client: PoolClient, playerId: string): Promise<void> {
+    await client.query(
+      `INSERT INTO wallets (player_id, balance) VALUES ($1, 0)
+       ON CONFLICT (player_id) DO NOTHING`,
+      [playerId],
+    );
+  }
+
+  private async transact<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      if (this.options.beforeCommit) await this.options.beforeCommit();
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // The connection is released even if rollback fails.
+      }
+      throw mapPgError(error);
+    } finally {
+      client.release();
+    }
+  }
+
+  private async withMapped<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      return await work(client);
+    } catch (error) {
+      throw mapPgError(error);
+    } finally {
+      client.release();
+    }
+  }
+}
+
+function resultKind(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || !('kind' in result)) return null;
+  const kind = (result as { kind: unknown }).kind;
+  return kind === 'battle' || kind === 'forfeit' ? kind : null;
+}
+
+function parseResult(value: unknown): unknown {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function isTerminalMatch(status: string): boolean {
+  return status === 'completed' || status === 'forfeited' || status === 'tied';
+}
+
+function sameTerminal(left: DurableTournamentMatch, right: DurableTournamentMatch): boolean {
+  return left.status === right.status
+    && left.winner === right.winner
+    && JSON.stringify(left.result) === JSON.stringify(right.result);
+}

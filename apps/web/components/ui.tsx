@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { Badge, Panel } from '@/components/shell';
 import { formatPoke } from '@/lib/api-client';
 import type {
@@ -10,6 +11,7 @@ import type {
   TournamentEconomicsPreview,
   TournamentSummary,
 } from '@/lib/protocol';
+import { roundLabel, shortenPlayer } from '@/lib/tournament-schedule';
 
 function formatLabel(format: string, battleSize?: string): string {
   const pretty = format === 'gen9ou' ? 'Gen 9 OU' : format.toUpperCase();
@@ -20,11 +22,12 @@ function statusTone(status: string): 'default' | 'live' | 'success' | 'danger' {
   if (status === 'battling' || status === 'active' || status === 'ready' || status === 'in-progress' || status === 'registration') return 'live';
   if (status === 'completed') return 'success';
   if (status === 'cancelled' || status === 'forfeited') return 'danger';
+  if (status === 'tied') return 'default';
   return 'default';
 }
 
 function isSettledEvent(status: string): boolean {
-  return status === 'completed' || status === 'cancelled' || status === 'forfeited';
+  return status === 'completed' || status === 'cancelled' || status === 'forfeited' || status === 'tied';
 }
 
 function eventFieldLabel(tournament: TournamentSummary): { label: string; value: string } {
@@ -473,6 +476,7 @@ export function TrainerVersus({
 
 export function BracketView({
   matches,
+  maxPlayers = 32,
 }: {
   matches: Array<{
     id: string;
@@ -483,42 +487,87 @@ export function BracketView({
     status: string;
     winner?: string;
   }>;
+  maxPlayers?: number;
 }) {
   const rounds = [...new Set(matches.map(match => match.round))].sort((a, b) => a - b);
   return (
-    <div className="bracket">
-      {rounds.map(round => (
-        <div key={round} className="stack">
-          <div className="micro-label">Round {round}</div>
-          <div className="grid-2">
-            {matches
-              .filter(match => match.round === round)
-              .map(match => (
-              <div
-                  key={match.id}
-                  className={`bracket-match ${match.status === 'active' || match.status === 'ready' ? 'active' : ''}`}
-                >
-                  <div className="matchup-rail">
-                    <Badge tone={statusTone(match.status)}>{match.status}</Badge>
-                    {(match.status === 'active' || match.status === 'ready' || match.status === 'completed') ? (
-                      <Link className="btn" href={`/battle/${match.id}`}>Enter</Link>
-                    ) : null}
-                  </div>
-                  <div className="matchup-axis bracket-axis">
-                    <div className="matchup-trainer">
-                      <strong>{match.player1 ?? 'TBD'}</strong>
-                    </div>
-                    <span className="matchup-vs" aria-hidden>VS</span>
-                    <div className="matchup-trainer matchup-trainer-foe">
-                      <strong>{match.player2 ?? 'TBD'}</strong>
-                    </div>
-                  </div>
-                  {match.winner ? <div className="muted" style={{ marginTop: 8 }}>Winner: {match.winner}</div> : null}
-                </div>
-              ))}
-          </div>
-        </div>
-      ))}
+    <div className="pa-bracket">
+      <div className="pa-bracket-scroll">
+        {rounds.map(round => (
+          <section key={round} className="pa-bracket-round">
+            <header>
+              <h3>{roundLabel(round, maxPlayers)}</h3>
+              <span>{matches.filter(match => match.round === round).length} matches</span>
+            </header>
+            <div className="pa-bracket-matches">
+              {matches
+                .filter(match => match.round === round)
+                .sort((a, b) => a.bracketPosition - b.bracketPosition)
+                .map(match => {
+                  const live = match.status === 'active' || match.status === 'battle-created';
+                  const ready = match.status === 'ready';
+                  const done = match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied';
+                  return (
+                    <article
+                      key={match.id}
+                      className={`pa-bracket-match${live ? ' is-live' : ''}${done ? ' is-done' : ''}`}
+                    >
+                      <div className="pa-bracket-match-head">
+                        <span className={`pa-bracket-pill status-${match.status}`}>
+                          {live ? 'LIVE' : match.status.toUpperCase()}
+                        </span>
+                        {live || ready ? (
+                          <Link className="pa-btn pa-btn-primary pa-btn-sm" href={`/battle/${match.id}`}>
+                            {live ? 'Watch live' : 'Enter'}
+                          </Link>
+                        ) : done ? (
+                          <Link className="pa-btn pa-btn-surface pa-btn-sm" href={`/battle/${match.id}`}>
+                            Replay
+                          </Link>
+                        ) : null}
+                      </div>
+                      <div className="pa-bracket-fighters">
+                        <BracketFighter
+                          id={match.player1}
+                          winner={match.winner}
+                          side="left"
+                        />
+                        <span className="pa-bracket-vs" aria-hidden>VS</span>
+                        <BracketFighter
+                          id={match.player2}
+                          winner={match.winner}
+                          side="right"
+                        />
+                      </div>
+                    </article>
+                  );
+                })}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BracketFighter({
+  id,
+  winner,
+  side,
+}: {
+  id?: string;
+  winner?: string;
+  side: 'left' | 'right';
+}) {
+  const lost = Boolean(winner && id && winner !== id);
+  const won = Boolean(winner && id && winner === id);
+  return (
+    <div className={`pa-bracket-fighter ${side}${lost ? ' is-lost' : ''}${won ? ' is-won' : ''}`}>
+      <ProfileTrainerSprite label={id ?? 'TBD'} side={side} />
+      <div>
+        <b>{shortenPlayer(id)}</b>
+        <small>{won ? 'Winner' : lost ? 'Eliminated' : id ? 'Competitor' : 'Open slot'}</small>
+      </div>
     </div>
   );
 }

@@ -11,6 +11,7 @@ const FULL_SPRITES = new Set([
   'gholdengo',
   'greattusk',
   'heatran',
+  'ironvaliant',
   'kingambit',
   'meowscarada',
   'rotom-wash',

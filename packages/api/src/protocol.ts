@@ -10,6 +10,14 @@ import type {
 
 export type ClientMessage =
   | { type: 'identify'; requestId: string; playerId: string }
+  | { type: 'auth.challenge'; requestId: string; address: string }
+  | {
+      type: 'auth.verify';
+      requestId: string;
+      address: string;
+      signature: string;
+      nonce: string;
+    }
   | { type: 'arena.snapshot'; requestId: string }
   | {
       type: 'casual.create';
@@ -27,7 +35,7 @@ export type ClientMessage =
   | { type: 'casual.forfeit'; requestId: string; roomId: string }
   | { type: 'casual.subscribe'; requestId: string; roomId: string }
   | { type: 'casual.preview'; requestId: string; collateral: number }
-  | { type: 'tournament.create'; requestId: string; title?: string; maxPlayers?: 4 | 8 | 16; entryFee?: number }
+  | { type: 'tournament.create'; requestId: string; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number }
   | { type: 'tournament.list'; requestId: string }
   | { type: 'tournament.join'; requestId: string; tournamentId: string; team?: string }
   | { type: 'tournament.start'; requestId: string; tournamentId: string }
@@ -74,6 +82,14 @@ export interface ArenaSnapshot {
 
 export type ServerMessage = { requestId?: string } & (
   | { type: 'ready'; playerId: string }
+  | {
+      type: 'auth.challenge';
+      address: string;
+      nonce: string;
+      message: string;
+      expiresAt: number;
+    }
+  | { type: 'auth.verified'; playerId: string }
   | { type: 'error'; code: string; message: string }
   | { type: 'pong' }
   | { type: 'arena.snapshot'; snapshot: ArenaSnapshot }
@@ -105,7 +121,12 @@ export type ServerMessage = { requestId?: string } & (
   | { type: 'match.choice.accepted'; matchId: string }
   | { type: 'team.starter'; name: string; paste: string }
   | { type: 'team.inspect'; inspection: import('@pokearena/battle-engine').TeamInspection }
-  | { type: 'team.search'; results: string[] }
+  | {
+      type: 'team.search';
+      results: string[];
+      hits?: import('@pokearena/battle-engine').TeamSearchHit[];
+      scoped?: boolean;
+    }
 );
 
 export function parseClientMessage(raw: string): ClientMessage {
@@ -124,6 +145,24 @@ export function parseClientMessage(raw: string): ClientMessage {
     case 'identify':
       requireString(value, 'playerId');
       return { type: 'identify', requestId: value.requestId as string, playerId: value.playerId as string };
+    case 'auth.challenge':
+      requireString(value, 'address');
+      return {
+        type: 'auth.challenge',
+        requestId: value.requestId as string,
+        address: value.address as string,
+      };
+    case 'auth.verify':
+      requireString(value, 'address');
+      requireString(value, 'signature');
+      requireString(value, 'nonce');
+      return {
+        type: 'auth.verify',
+        requestId: value.requestId as string,
+        address: value.address as string,
+        signature: value.signature as string,
+        nonce: value.nonce as string,
+      };
     case 'arena.snapshot':
     case 'casual.list':
     case 'tournament.list':
@@ -214,9 +253,10 @@ export function parseClientMessage(raw: string): ClientMessage {
         value.maxPlayers !== undefined &&
         value.maxPlayers !== 4 &&
         value.maxPlayers !== 8 &&
-        value.maxPlayers !== 16
+        value.maxPlayers !== 16 &&
+        value.maxPlayers !== 32
       ) {
-        throw new Error('maxPlayers must be 4, 8, or 16.');
+        throw new Error('maxPlayers must be 4, 8, 16, or 32.');
       }
       if (value.entryFee !== undefined && !Number.isInteger(value.entryFee)) {
         throw new Error('entryFee must be an integer.');
@@ -225,7 +265,7 @@ export function parseClientMessage(raw: string): ClientMessage {
         type: 'tournament.create',
         requestId: value.requestId as string,
         ...(value.title !== undefined ? { title: value.title as string } : {}),
-        ...(value.maxPlayers !== undefined ? { maxPlayers: value.maxPlayers as 4 | 8 | 16 } : {}),
+        ...(value.maxPlayers !== undefined ? { maxPlayers: value.maxPlayers as 4 | 8 | 16 | 32 } : {}),
         ...(value.entryFee !== undefined ? { entryFee: value.entryFee as number } : {}),
       };
     case 'tournament.start':

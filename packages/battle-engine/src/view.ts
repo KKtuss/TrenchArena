@@ -85,6 +85,17 @@ export class BattleViewModel {
     }
   }
 
+  remainingPokemon(): readonly [number, number] {
+    return [
+      this.sides[0].party.filter(mon => !mon.fainted).length,
+      this.sides[1].party.filter(mon => !mon.fainted).length,
+    ];
+  }
+
+  currentTurn(): number {
+    return this.turn;
+  }
+
   snapshot(
     battleId: string,
     lifecycle: BattleLifecycle,

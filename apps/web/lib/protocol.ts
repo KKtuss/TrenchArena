@@ -1,4 +1,5 @@
 export type DemoPlayerId = 'demo-player-1' | 'demo-player-2';
+export type PlayerId = string;
 
 export type PlayerChoice =
   | { type: 'team-preview' }
@@ -7,7 +8,7 @@ export type PlayerChoice =
   | { type: 'pass' };
 
 export interface WalletSnapshot {
-  playerId: DemoPlayerId;
+  playerId: PlayerId;
   symbol: 'POKE';
   balance: number;
   eligible: boolean;
@@ -40,7 +41,7 @@ export interface MockPayoutResult {
   winnerId?: string;
   amount: number;
   protocolFee?: number;
-  reason: 'casual-win' | 'casual-tie' | 'tournament-win' | 'refund';
+  reason: 'casual-win' | 'casual-forfeit' | 'casual-tie' | 'tournament-win' | 'refund';
 }
 
 export interface CasualRoom {
@@ -99,6 +100,7 @@ export interface SideView {
   playerId: string;
   name: string;
   active?: PokemonView;
+  party?: PokemonView[];
 }
 
 export interface AvailableChoice {
@@ -146,8 +148,28 @@ export interface MatchPayload {
   bracketPosition?: number;
 }
 
+export interface TeamSearchHit {
+  name: string;
+  description?: string;
+  type?: string;
+  types?: string[];
+  category?: string;
+  power?: number;
+  accuracy?: number | null;
+  pp?: number;
+}
+
 export type ServerMessage =
   | { type: 'ready'; playerId: string; requestId?: string }
+  | {
+      type: 'auth.challenge';
+      address: string;
+      nonce: string;
+      message: string;
+      expiresAt: number;
+      requestId?: string;
+    }
+  | { type: 'auth.verified'; playerId: string; requestId?: string }
   | { type: 'error'; code: string; message: string; requestId?: string }
   | { type: 'pong'; requestId?: string }
   | { type: 'arena.snapshot'; snapshot: ArenaSnapshot; requestId?: string }
@@ -172,10 +194,18 @@ export type ServerMessage =
   | { type: 'match.choice.accepted'; matchId: string; requestId?: string }
   | { type: 'team.starter'; name: string; paste: string; requestId?: string }
   | { type: 'team.inspect'; inspection: import('./team').TeamInspection; requestId?: string }
-  | { type: 'team.search'; results: string[]; requestId?: string };
+  | {
+      type: 'team.search';
+      results: string[];
+      hits?: TeamSearchHit[];
+      scoped?: boolean;
+      requestId?: string;
+    };
 
 export type ClientMessage =
   | { type: 'identify'; playerId: string }
+  | { type: 'auth.challenge'; address: string }
+  | { type: 'auth.verify'; address: string; signature: string; nonce: string }
   | { type: 'arena.snapshot' }
   | {
       type: 'casual.create';
@@ -192,7 +222,7 @@ export type ClientMessage =
   | { type: 'casual.forfeit'; roomId: string }
   | { type: 'casual.subscribe'; roomId: string }
   | { type: 'casual.preview'; collateral: number }
-  | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16; entryFee?: number }
+  | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number }
   | { type: 'tournament.list' }
   | { type: 'tournament.join'; tournamentId: string; team?: string }
   | { type: 'tournament.start'; tournamentId: string }

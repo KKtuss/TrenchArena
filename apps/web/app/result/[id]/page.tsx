@@ -3,10 +3,13 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { ErrorToast } from '@/components/error-toast';
 
-import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
+import { TeamStrip } from '@/components/showdown-visuals';
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
+import { shortenAddress } from '@/lib/trainer-profile';
 
 export default function ResultPage() {
   const params = useParams<{ id: string }>();
@@ -29,7 +32,7 @@ export default function ResultPage() {
     }).catch(() => {
       void client.request({ type: 'tournament.subscribe', tournamentId: id }).then(response => {
         if (response.type === 'tournament.state') setTournament(response.tournament);
-      }).catch(err => setError(err instanceof Error ? err.message : String(err)));
+      }).catch(() => undefined);
     });
   }, [client, id, snapshot]);
 
@@ -63,10 +66,10 @@ export default function ResultPage() {
           <h1>{title}</h1>
           <p className="pa-lead">Mock POKE settlement. Not an on-chain payout.</p>
         </div>
-        <span className="pa-chip amber">{(payout?.reason ?? 'settled').replace(/-/g, ' ').toUpperCase()}</span>
+        <span className="pa-chip amber">{payoutReasonLabel(payout?.reason).toUpperCase()}</span>
       </header>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <section className={`pa-result-card${winner ? ' tone-decided' : ''}`}>
         {sides ? (
@@ -96,7 +99,7 @@ export default function ResultPage() {
         {payout ? (
           <div className="pa-econ-rows pa-result-ledger">
             <div><span>Format</span><strong>{format}</strong></div>
-            <div><span>Reason</span><strong>{payout.reason}</strong></div>
+            <div><span>Reason</span><strong>{payoutReasonLabel(payout.reason)}</strong></div>
             {payout.protocolFee !== undefined ? (
               <div className="fee"><span>Protocol fee · 2% at match start</span><strong>{formatPoke(payout.protocolFee)}</strong></div>
             ) : null}
@@ -113,6 +116,23 @@ export default function ResultPage() {
       </div>
     </div>
   );
+}
+
+function payoutReasonLabel(reason?: string): string {
+  switch (reason) {
+    case 'casual-forfeit':
+      return 'Forfeit';
+    case 'casual-win':
+      return 'Casual win';
+    case 'casual-tie':
+      return 'Casual tie';
+    case 'tournament-win':
+      return 'Tournament win';
+    case 'refund':
+      return 'Refund';
+    default:
+      return 'Settled';
+  }
 }
 
 function outcomeFor(playerId: string, winner?: string): 'win' | 'loss' | 'tie' {
@@ -180,11 +200,11 @@ function ResultSide({
   return (
     <div className={`pa-result-side outcome-${outcome ?? 'open'}${end ? ' end' : ''}`}>
       <div className="pa-result-sprite">
-        <TrainerSprite label={playerId} side={end ? 'right' : 'left'} />
+        <ProfileTrainerSprite label={playerId} side={end ? 'right' : 'left'} />
         <span className="pa-result-sprite-foot">{footer}</span>
       </div>
       <div className="pa-result-side-meta">
-        <b>{playerId}</b>
+        <b>{shortenAddress(playerId)}</b>
         <small>{role}</small>
         {outcome === 'win' && payout !== undefined ? (
           <em className="pa-result-side-take">+{formatPoke(payout)}</em>

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { test } from 'node:test';
 
 import { WebSocket } from 'ws';
 
+import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from '../src/demo-teams';
 import { ApiServer } from '../src/server';
+import { encodeBase58 } from '../src/wallet-auth';
 
 class TestClient {
   readonly socket: WebSocket;
@@ -81,6 +83,37 @@ class TestClient {
   }
 }
 
+function createSolanaKeypair() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ type: 'spki', format: 'der' });
+  const rawPublic = Buffer.from(spki.subarray(spki.length - 32));
+  return { address: encodeBase58(rawPublic), privateKey };
+}
+
+function signMessage(
+  privateKey: ReturnType<typeof generateKeyPairSync>['privateKey'],
+  message: string,
+): string {
+  return encodeBase58(sign(null, Buffer.from(message, 'utf8'), privateKey as any));
+}
+
+async function authenticateWallet(
+  client: TestClient,
+  keypair: ReturnType<typeof createSolanaKeypair>,
+): Promise<void> {
+  client.send({ type: 'auth.challenge', address: keypair.address });
+  const challenge = await client.waitFor<any>(message => (
+    message.type === 'auth.challenge' && message.address === keypair.address
+  ));
+  client.send({
+    type: 'auth.verify',
+    address: keypair.address,
+    signature: signMessage(keypair.privateKey, challenge.message),
+    nonce: challenge.nonce,
+  });
+  await client.waitFor(message => message.type === 'auth.verified' && message.playerId === keypair.address);
+}
+
 function choiceFor(choice: any): any {
   if (choice.type === 'move') return { type: 'move', slot: choice.slot };
   if (choice.type === 'switch') return { type: 'switch', slot: choice.slot };
@@ -150,7 +183,7 @@ async function createTwoPlayerMatch(server: ApiServer): Promise<{
 }
 
 test('two WebSocket clients play a complete tournament match with isolated events', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const { clients, port, matchId, battleInstanceId, snapshots } = await createTwoPlayerMatch(server);
   let [stateA, stateB] = snapshots;
 
@@ -210,7 +243,7 @@ test('two WebSocket clients play a complete tournament match with isolated event
 });
 
 test('rejects stale, raw, and unauthorized WebSocket actions', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const { clients, matchId, battleInstanceId, snapshots } = await createTwoPlayerMatch(server);
   const snapshot = snapshots[0];
 
@@ -269,7 +302,7 @@ test('rejects stale, raw, and unauthorized WebSocket actions', async () => {
 });
 
 test('rejects duplicate choice submissions and reconnects before the first choice', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const { clients, port, matchId, battleInstanceId, snapshots } = await createTwoPlayerMatch(server);
   const snapshot = snapshots[0];
   const choiceMessage = {
@@ -304,7 +337,7 @@ test('rejects duplicate choice submissions and reconnects before the first choic
 });
 
 test('keeps two simultaneous matches isolated', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const port = await server.listen(0);
   const clients = await Promise.all([
     new TestClient(port),
@@ -313,20 +346,15 @@ test('keeps two simultaneous matches isolated', async () => {
     new TestClient(port),
   ]);
   await Promise.all(clients.map(client => client.open()));
-  clients.forEach((client, index) => {
-    client.send({
-      type: 'identify',
-      playerId: index % 2 === 0 ? 'demo-player-1' : 'demo-player-2',
-    });
-  });
-  await Promise.all(clients.map(client => client.waitFor(message => message.type === 'ready')));
+  const wallets = [createSolanaKeypair(), createSolanaKeypair(), createSolanaKeypair(), createSolanaKeypair()];
+  await Promise.all(clients.map((client, index) => authenticateWallet(client, wallets[index]!)));
 
-  const setupPair = async (first: TestClient, second: TestClient, title: string) => {
+  const setupPair = async (first: TestClient, second: TestClient, title: string, teamA: string, teamB: string) => {
     first.send({ type: 'tournament.create', title, maxPlayers: 4 });
     const created = await first.waitFor<any>(message => message.type === 'tournament.created');
     const tournamentId = created.tournament.id;
-    first.send({ type: 'tournament.join', tournamentId });
-    second.send({ type: 'tournament.join', tournamentId });
+    first.send({ type: 'tournament.join', tournamentId, team: teamA });
+    second.send({ type: 'tournament.join', tournamentId, team: teamB });
     await Promise.all([
       first.waitFor(message => message.type === 'tournament.state'),
       second.waitFor(message => message.type === 'tournament.state'),
@@ -345,8 +373,8 @@ test('keeps two simultaneous matches isolated', async () => {
     return match.id;
   };
 
-  const matchOne = await setupPair(clients[0], clients[1], 'Simultaneous Cup One');
-  const matchTwo = await setupPair(clients[2], clients[3], 'Simultaneous Cup Two');
+  const matchOne = await setupPair(clients[0], clients[1], 'Simultaneous Cup One', DEMO_TEAM_ONE, DEMO_TEAM_TWO);
+  const matchTwo = await setupPair(clients[2], clients[3], 'Simultaneous Cup Two', DEMO_TEAM_ONE, DEMO_TEAM_TWO);
   assert.notEqual(matchOne, matchTwo);
   assert.equal(clients[0].hasMessage(message => message.match?.id === matchTwo), false);
   assert.equal(clients[2].hasMessage(message => message.match?.id === matchOne), false);
@@ -356,7 +384,7 @@ test('keeps two simultaneous matches isolated', async () => {
 });
 
 test('inspects a Gen 9 OU paste and searches the dex', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ allowDemoAuth: true });
   const port = await server.listen(0);
   const client = new TestClient(port);
   await client.open();

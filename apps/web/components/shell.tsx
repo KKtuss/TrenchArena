@@ -4,12 +4,13 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
 
+import { ErrorToast } from '@/components/error-toast';
+import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
-import type { DemoPlayerId } from '@/lib/protocol';
 
 export function ArenaShell({ children }: { children: ReactNode }) {
-  const { playerId, setPlayerId, connectionState, snapshot, error, clearError, connected } = useArena();
+  const { connectionState, snapshot, error, clearError, connected } = useArena();
   const pathname = usePathname();
   const navItems = [
     { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
@@ -56,35 +57,15 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                 aria-label={connected ? `Connection ${connectionState}` : 'offline'}
               />
             </span>
-            <label className="trainer-control" title="Trainer profile (history coming soon)">
-              <span className="trainer-avatar" aria-hidden>👤</span>
-              <span className="trainer-control-copy">
-                <small>Profile</small>
-                <select
-                  aria-label="Trainer identity"
-                  value={playerId}
-                  onChange={event => setPlayerId(event.target.value as DemoPlayerId)}
-                >
-                  <option value="demo-player-1">demo-player-1</option>
-                  <option value="demo-player-2">demo-player-2</option>
-                </select>
-              </span>
-            </label>
+            <TrainerProfileControl />
           </div>
         </div>
       </header>
       <main className={isHome ? 'is-home' : undefined}>
         <LiveFightBanner />
-        {error ? (
-          <div className="error-banner">
-            <div className="row">
-              <span>{error}</span>
-              <button type="button" className="btn" onClick={clearError}>Dismiss</button>
-            </div>
-          </div>
-        ) : null}
         {children}
       </main>
+      <ErrorToast error={error} onDismiss={clearError} />
     </>
   );
 }
@@ -95,6 +76,7 @@ function LiveFightBanner() {
   const { client, playerId, snapshot } = useArena();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  if (!playerId) return null;
   const fight = snapshot?.myCasualRooms.find(room => (
     room.status === 'battling'
     && room.matchId

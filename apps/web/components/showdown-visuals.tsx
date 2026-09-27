@@ -55,11 +55,14 @@ export function PokemonSprite({
 export function TrainerSprite({
   label,
   side,
+  spriteId,
 }: {
   label: string;
   side?: 'left' | 'right';
+  spriteId?: string | null;
 }) {
-  const trainer = side === 'left' ? 'blue-gen3' : side === 'right' ? 'red-gen3' : 'unknown';
+  const fallback = side === 'left' ? 'blue-gen3' : side === 'right' ? 'red-gen3' : 'unknown';
+  const trainer = spriteId || fallback;
   return (
     <img
       className="ps-trainer-img"

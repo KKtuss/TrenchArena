@@ -7,6 +7,7 @@ export * from './errors';
 export * from './types';
 export {
   inspectTeam,
+  searchTeamHits,
   searchTeamOptions,
   teamSpeciesList,
   validateAndPackTeam,
@@ -16,6 +17,7 @@ export type {
   InspectedSet,
   InspectedStat,
   TeamInspection,
+  TeamSearchHit,
   TeamSearchKind,
   TeamSpeed,
   TeamThreat,

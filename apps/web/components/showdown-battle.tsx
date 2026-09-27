@@ -2,13 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { PokemonSprite } from '@/components/showdown-visuals';
 import type { ArenaApiClient } from '@/lib/api-client';
+import { useArena } from '@/lib/arena-context';
 import {
   eventsToShowdownFeed,
   latestRequestPayload,
   showdownChoiceToPlayerChoice,
 } from '@/lib/showdown-client-adapter';
-import type { BattleView, PlayerChoice } from '@/lib/protocol';
+import type { BattleView, PlayerChoice, SideView } from '@/lib/protocol';
+import { shortenAddress } from '@/lib/trainer-profile';
 
 declare global {
   interface Window {
@@ -34,6 +38,8 @@ declare global {
 interface ShowdownBattle {
   add: (line: string) => void;
   destroy: () => void;
+  setViewpoint: (sideid: string) => void;
+  scene?: { log?: { battleParser?: { perspective: string } } };
 }
 
 interface ShowdownMove {
@@ -73,7 +79,7 @@ interface ShowdownAsset {
 const ASSETS: ShowdownAsset[] = [
   { kind: 'script', path: '/showdown/js/lib/ps-polyfill.js' },
   { kind: 'script', path: '/showdown/config.js', global: 'Config' },
-  { kind: 'script', path: '/showdown/js/lib/jquery-1.11.0.min.js', global: 'jQuery' },
+  { kind: 'script', path: '/showdown/js/lib/jquery-3.7.1.min.js', global: 'jQuery' },
   { kind: 'script', path: '/showdown/js/lib/html-sanitizer-minified.js' },
   { kind: 'script', path: '/showdown/js/battle-sound.js', global: 'BattleSound' },
   { kind: 'script', path: '/showdown/js/battledata.js', global: 'Dex' },
@@ -228,6 +234,79 @@ function normalizeRequest(
   return request;
 }
 
+function ownViewpoint(sides: SideView[] | undefined, playerId: string): 'p1' | 'p2' {
+  return sides?.[1]?.playerId === playerId ? 'p2' : 'p1';
+}
+
+function applyViewpoint(battle: ShowdownBattle, viewpoint: 'p1' | 'p2') {
+  battle.setViewpoint(viewpoint);
+  const parser = battle.scene?.log?.battleParser;
+  if (parser) parser.perspective = viewpoint;
+}
+
+function FightRail({ side, align }: { side?: SideView; align: 'near' | 'far' }) {
+  const { playerId, trainerUsername } = useArena();
+  const you = Boolean(side && playerId && side.playerId === playerId);
+  const name = you && trainerUsername
+    ? trainerUsername
+    : shortenAddress(side?.playerId || side?.name || 'Waiting');
+  const party = side?.party ?? [];
+  const standing = party.filter(mon => !mon.fainted).length;
+  const down = party.filter(mon => mon.fainted).length;
+  const active = side?.active;
+  const hp = typeof active?.hpPercent === 'number' ? active.hpPercent : null;
+  return (
+    <aside className={`fight-rail fight-rail-${align}`}>
+      <div className="fight-rail-body">
+        <div className="fight-rail-card">
+          {align === 'near' ? <span className="fight-rail-role">{you ? 'You' : 'Rival'}</span> : null}
+          <span className="fight-rail-sprite">
+              <ProfileTrainerSprite label={side?.playerId || name} side={align === 'near' ? 'left' : 'right'} />
+            </span>
+            <strong className="fight-rail-name">{name}</strong>
+            <dl className="fight-rail-stats">
+              <div>
+                <dd>{party.length ? standing : '—'}</dd>
+                <dt>Standing</dt>
+              </div>
+              <div>
+                <dd>{party.length ? down : '—'}</dd>
+                <dt>Down</dt>
+              </div>
+            </dl>
+            {active ? (
+              <div className="fight-rail-active">
+                <span>In play</span>
+                <b>{active.species}</b>
+                {hp !== null ? (
+                  <i
+                    className={hp > 50 ? 'hp-high' : hp > 20 ? 'hp-mid' : 'hp-low'}
+                    aria-label={`${hp}% HP`}
+                  >
+                    <em style={{ width: `${Math.max(0, Math.min(100, hp))}%` }} />
+                  </i>
+                ) : null}
+              </div>
+            ) : null}
+            {align === 'far' ? <span className="fight-rail-role">{you ? 'You' : 'Rival'}</span> : null}
+          </div>
+          <span className="fight-rail-team">
+            {Array.from({ length: 6 }, (_, index) => {
+              const mon = party[index];
+              return mon ? (
+                <span key={`${mon.species}-${index}`} className={`fight-rail-mon${mon.fainted ? ' is-fainted' : ''}`} title={mon.species}>
+                  <PokemonSprite name={mon.species} />
+                </span>
+              ) : (
+                <span key={`empty-${index}`} className="fight-rail-mon is-empty" aria-hidden />
+              );
+            })}
+          </span>
+        </div>
+    </aside>
+  );
+}
+
 function speciesLabel(pokemon: {
   ident?: string;
   details?: string;
@@ -280,6 +359,7 @@ export function ShowdownBattle({
 
   eventsRef.current = events;
   battleViewRef.current = battleView;
+  const viewpoint = ownViewpoint(battleView?.sides, playerId);
 
   const rendererKey = `${matchId}:${battleInstanceId ?? 'pending'}`;
 
@@ -325,6 +405,7 @@ export function ShowdownBattle({
           paused: false,
           autoresize: true,
         });
+        applyViewpoint(battle, viewpoint);
         battleRef.current = battle;
         setReady(true);
         consumeEvents(eventsRef.current);
@@ -343,7 +424,7 @@ export function ShowdownBattle({
       setReady(false);
       releaseShowdownRuntime();
     };
-  }, [consumeEvents, matchId, onError, rendererKey]);
+  }, [consumeEvents, matchId, onError, rendererKey, viewpoint]);
 
   useEffect(() => {
     consumeEvents(events);
@@ -450,7 +531,11 @@ export function ShowdownBattle({
     <section className="showdown-battle-root dark" data-testid="showdown-battle">
       <div className="showdown-battle-stage">
         <div className="showdown-battle-frame">
-          <div ref={frameRef} className="battle" data-testid="showdown-frame" />
+          <FightRail side={battleView?.sides[viewpoint === 'p2' ? 1 : 0]} align="near" />
+          <div className="showdown-battle-scene">
+            <div ref={frameRef} className="battle" data-testid="showdown-frame" />
+          </div>
+          <FightRail side={battleView?.sides[viewpoint === 'p2' ? 0 : 1]} align="far" />
         </div>
         <div ref={logRef} className="battle-log" data-testid="showdown-log" />
       </div>

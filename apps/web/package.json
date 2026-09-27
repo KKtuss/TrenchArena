@@ -2,10 +2,13 @@
   "name": "@pokearena/web",
   "version": "0.0.0",
   "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "node -r ./scripts/patch-fs.js ./node_modules/next/dist/bin/next dev -p 3001",
     "build": "node ./scripts/showdown-assets.mjs && node ./scripts/build-next.js",
-    "start": "node -r ./scripts/patch-fs.js ./node_modules/next/dist/bin/next start -p 3001",
+    "start": "node -r ./scripts/patch-fs.js ./node_modules/next/dist/bin/next start -p 3001 -H 127.0.0.1",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts"
   },

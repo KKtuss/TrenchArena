@@ -71,9 +71,11 @@ without retaining completed battle listeners forever.
 
 ## Development limitations
 
-- Identity is deliberately limited to `demo-player-1` and `demo-player-2`.
+- Demo identify is limited to `demo-player-1` and `demo-player-2` and is off
+  unless `POKEARENA_ALLOW_DEMO_AUTH` is explicitly true.
 - All state is in memory and disappears when the process exits.
-- There is no wallet authentication, database, token eligibility, prize
-  distribution, reconnect session identity, or production deployment setup.
+- There is no PostgreSQL, real on-chain POKE, or multi-process session store.
+- Public internet bind, Origin allowlisting, connection limits, payload
+  limits, and in-memory rate limits are documented in `docs/deployment.md`.
 - The event payload remains the BattleEngine’s opaque application-safe event
   payload. Raw simulator commands are never accepted from clients.

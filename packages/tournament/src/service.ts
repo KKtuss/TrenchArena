@@ -25,9 +25,9 @@ import {
   TournamentError,
 } from './errors';
 import {
-  InMemoryTournamentRepository,
-  type TournamentRepository,
-} from './repository';
+  InMemoryAsyncTournamentRepository,
+  type AsyncTournamentRepository,
+} from './tournament-store';
 import type {
   BattleInstanceId,
   CreateTournamentInput,
@@ -45,8 +45,6 @@ import type {
   TournamentStatus,
 } from './types';
 
-type TimeoutForfeitPlayer = 'player1' | 'player2';
-
 interface ActiveBattle {
   battleInstanceId: BattleInstanceId;
   engineBattleId: string;
@@ -59,40 +57,45 @@ export type TournamentMatchListener = (match: TournamentMatch) => void;
 
 export interface TournamentServiceOptions {
   battleEngine?: BattleEngine;
-  repository?: TournamentRepository;
+  repository?: AsyncTournamentRepository;
   now?: () => number;
-  timeoutForfeitPlayer?: TimeoutForfeitPlayer;
 }
 
 const DEFAULT_MATCH_TIMEOUT_MS = 15_000;
 const COMPLETED_BATTLE_RETENTION_MS = 5 * 60 * 1000;
+const DEFAULT_HOST_ID = 'test-host';
 
 export class TournamentService {
   private readonly battleEngine: BattleEngine;
-  private readonly repository: TournamentRepository;
+  private readonly repository: AsyncTournamentRepository;
   private readonly now: () => number;
-  private readonly timeoutForfeitPlayer: TimeoutForfeitPlayer;
   private readonly activeBattles = new Map<BattleInstanceId, ActiveBattle>();
   private readonly matchListeners = new Map<TournamentMatchId, Set<TournamentMatchListener>>();
   private readonly cleanupTimers = new Map<BattleInstanceId, NodeJS.Timeout>();
+  private readonly terminalJobs = new Map<TournamentMatchId, Promise<void>>();
 
   constructor(options: TournamentServiceOptions = {}) {
     this.battleEngine = options.battleEngine ?? new BattleEngine();
-    this.repository = options.repository ?? new InMemoryTournamentRepository();
+    this.repository = options.repository ?? new InMemoryAsyncTournamentRepository();
     this.now = options.now ?? Date.now;
-    this.timeoutForfeitPlayer = options.timeoutForfeitPlayer ?? 'player1';
   }
 
-  createTournament(input: CreateTournamentInput): Tournament {
+  async createTournament(input: CreateTournamentInput): Promise<Tournament> {
     if (!input.title.trim()) throw new TournamentError('Tournament title is required.');
-    if (![4, 8, 16].includes(input.maxPlayers)) {
-      throw new TournamentError('maxPlayers must be 4, 8, or 16.');
+    if (![4, 8, 16, 32].includes(input.maxPlayers)) {
+      throw new TournamentError('maxPlayers must be 4, 8, 16, or 32.');
     }
     if (
       input.matchTimeoutMs !== undefined &&
       (!Number.isFinite(input.matchTimeoutMs) || input.matchTimeoutMs <= 0)
     ) {
       throw new TournamentError('matchTimeoutMs must be a positive finite number.');
+    }
+    const hostId = input.hostId ?? DEFAULT_HOST_ID;
+    if (!hostId.trim()) throw new TournamentError('Tournament host is required.');
+    const entryFee = input.entryFee ?? 0;
+    if (!Number.isInteger(entryFee) || entryFee < 0) {
+      throw new TournamentError('entryFee must be a non-negative integer.');
     }
 
     const timestamp = this.now();
@@ -104,59 +107,43 @@ export class TournamentService {
       bracketSeed: input.bracketSeed ?? 'default',
       matchTimeoutMs: input.matchTimeoutMs ?? DEFAULT_MATCH_TIMEOUT_MS,
       status: 'draft',
+      hostId,
+      entryFee,
       players: [],
       matchIds: [],
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    this.repository.saveTournament(tournament);
+    await this.repository.saveTournament(tournament);
     return tournament;
   }
 
-  openRegistration(tournamentId: TournamentId): Tournament {
-    const tournament = this.requireTournament(tournamentId);
+  async openRegistration(tournamentId: TournamentId): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
     transitionTournament(tournament, 'registration', 'open registration', this.now());
-    this.repository.saveTournament(tournament);
+    await this.repository.saveTournament(tournament);
     return tournament;
   }
 
-  registerPlayer(
+  async registerPlayer(
     tournamentId: TournamentId,
     input: RegisterPlayerInput,
-  ): TournamentPlayer {
-    const tournament = this.requireTournament(tournamentId);
-    if (tournament.status !== 'registration') {
-      throw new RegistrationClosedError();
-    }
-    if (tournament.players.some(player => player.id === input.playerId)) {
-      throw new DuplicateRegistrationError(input.playerId);
-    }
-    if (tournament.players.filter(player => player.status === 'registered').length >= tournament.maxPlayers) {
-      throw new TournamentError('Tournament player limit has been reached.');
-    }
+  ): Promise<TournamentPlayer> {
     if (!input.displayName.trim() || !input.team.trim()) {
       throw new TournamentError('Player display name and team are required.');
     }
-
-    const player: TournamentPlayer = {
-      id: input.playerId,
-      displayName: input.displayName,
-      team: input.team,
-      eligible: true,
-      status: 'registered',
-      registrationOrder: tournament.players.length,
-    };
-    tournament.players.push(player);
-    tournament.updatedAt = this.now();
-    this.repository.saveTournament(tournament);
-    return player;
+    try {
+      return await this.repository.registerPlayer(tournamentId, input);
+    } catch (error) {
+      remapPersistenceError(error, input.playerId);
+    }
   }
 
-  withdrawPlayer(
+  async withdrawPlayer(
     tournamentId: TournamentId,
     playerId: TournamentPlayerId,
-  ): Tournament {
-    const tournament = this.requireTournament(tournamentId);
+  ): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
     if (tournament.status !== 'registration') {
       throw new RegistrationClosedError();
     }
@@ -166,12 +153,12 @@ export class TournamentService {
     }
     player.status = 'withdrawn';
     tournament.updatedAt = this.now();
-    this.repository.saveTournament(tournament);
+    await this.repository.saveTournament(tournament);
     return tournament;
   }
 
-  prepareTournament(tournamentId: TournamentId): Tournament {
-    const tournament = this.requireTournament(tournamentId);
+  async prepareTournament(tournamentId: TournamentId): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
     if (tournament.status !== 'registration') {
       throw new InvalidTournamentStateTransitionError(tournament.status, 'prepare tournament');
     }
@@ -191,56 +178,72 @@ export class TournamentService {
     tournament.matchIds = matches.map(match => match.id);
     tournament.status = 'ready';
     tournament.updatedAt = this.now();
-    for (const match of matches) this.repository.saveMatch(match);
-    this.repository.saveTournament(tournament);
-    return tournament;
+    try {
+      await this.repository.saveBracket(tournament, matches);
+    } catch (error) {
+      remapPersistenceError(error);
+    }
+    return (await this.requireTournament(tournamentId));
   }
 
-  startTournament(tournamentId: TournamentId): Tournament {
-    let tournament = this.requireTournament(tournamentId);
+  async startTournament(tournamentId: TournamentId): Promise<Tournament> {
+    let tournament = await this.requireTournament(tournamentId);
+    if (tournament.status === 'in-progress') return tournament;
     if (tournament.status === 'registration') {
-      tournament = this.prepareTournament(tournamentId);
+      try {
+        tournament = await this.prepareTournament(tournamentId);
+      } catch (error) {
+        const raced = await this.requireTournament(tournamentId);
+        if (raced.status !== 'ready' && raced.status !== 'in-progress') throw error;
+        tournament = raced;
+      }
     }
+    if (tournament.status === 'in-progress') return tournament;
     transitionTournament(tournament, 'in-progress', 'start tournament', this.now());
     tournament.startedAt = this.now();
-    this.repository.saveTournament(tournament);
-    return tournament;
+    try {
+      const matches = await this.repository.listMatches(tournament.id);
+      await this.repository.saveBracket(tournament, matches);
+    } catch (error) {
+      const raced = await this.requireTournament(tournamentId);
+      if (raced.status === 'in-progress') return raced;
+      remapPersistenceError(error);
+    }
+    return this.requireTournament(tournamentId);
   }
 
-  cancelTournament(tournamentId: TournamentId): Tournament {
-    const tournament = this.requireTournament(tournamentId);
+  async cancelTournament(tournamentId: TournamentId): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
     if (!['draft', 'registration', 'ready', 'in-progress'].includes(tournament.status)) {
       throw new InvalidTournamentStateTransitionError(tournament.status, 'cancel tournament');
     }
     tournament.status = 'cancelled';
     tournament.updatedAt = this.now();
-    this.repository.saveTournament(tournament);
+    await this.repository.saveTournament(tournament);
     return tournament;
   }
 
-  getTournament(tournamentId: TournamentId): Tournament {
-    const tournament = this.requireTournament(tournamentId);
-    return tournament;
+  async getTournament(tournamentId: TournamentId): Promise<Tournament> {
+    return this.requireTournament(tournamentId);
   }
 
-  listTournaments(): Tournament[] {
+  async listTournaments(): Promise<Tournament[]> {
     return this.repository.listTournaments();
   }
 
-  getBracket(tournamentId: TournamentId): TournamentMatch[] {
-    const tournament = this.requireTournament(tournamentId);
-    return this.repository.listMatches(tournament.id);
+  async getBracket(tournamentId: TournamentId): Promise<TournamentMatch[]> {
+    await this.requireTournament(tournamentId);
+    return this.repository.listMatches(tournamentId);
   }
 
   async startMatch(matchId: TournamentMatchId): Promise<TournamentMatch> {
-    const match = this.requireMatch(matchId);
-    const tournament = this.requireTournament(match.tournamentId);
-    if (tournament.status !== 'in-progress') {
-      throw new InvalidTournamentStateTransitionError(tournament.status, 'start match');
+    let match: TournamentMatch;
+    try {
+      match = await this.repository.beginMatchStart(matchId);
+    } catch (error) {
+      remapPersistenceError(error);
     }
-    if (match.status !== 'ready') {
-      throw new InvalidMatchStateError(match.id, match.status, 'start');
-    }
+    const tournament = await this.requireTournament(match.tournamentId);
     if (!match.player1 || !match.player2) {
       throw new TournamentError('Match is missing a player.');
     }
@@ -259,6 +262,12 @@ export class TournamentService {
     });
 
     const battleInstanceId = randomUUID() as BattleInstanceId;
+    try {
+      match = await this.repository.attachBattleInstance(match.id, battleInstanceId);
+    } catch (error) {
+      remapPersistenceError(error);
+    }
+
     const activeBattle: ActiveBattle = {
       battleInstanceId,
       engineBattleId: session.id,
@@ -267,34 +276,27 @@ export class TournamentService {
       unsubscribe: () => undefined,
     };
     activeBattle.unsubscribe = session.subscribe(terminal => {
-      this.handleBattleTerminal(match.id, battleInstanceId, terminal);
+      void this.enqueueTerminal(match.id, battleInstanceId, terminal);
     });
     this.activeBattles.set(battleInstanceId, activeBattle);
-    match.battleInstanceId = battleInstanceId;
-    match.status = 'battle-created';
-    match.startedAt = this.now();
-    match.updatedAt = this.now();
-    this.repository.saveMatch(match);
 
     try {
       await session.start();
-      match.status = 'active';
-      match.updatedAt = this.now();
-      this.repository.saveMatch(match);
+      await this.flushTerminal(match.id);
+      const latest = await this.requireMatch(match.id);
+      if (isSettledMatch(latest)) return latest;
+      return this.repository.markMatchActive(match.id);
     } catch (error) {
-      if (
-        session.getState().failure?.code === 'timeout' &&
-        match.status === 'battle-created'
-      ) {
-        this.completeByForfeit(match);
-      }
-      if (match.status === 'battle-created') throw error;
+      await this.flushTerminal(match.id);
+      const latest = await this.requireMatch(match.id);
+      if (isSettledMatch(latest)) return latest;
+      if (latest.status === 'battle-created') throw error;
+      return latest;
     }
-    return match;
   }
 
   async submitChoice(submission: TournamentChoiceSubmission): Promise<TournamentMatch> {
-    const match = this.requireMatch(submission.matchId);
+    const match = await this.requireMatch(submission.matchId);
     if (match.status !== 'active' || !match.battleInstanceId) {
       throw new InvalidMatchStateError(match.id, match.status, 'submit a choice to');
     }
@@ -316,13 +318,13 @@ export class TournamentService {
     return match;
   }
 
-  applyBattleResult(
+  async applyBattleResult(
     matchId: TournamentMatchId,
     battleInstanceId: BattleInstanceId,
     result: BattleResult,
-  ): TournamentMatch {
-    const match = this.requireMatch(matchId);
-    if (match.status === 'completed' || match.status === 'forfeited') {
+  ): Promise<TournamentMatch> {
+    const match = await this.requireMatch(matchId);
+    if (isSettledMatch(match)) {
       if (sameResult(match.result?.kind === 'battle' ? match.result.battleResult : undefined, result)) {
         return match;
       }
@@ -338,26 +340,53 @@ export class TournamentService {
       throw new InvalidMatchResultError('Result does not match BattleEngine authority.');
     }
 
-    this.completeWithBattleResult(match, result);
-    return match;
+    await this.completeWithBattleResult(match, result);
+    return this.requireMatch(matchId);
   }
 
-  forfeitExpiredMatch(matchId: TournamentMatchId): TournamentMatch {
-    const match = this.requireMatch(matchId);
-    if (match.status === 'forfeited' || match.status === 'completed') return match;
+  async forfeitExpiredMatch(matchId: TournamentMatchId): Promise<TournamentMatch> {
+    const match = await this.requireMatch(matchId);
+    if (isSettledMatch(match)) return match;
     if (!match.battleInstanceId) {
       throw new InvalidMatchStateError(match.id, match.status, 'forfeit');
     }
     const activeBattle = this.requireActiveBattle(match.battleInstanceId);
+    const result = activeBattle.session.getResult();
+    if (result) {
+      await this.completeWithBattleResult(match, result);
+      return this.requireMatch(matchId);
+    }
     if (activeBattle.session.getState().failure?.code !== 'timeout') {
       throw new InvalidMatchResultError('Match has not expired under the timeout policy.');
     }
-    this.completeByForfeit(match);
-    return match;
+    throw new InvalidMatchResultError('Timeout did not identify an inactive player.');
   }
 
-  getMatch(matchId: TournamentMatchId): TournamentMatchView {
-    const match = this.requireMatch(matchId);
+  async forfeit(matchId: TournamentMatchId, playerId: string): Promise<TournamentMatch> {
+    const match = await this.requireMatch(matchId);
+    if (isSettledMatch(match)) return match;
+    if (playerId !== match.player1 && playerId !== match.player2) {
+      throw new InvalidMatchResultError('Player is not registered in this match.');
+    }
+    if (!match.battleInstanceId || (match.status !== 'active' && match.status !== 'battle-created')) {
+      throw new InvalidMatchStateError(match.id, match.status, 'forfeit');
+    }
+    const activeBattle = this.requireActiveBattle(match.battleInstanceId);
+    await activeBattle.session.forfeit(playerId);
+    for (let attempt = 0; attempt < 10 && !isSettledMatch(await this.requireMatch(matchId)); attempt += 1) {
+      await this.flushTerminal(matchId);
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    await this.flushTerminal(matchId);
+    const settled = await this.requireMatch(matchId);
+    if (!isSettledMatch(settled)) {
+      throw new InvalidMatchResultError('Forfeit did not end the fight.');
+    }
+    return settled;
+  }
+
+  async getMatch(matchId: TournamentMatchId): Promise<TournamentMatchView> {
+    const match = await this.requireMatch(matchId);
     const battle = match.battleInstanceId
       ? this.activeBattles.get(match.battleInstanceId)
       : undefined;
@@ -367,44 +396,47 @@ export class TournamentService {
     };
   }
 
-  getMatchState(
+  async getMatchState(
     matchId: TournamentMatchId,
     viewer: TournamentPlayerId | 'spectator',
-  ): BattleState | undefined {
-    const match = this.requireMatch(matchId);
+  ): Promise<BattleState | undefined> {
+    const match = await this.requireMatch(matchId);
     if (!match.battleInstanceId) return undefined;
-    const activeBattle = this.requireActiveBattle(match.battleInstanceId);
+    const activeBattle = this.activeBattles.get(match.battleInstanceId);
+    if (!activeBattle) return undefined;
     return activeBattle.session.getState(viewer === 'spectator' ? 'spectator' : viewer);
   }
 
-  getMatchEvents(
+  async getMatchEvents(
     matchId: TournamentMatchId,
     viewer: TournamentPlayerId | 'spectator',
-  ): TournamentMatchEvents {
-    const match = this.requireMatch(matchId);
+  ): Promise<TournamentMatchEvents> {
+    const match = await this.requireMatch(matchId);
     if (!match.battleInstanceId) return { matchId, events: [] };
-    const activeBattle = this.requireActiveBattle(match.battleInstanceId);
+    const activeBattle = this.activeBattles.get(match.battleInstanceId);
+    if (!activeBattle) return { matchId, events: [] };
     return {
       matchId,
       events: activeBattle.session.getEvents(viewer === 'spectator' ? 'spectator' : viewer),
     };
   }
 
-  getMatchView(
+  async getMatchView(
     matchId: TournamentMatchId,
     viewer: TournamentPlayerId | 'spectator',
-  ): BattleView | undefined {
-    const match = this.requireMatch(matchId);
+  ): Promise<BattleView | undefined> {
+    const match = await this.requireMatch(matchId);
     if (!match.battleInstanceId) return undefined;
-    const activeBattle = this.requireActiveBattle(match.battleInstanceId);
+    const activeBattle = this.activeBattles.get(match.battleInstanceId);
+    if (!activeBattle) return undefined;
     return activeBattle.session.getView(viewer === 'spectator' ? 'spectator' : viewer);
   }
 
-  subscribeMatch(
+  async subscribeMatch(
     matchId: TournamentMatchId,
     listener: TournamentMatchListener,
-  ): () => void {
-    const match = this.requireMatch(matchId);
+  ): Promise<() => void> {
+    const match = await this.requireMatch(matchId);
     let listeners = this.matchListeners.get(matchId);
     if (!listeners) {
       listeners = new Set();
@@ -415,9 +447,13 @@ export class TournamentService {
       ? this.activeBattles.get(match.battleInstanceId)
       : undefined;
     const unsubscribeEvents = activeBattle
-      ? activeBattle.session.subscribeEvents(() => queueMicrotask(() => listener(match)))
+      ? activeBattle.session.subscribeEvents(() => {
+        void this.requireMatch(matchId)
+          .then(current => listener(current))
+          .catch(() => undefined);
+      })
       : () => undefined;
-    if (match.status === 'completed' || match.status === 'forfeited') {
+    if (isSettledMatch(match)) {
       queueMicrotask(() => listener(match));
     }
     return () => {
@@ -427,11 +463,13 @@ export class TournamentService {
     };
   }
 
-  getTournamentResult(tournamentId: TournamentId): TournamentResult | undefined {
-    const tournament = this.requireTournament(tournamentId);
+  async getTournamentResult(tournamentId: TournamentId): Promise<TournamentResult | undefined> {
+    const tournament = await this.requireTournament(tournamentId);
     if (tournament.status !== 'completed' || !tournament.winner) return undefined;
-    const finalMatch = this.repository.listMatches(tournament.id)
-      .find(match => match.round === Math.max(...this.repository.listMatches(tournament.id).map(item => item.round)));
+    const matches = await this.repository.listMatches(tournament.id);
+    const finalMatch = matches.find(match => (
+      match.round === Math.max(...matches.map(item => item.round))
+    ));
     if (!finalMatch) throw new TournamentError('Completed tournament has no final match.');
     return {
       tournamentId: tournament.id,
@@ -441,87 +479,128 @@ export class TournamentService {
     };
   }
 
-  private handleBattleTerminal(
+  private enqueueTerminal(
     matchId: TournamentMatchId,
     battleInstanceId: BattleInstanceId,
     terminal: BattleTerminal,
-  ): void {
-    const match = this.requireMatch(matchId);
-    if (match.battleInstanceId !== battleInstanceId) return;
+  ): Promise<void> {
+    const previous = this.terminalJobs.get(matchId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.handleBattleTerminal(matchId, battleInstanceId, terminal));
+    this.terminalJobs.set(matchId, next);
+    void next.catch(() => undefined);
+    return next;
+  }
+
+  private async flushTerminal(matchId: TournamentMatchId): Promise<void> {
+    const job = this.terminalJobs.get(matchId);
+    if (job) await job;
+  }
+
+  private async handleBattleTerminal(
+    matchId: TournamentMatchId,
+    battleInstanceId: BattleInstanceId,
+    terminal: BattleTerminal,
+  ): Promise<void> {
+    const match = await this.requireMatch(matchId);
+    if (match.battleInstanceId && match.battleInstanceId !== battleInstanceId) return;
     if (terminal.type === 'completed') {
-      this.completeWithBattleResult(match, terminal.result);
-    } else if (terminal.failure.code === 'timeout') {
-      this.completeByForfeit(match);
+      await this.completeWithBattleResult(match, terminal.result);
     }
   }
 
-  private completeWithBattleResult(match: TournamentMatch, result: BattleResult): void {
-    if (match.status === 'completed' || match.status === 'forfeited') return;
-    if (!match.player1 || !match.player2) {
+  private async completeWithBattleResult(match: TournamentMatch, result: BattleResult): Promise<void> {
+    const current = await this.requireMatch(match.id);
+    if (isSettledMatch(current)) return;
+    if (!current.player1 || !current.player2) {
       throw new InvalidMatchResultError('Match has no two players.');
     }
-    const winner = result.status === 'tie'
-      ? match.player1
-      : result.winner as TournamentPlayerId | undefined;
-    if (winner !== match.player1 && winner !== match.player2) {
+    if (result.status === 'tie' || !result.winner) {
+      await this.completeAsTie(current, result);
+      return;
+    }
+    if (result.winner !== current.player1 && result.winner !== current.player2) {
       throw new InvalidMatchResultError('Battle winner is not a player in this match.');
     }
-    this.completeMatch(match, winner, {
+    await this.completeMatch(current, result.winner as TournamentPlayerId, {
       kind: 'battle',
       battleResult: result,
-    }, 'completed');
+    }, result.endedBy === 'timeout' ? 'forfeited' : 'completed');
   }
 
-  private completeByForfeit(match: TournamentMatch): void {
-    if (match.status === 'completed' || match.status === 'forfeited') return;
-    const loser = this.timeoutForfeitPlayer === 'player1' ? match.player1 : match.player2;
-    const winner = loser === match.player1 ? match.player2 : match.player1;
-    if (!loser || !winner) throw new InvalidMatchResultError('Cannot forfeit a match without two players.');
-    this.completeMatch(match, winner, { kind: 'forfeit', reason: 'timeout' }, 'forfeited');
+  private async completeAsTie(match: TournamentMatch, result: BattleResult): Promise<void> {
+    const current = await this.requireMatch(match.id);
+    if (isSettledMatch(current)) return;
+    const timestamp = this.now();
+    delete current.winner;
+    current.result = { kind: 'battle', battleResult: result };
+    current.status = 'tied';
+    current.completedAt = timestamp;
+    current.updatedAt = timestamp;
+    try {
+      await this.repository.commitMatchOutcome({ match: current });
+    } catch (error) {
+      remapPersistenceError(error);
+    }
+    const stored = await this.requireMatch(current.id);
+    this.notifyMatchListeners(stored);
+    this.matchListeners.delete(stored.id);
+    this.scheduleBattleCleanup(stored.battleInstanceId);
   }
 
-  private completeMatch(
+  private async completeMatch(
     match: TournamentMatch,
     winner: TournamentPlayerId,
     result: TournamentMatch['result'],
     status: 'completed' | 'forfeited',
-  ): void {
-    if (match.status === 'completed' || match.status === 'forfeited') return;
+  ): Promise<void> {
+    const current = await this.requireMatch(match.id);
+    if (isSettledMatch(current)) return;
     const timestamp = this.now();
-    match.winner = winner;
-    match.result = result;
-    match.status = status;
-    match.completedAt = timestamp;
-    match.updatedAt = timestamp;
-    this.repository.saveMatch(match);
-    this.notifyMatchListeners(match);
-    this.matchListeners.delete(match.id);
-    this.scheduleBattleCleanup(match.battleInstanceId);
+    current.winner = winner;
+    current.result = result;
+    current.status = status;
+    current.completedAt = timestamp;
+    current.updatedAt = timestamp;
 
-    const tournament = this.requireTournament(match.tournamentId);
-    const finalRound = Math.max(
-      ...this.repository.listMatches(tournament.id).map(candidate => candidate.round),
-    );
-    if (match.round === finalRound) {
+    const tournament = await this.requireTournament(current.tournamentId);
+    const matches = await this.repository.listMatches(tournament.id);
+    const finalRound = Math.max(...matches.map(candidate => candidate.round));
+    let nextMatch: TournamentMatch | undefined;
+    let completedTournament: Tournament | undefined;
+    if (current.round === finalRound) {
       tournament.winner = winner;
       tournament.completedAt = timestamp;
       transitionTournament(tournament, 'completed', 'complete tournament', timestamp);
-      this.repository.saveTournament(tournament);
-      return;
+      completedTournament = tournament;
+    } else {
+      nextMatch = matches.find(candidate => (
+        candidate.round === current.round + 1 &&
+        candidate.bracketPosition === Math.floor(current.bracketPosition / 2)
+      ));
+      if (!nextMatch) throw new TournamentError('Could not find the next bracket match.');
+      if (current.bracketPosition % 2 === 0) nextMatch.player1 = winner;
+      else nextMatch.player2 = winner;
+      if (nextMatch.player1 && nextMatch.player2 && nextMatch.status === 'pending') {
+        nextMatch.status = 'ready';
+      }
+      nextMatch.updatedAt = timestamp;
     }
 
-    const nextMatch = this.repository.listMatches(tournament.id).find(candidate => (
-      candidate.round === match.round + 1 &&
-      candidate.bracketPosition === Math.floor(match.bracketPosition / 2)
-    ));
-    if (!nextMatch) throw new TournamentError('Could not find the next bracket match.');
-    if (match.bracketPosition % 2 === 0) nextMatch.player1 = winner;
-    else nextMatch.player2 = winner;
-    if (nextMatch.player1 && nextMatch.player2 && nextMatch.status === 'pending') {
-      nextMatch.status = 'ready';
+    try {
+      await this.repository.commitMatchOutcome({
+        match: current,
+        ...(nextMatch ? { nextMatch } : {}),
+        ...(completedTournament ? { tournament: completedTournament } : {}),
+      });
+    } catch (error) {
+      remapPersistenceError(error);
     }
-    nextMatch.updatedAt = timestamp;
-    this.repository.saveMatch(nextMatch);
+    const stored = await this.requireMatch(current.id);
+    this.notifyMatchListeners(stored);
+    this.matchListeners.delete(stored.id);
+    this.scheduleBattleCleanup(stored.battleInstanceId);
   }
 
   private notifyMatchListeners(match: TournamentMatch): void {
@@ -542,14 +621,14 @@ export class TournamentService {
     this.cleanupTimers.set(battleInstanceId, timer);
   }
 
-  private requireTournament(id: TournamentId): Tournament {
-    const tournament = this.repository.getTournament(id);
+  private async requireTournament(id: TournamentId): Promise<Tournament> {
+    const tournament = await this.repository.getTournament(id);
     if (!tournament) throw new UnknownTournamentError(id);
     return tournament;
   }
 
-  private requireMatch(id: TournamentMatchId): TournamentMatch {
-    const match = this.repository.getMatch(id);
+  private async requireMatch(id: TournamentMatchId): Promise<TournamentMatch> {
+    const match = await this.repository.getMatch(id);
     if (!match) throw new UnknownMatchError(id);
     return match;
   }
@@ -612,6 +691,51 @@ function hash(value: string): number {
   return result >>> 0;
 }
 
+function isSettledMatch(match: TournamentMatch): boolean {
+  return match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied';
+}
+
 function sameResult(left: BattleResult | undefined, right: BattleResult): boolean {
   return Boolean(left) && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function remapPersistenceError(error: unknown, playerId?: string): never {
+  if (
+    error instanceof TournamentError
+    || error instanceof DuplicateRegistrationError
+  ) {
+    throw error;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/already registered/i.test(message)) {
+    throw new DuplicateRegistrationError(playerId ?? extractSuffix(message));
+  }
+  if (/registration is closed/i.test(message)) throw new RegistrationClosedError();
+  if (/player limit/i.test(message)) {
+    throw new TournamentError('Tournament player limit has been reached.');
+  }
+  const matchState = /^Cannot (.+) match (.+) in the "(.+)" state\.$/.exec(message);
+  if (matchState) {
+    throw new InvalidMatchStateError(matchState[2], matchState[3], matchState[1]);
+  }
+  const tournamentState = /^Cannot (.+) a tournament in the "(.+)" state\.$/.exec(message);
+  if (tournamentState) {
+    throw new InvalidTournamentStateTransitionError(tournamentState[2], tournamentState[1]);
+  }
+  if (message.startsWith('Unknown tournament match:')) {
+    throw new UnknownMatchError(message.slice('Unknown tournament match: '.length));
+  }
+  if (message.startsWith('Unknown tournament:')) {
+    throw new UnknownTournamentError(message.slice('Unknown tournament: '.length));
+  }
+  if (/different result/i.test(message)) {
+    throw new InvalidMatchResultError('A completed match cannot receive a different result.');
+  }
+  if (error instanceof Error) throw error;
+  throw new TournamentError('Request could not be processed.');
+}
+
+function extractSuffix(message: string): string {
+  const index = message.lastIndexOf(': ');
+  return index === -1 ? '' : message.slice(index + 2);
 }

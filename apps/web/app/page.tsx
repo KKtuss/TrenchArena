@@ -5,10 +5,12 @@ import { useEffect, useState } from 'react';
 
 import { CompetitivePaths, TournamentEconomicsBlock } from '@/components/ui';
 import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
+import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom, TournamentSummary } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
+import { shortenAddress } from '@/lib/trainer-profile';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
@@ -45,18 +47,19 @@ function Dots({ filled, tone }: { filled: number; tone: 'cyan' | 'coral' }) {
 }
 
 export default function LandingPage() {
-  const { client, playerId, snapshot, refreshSnapshot } = useArena();
+  const { client, playerId, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
   const [saved, setSaved] = useState<SavedTeam | null>(null);
 
   useEffect(() => {
+    if (!connected) return;
     void Promise.all([
       client.request({ type: 'casual.list' }),
       client.request({ type: 'tournament.list' }),
-    ]).then(() => refreshSnapshot());
-  }, [client, refreshSnapshot]);
+    ]).then(() => refreshSnapshot()).catch(() => undefined);
+  }, [client, connected, refreshSnapshot]);
 
   useEffect(() => {
-    setSaved(readSavedTeam(playerId));
+    setSaved(playerId ? readSavedTeam(playerId) : null);
   }, [playerId]);
 
   const rooms = [...(snapshot?.openCasualRooms ?? [])].sort((a, b) => roomRank(a) - roomRank(b));
@@ -91,7 +94,7 @@ export default function LandingPage() {
         <h1>POKEARENA</h1>
         <p className="pa-tag">Battle. Compete. Climb.</p>
         <p className="pa-lead">
-          Two competitive paths on one Showdown-synced stadium: stake your own POKE in casual fights, or enter low-cost cups for Treasury-funded prizes.
+          Stake POKE in casual fights, or enter low-cost cups for Treasury prizes.
         </p>
         {saved?.species.some(Boolean) ? (
           <div className="pa-protocol">
@@ -100,6 +103,16 @@ export default function LandingPage() {
           </div>
         ) : null}
         <div className="pa-ctas">
+          {!walletConnected ? (
+            <button
+              type="button"
+              className="pa-btn pa-btn-primary"
+              disabled={connectingWallet}
+              onClick={() => void connectInjectedWallet()}
+            >
+              {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+            </button>
+          ) : null}
           <Link className="pa-btn pa-btn-primary" href="/arena">Fight casually</Link>
           <Link className="pa-btn pa-btn-surface" href={flagship ? `/tournament/${flagship.id}` : '/tournaments'}>
             Enter a tournament
@@ -125,13 +138,13 @@ export default function LandingPage() {
             <header>
               <div>
                 <small>Challenger</small>
-                <strong>{featured?.creatorId ?? 'Open slot'}</strong>
+                <strong>{featured?.creatorId ? shortenAddress(featured.creatorId) : 'Open slot'}</strong>
               </div>
               <Dots filled={featured ? 3 : 0} tone="cyan" />
             </header>
             <div className="pa-mon">
               <span className="pa-portrait">
-                <TrainerSprite label={featured?.creatorId ?? 'Open slot'} />
+                <ProfileTrainerSprite label={featured?.creatorId ?? 'Open slot'} side="left" />
               </span>
               <div>
                 <div className="pa-mon-name">
@@ -165,12 +178,12 @@ export default function LandingPage() {
               <Dots filled={waiting ? 0 : 3} tone="coral" />
               <div>
                 <small>Rival</small>
-                <strong>{featured?.opponentId ?? 'Open slot'}</strong>
+                <strong>{featured?.opponentId ? shortenAddress(featured.opponentId) : 'Open slot'}</strong>
               </div>
             </header>
             <div className="pa-mon foe">
               <span className="pa-portrait foe">
-                <TrainerSprite label={featured?.opponentId ?? 'Open slot'} />
+                <ProfileTrainerSprite label={featured?.opponentId ?? 'Open slot'} side="right" />
               </span>
               <div>
                 <div className="pa-mon-name">
@@ -249,11 +262,11 @@ export default function LandingPage() {
               <div className="pa-board-mark">{room.format === 'gen9ou' ? 'OU' : 'PA'}</div>
               <div>
                 <p className="pa-board-trainers">
-                  <TrainerSprite label={room.creatorId} />
-                  <b>{room.creatorId}</b>
+                  <ProfileTrainerSprite label={room.creatorId} side="left" />
+                  <b>{shortenAddress(room.creatorId)}</b>
                   <span>vs</span>
-                  {room.opponentId ? <TrainerSprite label={room.opponentId} /> : null}
-                  <b>{room.opponentId ?? 'Open slot'}</b>
+                  {room.opponentId ? <ProfileTrainerSprite label={room.opponentId} side="right" /> : null}
+                  <b>{room.opponentId ? shortenAddress(room.opponentId) : 'Open slot'}</b>
                 </p>
                 <small>{formatLabel(room.format)} • {room.battleSize} • {room.status}</small>
               </div>
