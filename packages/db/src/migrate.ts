@@ -76,6 +76,16 @@ export function splitSqlStatements(sql: string): string[] {
       }
       inString = !inString;
     }
+    if (!inString && character === '-' && sql[index + 1] === '-') {
+      current += '--';
+      index += 2;
+      while (index < sql.length && sql[index] !== '\n') {
+        current += sql[index];
+        index += 1;
+      }
+      if (index < sql.length) current += '\n';
+      continue;
+    }
     if (character === ';' && !inString) {
       const trimmed = current.trim();
       if (trimmed) statements.push(trimmed);

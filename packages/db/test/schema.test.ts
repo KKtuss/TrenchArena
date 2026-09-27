@@ -53,6 +53,14 @@ test('migrations are ordered, checksummed, and encode the durability contract', 
   const statements = splitSqlStatements(sql);
   assert.equal(statements.some(statement => statement.includes('CREATE TABLE wallets')), true);
   assert.equal(statements.length > REQUIRED_TABLES.length, true);
+  const initialStatements = splitSqlStatements(files[0].sql);
+  assert.match(initialStatements[0] ?? '', /CREATE TABLE wallets/);
+  assert.equal(/^\s*node\b/i.test(initialStatements[0] ?? ''), false);
+  const commented = splitSqlStatements(
+    '-- values fit BIGINT; node-pg returns BIGINT as string\nCREATE TABLE t (id TEXT);',
+  );
+  assert.equal(commented.length, 1);
+  assert.match(commented[0] ?? '', /^-- values fit BIGINT; node-pg[\s\S]*CREATE TABLE t/);
 });
 
 async function canConnect(): Promise<false | Client> {
