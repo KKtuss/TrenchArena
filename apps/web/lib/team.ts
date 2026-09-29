@@ -145,6 +145,9 @@ export interface SearchableTeamHit {
   type?: string;
   types?: string[];
   category?: string;
+  power?: number;
+  accuracy?: number | null;
+  pp?: number;
 }
 
 export function filterSpeciesHits<T extends SearchableTeamHit>(
