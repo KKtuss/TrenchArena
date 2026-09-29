@@ -26,7 +26,11 @@ const nextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: path.join(__dirname),
   webpack: config => {
-    config.resolve.symlinks = false;
+    // Windows volume rejects readlink; keep symlink resolution on Linux/VPS
+    // so pnpm's .pnpm store layout still resolves @solana/web3.js deps.
+    if (process.platform === 'win32') {
+      config.resolve.symlinks = false;
+    }
     config.cache = false;
     return config;
   },

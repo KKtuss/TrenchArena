@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ProfileTrainerSprite } from '@/components/profile-trainer';
-import { PokemonSprite } from '@/components/showdown-visuals';
+import { PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import { acquireShowdownRuntime, releaseShowdownRuntime } from '@/lib/showdown-runtime';
 import type { ArenaApiClient } from '@/lib/api-client';
 import { useArena } from '@/lib/arena-context';
@@ -12,6 +12,12 @@ import {
   latestRequestPayload,
   showdownChoiceToPlayerChoice,
 } from '@/lib/showdown-client-adapter';
+import {
+  enrichMove,
+  formatSwitchMeta,
+  parsePokemonCondition,
+  type EnrichedMove,
+} from '@/lib/fight-moves';
 import type { BattleView, PlayerChoice, SideView } from '@/lib/protocol';
 import { publicTrainerName } from '@/lib/trainer-profile';
 
@@ -203,7 +209,7 @@ function speciesLabel(pokemon: {
   return fromIdent || `Slot ${index + 1}`;
 }
 
-type ChoiceKind = 'move' | 'switch' | 'tera' | 'confirm';
+type ChoiceKind = 'move' | 'switch' | 'confirm';
 
 type FightChoice = {
   key: string;
@@ -211,7 +217,85 @@ type FightChoice = {
   choice: string;
   kind: ChoiceKind;
   detail?: string;
+  disabled?: boolean;
+  species?: string;
+  condition?: string;
+  move?: EnrichedMove;
 };
+
+function FightMoveCard({
+  choice,
+  disabled,
+  teraArmed,
+  onPick,
+}: {
+  choice: FightChoice;
+  disabled: boolean;
+  teraArmed: boolean;
+  onPick: (choiceText: string) => void;
+}) {
+  const move = choice.move;
+  const category = move?.category?.toLowerCase();
+  return (
+    <button
+      type="button"
+      className={`fight-move${category ? ` is-${category}` : ''}${choice.disabled ? ' is-locked' : ''}${teraArmed ? ' is-tera' : ''}`}
+      data-type={move?.type?.toLowerCase() || 'unknown'}
+      disabled={disabled || choice.disabled}
+      title={move?.shortDesc}
+      onClick={() => onPick(teraArmed ? `${choice.choice} terastallize` : choice.choice)}
+    >
+      <span className="fight-move-head">
+        {move?.type ? <TypeMark type={move.type} /> : null}
+        <strong>{choice.label}</strong>
+        {move?.category ? <span className={`fight-cat is-${category}`}>{move.category}</span> : null}
+      </span>
+      <span className="fight-move-stats">
+        <span><b>{move?.powerLabel ?? '—'}</b><small>Power</small></span>
+        <span><b>{move?.accuracyLabel ?? '—'}</b><small>Acc</small></span>
+        <span><b>{move?.ppLabel?.replace(' PP', '') ?? '—'}</b><small>PP</small></span>
+      </span>
+      {move?.shortDesc ? <span className="fight-move-effect">{move.shortDesc}</span> : null}
+    </button>
+  );
+}
+
+function FightSwitchCard({
+  choice,
+  disabled,
+  onPick,
+}: {
+  choice: FightChoice;
+  disabled: boolean;
+  onPick: (choiceText: string) => void;
+}) {
+  const parsed = parsePokemonCondition(choice.condition);
+  const percent = parsed.percent;
+  return (
+    <button
+      type="button"
+      className={`fight-switch${parsed.fainted ? ' is-fainted' : ''}`}
+      disabled={disabled}
+      onClick={() => onPick(choice.choice)}
+    >
+      <span className="fight-switch-icon">
+        <PokemonIcon name={choice.species || choice.label} />
+      </span>
+      <span className="fight-switch-copy">
+        <strong>{choice.label}</strong>
+        <small>{formatSwitchMeta(choice.condition)}</small>
+        {percent != null ? (
+          <i
+            className={`fight-switch-hp ${percent > 50 ? 'hp-high' : percent > 20 ? 'hp-mid' : 'hp-low'}`}
+            aria-hidden
+          >
+            <em style={{ width: `${percent}%` }} />
+          </i>
+        ) : null}
+      </span>
+    </button>
+  );
+}
 
 export function ShowdownBattle({
   playerId,
@@ -244,6 +328,7 @@ export function ShowdownBattle({
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [ready, setReady] = useState(false);
+  const [teraArmed, setTeraArmed] = useState(false);
   const watching = mode === 'watch';
 
   eventsRef.current = events;
@@ -372,31 +457,25 @@ export function ShowdownBattle({
     const result: FightChoice[] = [];
     const active = request.active?.[0];
     for (const [index, move] of (active?.moves ?? []).entries()) {
-      if (move.disabled) continue;
+      const name = move.name || `Move ${index + 1}`;
       result.push({
         key: `move-${index}`,
-        label: move.name || `Move ${index + 1}`,
-        detail: move.pp == null || move.maxpp == null ? undefined : `${move.pp}/${move.maxpp} PP`,
+        label: name,
         choice: `move ${index + 1}`,
         kind: 'move',
-      });
-    }
-    if (active?.canTerastallize) {
-      result.push({
-        key: 'tera',
-        label: `Terastallize · ${active.canTerastallize}`,
-        detail: 'Uses move 1',
-        choice: 'move 1 terastallize',
-        kind: 'tera',
+        disabled: Boolean(move.disabled),
+        move: enrichMove(name, { pp: move.pp, maxpp: move.maxpp }),
       });
     }
     if (!active?.trapped) {
       for (const [index, pokemon] of (request.side?.pokemon ?? []).entries()) {
         if (pokemon.active || String(pokemon.condition ?? '').endsWith(' fnt')) continue;
+        const label = speciesLabel(pokemon, index);
         result.push({
           key: `switch-${index}`,
-          label: speciesLabel(pokemon, index),
-          detail: 'Switch in',
+          label,
+          species: label,
+          condition: pokemon.condition,
           choice: `switch ${index + 1}`,
           kind: 'switch',
         });
@@ -417,9 +496,15 @@ export function ShowdownBattle({
             ? 'Your turn'
             : 'Waiting on the next request';
 
-  const moves = choices.filter(choice => choice.kind === 'move' || choice.kind === 'tera');
+  const moves = choices.filter(choice => choice.kind === 'move');
   const switches = choices.filter(choice => choice.kind === 'switch');
   const confirms = choices.filter(choice => choice.kind === 'confirm');
+  const teraType = request?.active?.[0]?.canTerastallize;
+  const canTera = Boolean(teraType) && moves.length > 0;
+
+  useEffect(() => {
+    setTeraArmed(false);
+  }, [request?.rqid, teraType]);
 
   return (
     <section
@@ -465,14 +550,14 @@ export function ShowdownBattle({
           <span className="showdown-phase">{phaseLabel}</span>
         </div>
         {choices.length ? (
-          <div className="showdown-choice-stack">
+          <div className="fight-dock">
             {confirms.length ? (
-              <div className="showdown-choice-confirm">
+              <div className="fight-band fight-band-confirm">
                 {confirms.map(choice => (
                   <button
                     key={choice.key}
                     type="button"
-                    className="pa-btn pa-btn-primary showdown-choice confirm"
+                    className="pa-btn pa-btn-primary fight-confirm"
                     disabled={submitting || !ready}
                     onClick={() => void submitChoice(choice.choice)}
                   >
@@ -480,39 +565,52 @@ export function ShowdownBattle({
                     {choice.detail ? <small>{choice.detail}</small> : null}
                   </button>
                 ))}
+              </div>
+            ) : null}
+            {canTera ? (
+              <div className="fight-band fight-band-meta">
+                <button
+                  type="button"
+                  className={`fight-tera${teraArmed ? ' is-on' : ''}`}
+                  disabled={submitting || !ready}
+                  aria-pressed={teraArmed}
+                  onClick={() => setTeraArmed(current => !current)}
+                >
+                  <span>Terastallize · {teraType}</span>
+                  <small>{teraArmed ? 'Armed · next attack teras' : 'Tap to arm, then pick an attack'}</small>
+                </button>
               </div>
             ) : null}
             {moves.length ? (
-              <div className="showdown-choice-grid moves">
-                {moves.map(choice => (
-                  <button
-                    key={choice.key}
-                    type="button"
-                    className={`pa-btn showdown-choice ${choice.kind}`}
-                    disabled={submitting || !ready}
-                    onClick={() => void submitChoice(choice.choice)}
-                  >
-                    <strong>{choice.label}</strong>
-                    {choice.detail ? <small>{choice.detail}</small> : null}
-                  </button>
-                ))}
-              </div>
+              <section className="fight-band fight-band-attacks" aria-label="Attacks">
+                <header>Attacks</header>
+                <div className="fight-move-grid">
+                  {moves.map(choice => (
+                    <FightMoveCard
+                      key={choice.key}
+                      choice={choice}
+                      disabled={submitting || !ready}
+                      teraArmed={canTera && teraArmed}
+                      onPick={choiceText => void submitChoice(choiceText)}
+                    />
+                  ))}
+                </div>
+              </section>
             ) : null}
             {switches.length ? (
-              <div className="showdown-choice-grid switches">
-                {switches.map(choice => (
-                  <button
-                    key={choice.key}
-                    type="button"
-                    className="pa-btn showdown-choice switch"
-                    disabled={submitting || !ready}
-                    onClick={() => void submitChoice(choice.choice)}
-                  >
-                    <strong>{choice.label}</strong>
-                    {choice.detail ? <small>{choice.detail}</small> : null}
-                  </button>
-                ))}
-              </div>
+              <section className="fight-band fight-band-bench" aria-label="Switch in">
+                <header>Switch in</header>
+                <div className="fight-switch-row">
+                  {switches.map(choice => (
+                    <FightSwitchCard
+                      key={choice.key}
+                      choice={choice}
+                      disabled={submitting || !ready}
+                      onPick={choiceText => void submitChoice(choiceText)}
+                    />
+                  ))}
+                </div>
+              </section>
             ) : null}
           </div>
         ) : (

@@ -88,6 +88,18 @@ export function isDemoAuthEnabled(override?: boolean): boolean {
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
 
+/**
+ * Test POKE faucet: tops wallets up on auth.verify.
+ * On when POKEARENA_DEV_FAUCET is true, or when demo auth is enabled.
+ */
+export function isDevFaucetEnabled(override?: boolean): boolean {
+  if (typeof override === 'boolean') return override;
+  if (isDemoAuthEnabled()) return true;
+  const raw = process.env.POKEARENA_DEV_FAUCET;
+  if (!raw) return false;
+  return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
+}
+
 export class DemoAuthDisabledError extends Error {
   constructor() {
     super('Demo authentication is disabled.');

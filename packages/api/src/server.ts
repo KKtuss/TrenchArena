@@ -42,6 +42,7 @@ import {
 } from './economics-runtime';
 import { InMemoryEconomicsStore } from './memory-economics-store';
 import {
+  DEFAULT_DEV_BALANCE_POKE,
   DEFAULT_TOURNAMENT_ENTRY_POKE,
   MockEconomics,
   type ChainPayoutResult,
@@ -77,6 +78,7 @@ import {
   createAuthChallenge,
   DemoAuthDisabledError,
   isDemoAuthEnabled,
+  isDevFaucetEnabled,
   isDemoPlayerId,
   isSolanaAddress,
   type AuthChallenge,
@@ -86,6 +88,8 @@ import {
 export interface ApiServerOptions {
   /** Defaults to POKEARENA_ALLOW_DEMO_AUTH, which is off unless set true. */
   allowDemoAuth?: boolean;
+  /** Defaults to POKEARENA_DEV_FAUCET (or demo auth). Tops wallets to DEFAULT_DEV_BALANCE_POKE. */
+  devFaucet?: boolean;
   /** Time a disconnected player has to re-authenticate before a live fight is forfeited. */
   disconnectGraceMs?: number;
   bindHost?: string;
@@ -180,7 +184,9 @@ export class ApiServer {
   private readonly sessionsByPlayer = new Map<string, ClientConnection>();
   private readonly disconnectTimers = new Map<string, NodeJS.Timeout>();
   private readonly trainers = new TrainerDirectory();
+  private lastAuthenticatedPlayerId: string | null = null;
   private readonly allowDemoAuth: boolean;
+  private readonly devFaucet: boolean;
   private readonly disconnectGraceMs: number;
   private readonly network: NetworkPolicy;
   private readonly rateLimiter: ProtocolRateLimiter;
@@ -198,12 +204,14 @@ export class ApiServer {
     if (isApiServerOptions(tournamentsOrOptions)) {
       options = tournamentsOrOptions;
       this.allowDemoAuth = options.allowDemoAuth ?? isDemoAuthEnabled();
+      this.devFaucet = options.devFaucet ?? (this.allowDemoAuth || isDevFaucetEnabled());
       this.disconnectGraceMs = options.disconnectGraceMs ?? DEFAULT_DISCONNECT_GRACE_MS;
       injectedTournaments = options.tournaments;
       economics = options.economics ?? economics;
       casual = options.casual ?? casual;
     } else {
       this.allowDemoAuth = isDemoAuthEnabled();
+      this.devFaucet = this.allowDemoAuth || isDevFaucetEnabled();
       this.disconnectGraceMs = DEFAULT_DISCONNECT_GRACE_MS;
       injectedTournaments = tournamentsOrOptions;
     }
@@ -218,7 +226,7 @@ export class ApiServer {
         'PostgreSQL economics is required. Use createApiServer(). In-memory economics is not used as a fallback.',
       );
     }
-    this.economics = toServerEconomics(economics, this.allowDemoAuth);
+    this.economics = toServerEconomics(economics, this.devFaucet);
     const repository = options.tournamentRepository
       ?? new InMemoryAsyncTournamentRepository(undefined, this.economics);
     if (!injectedTournaments) {
@@ -475,6 +483,10 @@ export class ApiServer {
       }
       this.consumedNonces.set(challenge.nonce, challenge.expiresAt);
       await this.claimSession(connection, message.address);
+      this.lastAuthenticatedPlayerId = message.address;
+      if (this.devFaucet) {
+        await this.topUpDevBalance(message.address);
+      }
       this.send(connection, { type: 'auth.verified', playerId: message.address }, message.requestId);
       this.send(connection, { type: 'ready', playerId: message.address }, message.requestId);
       this.send(connection, {
@@ -1831,7 +1843,8 @@ export class ApiServer {
   }
 
   private handleHttp(request: IncomingMessage, response: ServerResponse): void {
-    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    const pathname = url.pathname;
     if (pathname === '/health') {
       response.writeHead(200, {
         'content-type': 'application/json',
@@ -1844,6 +1857,18 @@ export class ApiServer {
       response.end('Not found');
       return;
     }
+    if (pathname === '/dev/sessions') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        latest: this.lastAuthenticatedPlayerId,
+        sessions: [...this.sessionsByPlayer.keys()],
+      }));
+      return;
+    }
+    if (pathname === '/dev/credit') {
+      void this.handleDevCredit(url, response);
+      return;
+    }
     if (pathname === '/' || pathname === '/index.html') {
       this.sendStatic(response, 'index.html', 'text/html; charset=utf-8');
       return;
@@ -1854,6 +1879,36 @@ export class ApiServer {
     }
     response.writeHead(404);
     response.end('Not found');
+  }
+
+  private async handleDevCredit(url: URL, response: ServerResponse): Promise<void> {
+    try {
+      const playerId = (url.searchParams.get('playerId') || this.lastAuthenticatedPlayerId || '').trim();
+      if (!playerId || (!isSolanaAddress(playerId) && !isDemoPlayerId(playerId))) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'playerId required (Solana address or demo player).' }));
+        return;
+      }
+      const target = Number(url.searchParams.get('amount') ?? DEFAULT_DEV_BALANCE_POKE);
+      const amount = Number.isFinite(target) && target > 0 ? Math.floor(target) : DEFAULT_DEV_BALANCE_POKE;
+      const wallet = await this.topUpDevBalance(playerId, amount);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true, wallet }));
+    } catch (error) {
+      response.writeHead(500, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  private async topUpDevBalance(playerId: string, target = DEFAULT_DEV_BALANCE_POKE) {
+    await this.economics.ensureWallet(playerId);
+    const current = await this.economics.getBalance(playerId);
+    if (current < target) {
+      await this.economics.credit(playerId, target - current);
+    }
+    return this.economics.ensureWallet(playerId);
   }
 
   private sendStatic(response: ServerResponse, file: string, contentType: string): void {
@@ -1880,9 +1935,9 @@ function isApiServerOptions(
 
 function toServerEconomics(
   value: EconomicsStore | MockEconomics | undefined,
-  allowDemoAuth: boolean,
+  devFaucet: boolean,
 ): EconomicsStore {
-  if (!value) return new InMemoryEconomicsStore(new MockEconomics({ devFaucet: allowDemoAuth }));
+  if (!value) return new InMemoryEconomicsStore(new MockEconomics({ devFaucet }));
   if (value instanceof MockEconomics) return new InMemoryEconomicsStore(value);
   return value;
 }

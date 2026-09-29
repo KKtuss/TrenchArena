@@ -3,7 +3,10 @@ export const CASUAL_FEE_BPS = 200;
 export const TOURNAMENT_TREASURY_BPS = 9000;
 export const TOURNAMENT_DEV_OPS_BPS = 1000;
 export const DEFAULT_TOURNAMENT_ENTRY_POKE = 50_000;
+/** Test faucet top-up target for every wallet that authenticates when the faucet is on. */
 export const DEFAULT_DEV_BALANCE_POKE = 10_000_000;
+/** Seed balance for built-in demo-player-1/2 (tests and local identify). */
+export const DEMO_PLAYER_STARTING_POKE = 10_000_000;
 
 export type DemoPlayerId = 'demo-player-1' | 'demo-player-2';
 export type PlayerId = string;
@@ -64,8 +67,8 @@ function isKnownPlayerId(playerId: string): boolean {
 
 export class MockEconomics {
   private readonly balances = new Map<string, number>([
-    ['demo-player-1', DEFAULT_DEV_BALANCE_POKE],
-    ['demo-player-2', DEFAULT_DEV_BALANCE_POKE],
+    ['demo-player-1', DEMO_PLAYER_STARTING_POKE],
+    ['demo-player-2', DEMO_PLAYER_STARTING_POKE],
   ]);
   private readonly holds = new Map<string, { playerId: string; amount: number }>();
   private readonly settlements = new Map<string, MockPayoutResult>();
