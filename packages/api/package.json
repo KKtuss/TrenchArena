@@ -18,7 +18,9 @@
   "dependencies": {
     "@pokearena/battle-engine": "workspace:*",
     "@pokearena/db": "workspace:*",
+    "@pokearena/solana-client": "workspace:*",
     "@pokearena/tournament": "workspace:*",
+    "@solana/web3.js": "1.98.4",
     "ws": "8.21.3"
   },
   "devDependencies": {

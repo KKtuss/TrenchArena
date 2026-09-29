@@ -179,7 +179,7 @@ test('production mode rejects demo identify and hides the demo page, while walle
 });
 
 test('development demo auth still serves the demo page and accepts demo identify', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const client = new TestClient(port);
   try {
@@ -270,7 +270,7 @@ test('only the recorded host can start a tournament', async () => {
 });
 
 test('tournament.state and tournament.result hide the opposing build', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const outsiderKey = createSolanaKeypair();
   const players: [TestClient, TestClient] = [new TestClient(port), new TestClient(port)];
@@ -440,7 +440,7 @@ test('viewer serialization never copies another player build into a shared objec
 });
 
 test('match.subscribe cannot bypass ready or locked-team requirements', async () => {
-  const server = new ApiServer();
+  const server = new ApiServer({ countdownMs: 0 });
   const port = await server.listen(0);
   const creatorKey = createSolanaKeypair();
   const opponentKey = createSolanaKeypair();
@@ -478,30 +478,47 @@ test('match.subscribe cannot bypass ready or locked-team requirements', async ()
       message.type === 'casual.state' && message.room.id === roomId
     ));
     assert.equal(stillFull.room.status, 'full');
+    assert.equal(stillFull.room.teamPreview, undefined);
 
-    creator.send({ type: 'casual.ready', roomId, ready: true, team: DEMO_TEAM_ONE });
-    await creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'full');
+    creator.send({ type: 'casual.select', roomId, slots: [0, 1, 2], confirm: true });
+    const prematureSelect = await creator.waitFor<any>(message => message.type === 'error');
+    assert.equal(prematureSelect.code, 'CasualSelectionError');
     creator.send({ type: 'match.subscribe', matchId });
     await creator.waitFor(message => message.type === 'match.subscribed' || message.type === 'error');
     creator.send({ type: 'casual.subscribe', roomId });
-    const onlyOneReady = await creator.waitFor<any>(message => (
+    const onlyWaiting = await creator.waitFor<any>(message => (
       message.type === 'casual.state' && message.room.status !== 'battling'
     ));
-    assert.notEqual(onlyOneReady.room.status, 'battling');
-
-    opponent.send({ type: 'casual.ready', roomId, ready: true });
-    await opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready');
-    opponent.send({ type: 'match.subscribe', matchId });
-    const missingTeam = await opponent.waitFor<any>(message => message.type === 'error');
-    assert.equal(missingTeam.code, 'CasualTeamRequiredError');
-    opponent.send({ type: 'casual.subscribe', roomId });
-    const notStarted = await opponent.waitFor<any>(message => (
-      message.type === 'casual.state' && message.room.id === roomId && message.room.status === 'ready'
-    ));
-    assert.equal(notStarted.room.status, 'ready');
+    assert.notEqual(onlyWaiting.room.status, 'battling');
 
     opponent.send({ type: 'casual.ready', roomId, ready: true, team: DEMO_TEAM_TWO });
-    await opponent.waitFor(message => message.type === 'casual.state' && message.room.ready[opponentKey.address] === true);
+    const customTeam = await opponent.waitFor<any>(message => message.type === 'error');
+    assert.equal(customTeam.code, 'CasualCustomTeamRejectedError');
+
+    creator.send({ type: 'casual.ready', roomId, ready: true });
+    opponent.send({ type: 'casual.ready', roomId, ready: true });
+    await Promise.all([
+      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+    ]);
+
+    creator.send({ type: 'casual.select', roomId, slots: [0, 1, 2], confirm: true });
+    await creator.waitFor(message => (
+      message.type === 'casual.state' && message.room.ready[creatorKey.address] === true
+    ));
+    creator.send({ type: 'match.subscribe', matchId });
+    const stillDrafting = await creator.waitFor<any>(message => (
+      message.type === 'match.subscribed' || message.type === 'error'
+    ));
+    if (stillDrafting.type === 'match.subscribed') {
+      assert.notEqual(stillDrafting.match.status, 'active');
+    }
+
+    opponent.send({ type: 'casual.select', roomId, slots: [0, 1, 2], confirm: true });
+    await opponent.waitFor(message => (
+      message.type === 'casual.state'
+      && message.room.teamPreview?.every((preview: { confirmed?: boolean }) => preview.confirmed)
+    ));
     creator.send({ type: 'match.subscribe', matchId });
     const started = await creator.waitFor<any>(message => message.type === 'match.subscribed');
     assert.equal(started.match.status, 'active');

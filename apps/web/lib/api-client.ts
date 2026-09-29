@@ -211,6 +211,16 @@ export function formatPoke(amount: number): string {
   return `${amount.toLocaleString('en-US')} POKE`;
 }
 
+export function formatSolLamports(lamports: number | string): string {
+  const value = typeof lamports === 'string' ? Number(lamports) : lamports;
+  if (!Number.isFinite(value)) return '— SOL';
+  return `${(value / 1e9).toLocaleString('en-US', { maximumFractionDigits: 9 })} SOL`;
+}
+
+export function formatUsdCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 export function choiceFromAvailable(choice: {
   type: string;
   slot?: number;

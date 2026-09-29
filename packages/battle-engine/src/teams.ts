@@ -14,6 +14,15 @@ const FORMAT_RULES: Record<SupportedFormat, readonly string[]> = {
   gen9ou: [],
 };
 
+export const CASUAL_TEAM_SIZE = 3;
+export const CASUAL_SHOWDOWN_FORMAT_ID =
+  'gen9ou@@@Min Team Size = 3,Max Team Size = 3,!Team Preview,Terastal Clause';
+
+export interface PackTeamOptions {
+  size?: number;
+  showdownFormatId?: string;
+}
+
 export function assertSupportedFormat(format: string): asserts format is SupportedFormat {
   if (!(SUPPORTED_FORMATS as readonly string[]).includes(format)) {
     throw new UnsupportedFormatError(format);
@@ -36,22 +45,86 @@ export function teamSpeciesList(teamText: string): string[] {
 export function validateAndPackTeam(
   teamText: string,
   format: SupportedFormat,
+  options: PackTeamOptions = {},
 ): string {
   const team = Teams.import(teamText);
-  if (!team || team.length !== 6) {
+  const size = options.size ?? 6;
+  if (!team || team.length !== size) {
     throw new TeamValidationError(
-      `A ${format} team must contain exactly six valid Pokémon sets.`,
+      size === 6
+        ? `A ${format} team must contain exactly six valid Pokémon sets.`
+        : `A Casual battle team must contain exactly ${size} valid Pokémon sets.`,
     );
   }
 
-  const problems = new TeamValidator(format).validateTeam(team);
+  const validatorFormat = options.showdownFormatId ?? format;
+  const problems = new TeamValidator(validatorFormat).validateTeam(team);
   if (problems?.length) {
     throw new TeamValidationError(
-      `Team is invalid for ${format}:\n- ${problems.join('\n- ')}`,
+      `Team is invalid for ${validatorFormat}:\n- ${problems.join('\n- ')}`,
     );
   }
 
   return Teams.pack(team);
+}
+
+export function sliceTeamText(teamText: string, slots: readonly number[]): string {
+  const team = Teams.import(teamText) as ImportedSet[] | null;
+  if (!team?.length) {
+    throw new TeamValidationError('Team paste is empty.');
+  }
+  const picked = slots.map(slot => {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= team.length) {
+      throw new TeamValidationError(`Invalid team slot ${slot}.`);
+    }
+    const set = team[slot];
+    if (!set) {
+      throw new TeamValidationError(`Missing Pokémon in slot ${slot}.`);
+    }
+    return set;
+  });
+  return picked.map(exportImportedSet).join('\n\n');
+}
+
+function exportImportedSet(set: ImportedSet): string {
+  const lines = [set.item ? `${set.species} @ ${set.item}` : set.species];
+  if (set.ability) lines.push(`Ability: ${set.ability}`);
+  if (set.teraType) lines.push(`Tera Type: ${set.teraType}`);
+  if (set.level && set.level !== 100) lines.push(`Level: ${set.level}`);
+  const evLine = formatStatLine('EVs', set.evs);
+  if (evLine) lines.push(evLine);
+  if (set.nature) lines.push(`${set.nature} Nature`);
+  const ivLine = formatStatLine('IVs', set.ivs, 31);
+  if (ivLine) lines.push(ivLine);
+  for (const move of (set.moves ?? []).slice(0, 4)) {
+    if (move) lines.push(`- ${move}`);
+  }
+  return lines.join('\n');
+}
+
+const STAT_LABELS: Record<StatId, string> = {
+  hp: 'HP',
+  atk: 'Atk',
+  def: 'Def',
+  spa: 'SpA',
+  spd: 'SpD',
+  spe: 'Spe',
+};
+
+function formatStatLine(
+  label: 'EVs' | 'IVs',
+  stats: Partial<Record<StatId, number>> | undefined,
+  omitValue?: number,
+): string | undefined {
+  if (!stats) return undefined;
+  const parts: string[] = [];
+  for (const stat of STATS) {
+    const value = stats[stat];
+    if (value === undefined || value === omitValue || (label === 'EVs' && value === 0)) continue;
+    parts.push(`${value} ${STAT_LABELS[stat]}`);
+  }
+  if (!parts.length) return undefined;
+  return `${label}: ${parts.join(' / ')}`;
 }
 
 const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'] as const;
@@ -224,6 +297,31 @@ export function searchTeamOptions(
   return searchTeamHits(kind, query, speciesName).hits.map(hit => hit.name);
 }
 
+const OU_BANNED_TIERS = new Set(['Uber', 'AG', 'Illegal', 'Unreleased']);
+
+function isGen9OuSpecies(species: {
+  exists: boolean;
+  num: number;
+  isNonstandard?: string | null;
+  battleOnly?: string | string[] | boolean;
+  tier?: string;
+}): boolean {
+  if (!species.exists || species.num <= 0 || species.isNonstandard || species.battleOnly) return false;
+  const tier = species.tier ?? '';
+  return !OU_BANNED_TIERS.has(tier) && !/^CAP/i.test(tier);
+}
+
+function ouSpeciesHits(needle: string): TeamSearchHit[] {
+  const hits = Dex.species.all()
+    .filter(species => (
+      isGen9OuSpecies(species)
+      && (!needle || species.name.toLowerCase().includes(needle))
+    ))
+    .sort((left, right) => left.num - right.num || left.name.localeCompare(right.name))
+    .map(species => ({ name: species.name, types: [...species.types] }));
+  return needle ? hits.slice(0, 48) : hits;
+}
+
 export function searchTeamHits(
   kind: TeamSearchKind,
   query: string,
@@ -238,7 +336,7 @@ export function searchTeamHits(
       const filtered = needle
         ? abilities.filter(name => name.toLowerCase().includes(needle))
         : abilities;
-      return { scoped: true, hits: filtered.slice(0, 8).map(describeAbility) };
+      return { scoped: true, hits: filtered.map(describeAbility) };
     }
   }
   if (kind === 'move' && speciesName && Dex.species.get(speciesName)?.exists) {
@@ -247,27 +345,30 @@ export function searchTeamHits(
       ? legal.filter(hit => (
         hit.name.toLowerCase().includes(needle)
         || (hit.type ?? '').toLowerCase().includes(needle)
+        || (hit.category ?? '').toLowerCase().includes(needle)
         || (hit.description ?? '').toLowerCase().includes(needle)
       ))
       : legal;
-    return { scoped: true, hits: filtered.slice(0, needle ? 24 : 120) };
+    return { scoped: true, hits: filtered };
   }
-  if (!needle) return { scoped: false, hits: [] };
   if (kind === 'species') {
-    return {
-      scoped: false,
-      hits: Dex.species.all()
-        .filter(species => (
-          species.exists
-          && species.num > 0
-          && !species.isNonstandard
-          && species.name.toLowerCase().includes(needle)
-        ))
-        .slice(0, 8)
-        .map(species => ({ name: species.name, types: [...species.types] })),
-    };
+    return { scoped: false, hits: ouSpeciesHits(needle) };
+  }
+  if (kind === 'item') {
+    const hits = Dex.items.all()
+      .filter(item => (
+        item.exists
+        && !item.isNonstandard
+        && (!needle || item.name.toLowerCase().includes(needle))
+      ))
+      .map(item => ({
+        name: item.name,
+        description: readShortDesc(item),
+      }));
+    return { scoped: false, hits: needle ? hits.slice(0, 48) : hits };
   }
   if (kind === 'move') {
+    if (!needle) return { scoped: false, hits: [] };
     return {
       scoped: false,
       hits: Dex.moves.all()
@@ -281,28 +382,17 @@ export function searchTeamHits(
             || move.type.toLowerCase().includes(needle)
           )
         ))
-        .slice(0, 12)
+        .slice(0, 24)
         .map(move => describeMove(move.name))
         .filter((hit): hit is TeamSearchHit => hit !== null),
     };
   }
-  if (kind === 'item') {
-    return {
-      scoped: false,
-      hits: Dex.items.all()
-        .filter(item => item.exists && !item.isNonstandard && item.name.toLowerCase().includes(needle))
-        .slice(0, 8)
-        .map(item => ({
-          name: item.name,
-          description: readShortDesc(item),
-        })),
-    };
-  }
+  if (!needle) return { scoped: false, hits: [] };
   return {
     scoped: false,
     hits: Dex.abilities.all()
       .filter(ability => ability.exists && !ability.isNonstandard && ability.name.toLowerCase().includes(needle))
-      .slice(0, 8)
+      .slice(0, 24)
       .map(ability => describeAbility(ability.name)),
   };
 }

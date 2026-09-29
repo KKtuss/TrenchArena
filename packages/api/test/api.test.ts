@@ -183,7 +183,7 @@ async function createTwoPlayerMatch(server: ApiServer): Promise<{
 }
 
 test('two WebSocket clients play a complete tournament match with isolated events', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const { clients, port, matchId, battleInstanceId, snapshots } = await createTwoPlayerMatch(server);
   let [stateA, stateB] = snapshots;
 
@@ -243,7 +243,7 @@ test('two WebSocket clients play a complete tournament match with isolated event
 });
 
 test('rejects stale, raw, and unauthorized WebSocket actions', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const { clients, matchId, battleInstanceId, snapshots } = await createTwoPlayerMatch(server);
   const snapshot = snapshots[0];
 
@@ -302,7 +302,7 @@ test('rejects stale, raw, and unauthorized WebSocket actions', async () => {
 });
 
 test('rejects duplicate choice submissions and reconnects before the first choice', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const { clients, port, matchId, battleInstanceId, snapshots } = await createTwoPlayerMatch(server);
   const snapshot = snapshots[0];
   const choiceMessage = {
@@ -337,7 +337,7 @@ test('rejects duplicate choice submissions and reconnects before the first choic
 });
 
 test('keeps two simultaneous matches isolated', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const clients = await Promise.all([
     new TestClient(port),
@@ -384,7 +384,7 @@ test('keeps two simultaneous matches isolated', async () => {
 });
 
 test('inspects a Gen 9 OU paste and searches the dex', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const client = new TestClient(port);
   await client.open();
@@ -399,6 +399,18 @@ test('inspects a Gen 9 OU paste and searches the dex', async () => {
   client.send({ type: 'team.search', kind: 'species', query: 'ghold' });
   const search = await client.waitFor<any>(message => message.type === 'team.search');
   assert.ok(search.results.includes('Gholdengo'));
+  client.send({ type: 'team.search', kind: 'species', query: '' });
+  const catalog = await client.waitFor<any>(message => message.type === 'team.search' && message.results.length > 8);
+  assert.ok(catalog.results.includes('Great Tusk'));
+  assert.equal(catalog.results.includes('Koraidon'), false);
+  assert.ok((catalog.hits?.length ?? 0) > 400);
+  client.send({ type: 'team.search', kind: 'item', query: 'choice' });
+  const items = await client.waitFor<any>(message => message.type === 'team.search' && message.scoped === false);
+  assert.ok(items.results.includes('Choice Scarf'));
+  assert.ok(items.hits?.some((hit: any) => hit.name === 'Choice Band'));
+  client.send({ type: 'team.search', kind: 'move', query: 'hydro', species: 'Pelipper' });
+  const moves = await client.waitFor<any>(message => message.type === 'team.search' && message.scoped === true);
+  assert.ok(moves.hits?.some((hit: any) => hit.name === 'Hydro Pump' && hit.type === 'Water'));
   await client.close();
   await server.close();
 });

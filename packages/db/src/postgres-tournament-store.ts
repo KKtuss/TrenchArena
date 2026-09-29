@@ -136,7 +136,7 @@ export class PostgresTournamentStore implements TournamentStore {
       const registrationOrder = Number(order.rows[0]?.count ?? 0);
       await this.ensureWallet(client, input.playerId);
 
-      if (tournament.entryFee > 0) {
+      if (tournament.rail !== 'sol_chain' && tournament.entryFee > 0) {
         const holdKey = `tournament:${input.tournamentId}:${input.playerId}`;
         await this.debit(client, input.playerId, tournament.entryFee);
         await client.query(
@@ -341,13 +341,19 @@ export class PostgresTournamentStore implements TournamentStore {
     await client.query(
       `INSERT INTO tournaments (
          id, title, format, max_players, bracket_seed, match_timeout_ms, status,
-         host_id, entry_fee, winner_id, created_at, updated_at, started_at, completed_at
+         host_id, entry_fee, rail, entry_atoms, entry_quote_id, prize_lamports,
+         winner_id, created_at, updated_at, started_at, completed_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, $10, $11, $12, $13, $14
+         $1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, $10, $11, $12,
+         $13::bigint, $14, $15, $16, $17, $18
        )
        ON CONFLICT (id) DO UPDATE SET
          title = EXCLUDED.title,
          status = EXCLUDED.status,
+         rail = EXCLUDED.rail,
+         entry_atoms = EXCLUDED.entry_atoms,
+         entry_quote_id = EXCLUDED.entry_quote_id,
+         prize_lamports = EXCLUDED.prize_lamports,
          winner_id = EXCLUDED.winner_id,
          updated_at = EXCLUDED.updated_at,
          started_at = EXCLUDED.started_at,
@@ -362,6 +368,10 @@ export class PostgresTournamentStore implements TournamentStore {
         tournament.status,
         tournament.hostId,
         pokeToPg(tournament.entryFee),
+        tournament.rail ?? 'legacy_poke',
+        tournament.entryAtoms === undefined ? null : pokeToPg(tournament.entryAtoms),
+        tournament.entryQuoteId ?? null,
+        tournament.prizeLamports === undefined ? null : pokeToPg(tournament.prizeLamports),
         tournament.winner ?? null,
         new Date(tournament.createdAt),
         new Date(tournament.updatedAt),
@@ -491,6 +501,14 @@ export class PostgresTournamentStore implements TournamentStore {
       status: String(row.status),
       hostId: String(row.host_id),
       entryFee: pokeFromPg(row.entry_fee),
+      ...(row.rail === 'sol_chain' || row.rail === 'legacy_poke' ? { rail: row.rail } : {}),
+      ...(row.entry_atoms !== null && row.entry_atoms !== undefined
+        ? { entryAtoms: pokeFromPg(row.entry_atoms) }
+        : {}),
+      ...(row.entry_quote_id ? { entryQuoteId: String(row.entry_quote_id) } : {}),
+      ...(row.prize_lamports !== null && row.prize_lamports !== undefined
+        ? { prizeLamports: pokeFromPg(row.prize_lamports) }
+        : {}),
       players: playerRows.map(player => ({
         id: String(player.player_id),
         displayName: String(player.display_name),

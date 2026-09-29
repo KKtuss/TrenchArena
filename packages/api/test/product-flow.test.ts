@@ -79,7 +79,7 @@ function choiceFor(choice: any): any {
 }
 
 test('product flow exposes arena snapshot, casual rooms, battle view, and tournament discovery', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const clients: [TestClient, TestClient] = [new TestClient(port), new TestClient(port)];
   await Promise.all(clients.map(client => client.open()));
@@ -106,10 +106,15 @@ test('product flow exposes arena snapshot, casual rooms, battle view, and tourna
   clients[0].send({ type: 'casual.ready', roomId: created.room.id, ready: true });
   clients[1].send({ type: 'casual.ready', roomId: created.room.id, ready: true });
   await Promise.all(clients.map(client => client.waitFor(message => (
-    message.type === 'casual.state' && message.room.status === 'ready'
+    message.type === 'casual.state' && message.room.status === 'drafting'
+  ))));
+  clients[0].send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+  clients[1].send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+  await Promise.all(clients.map(client => client.waitFor(message => (
+    message.type === 'casual.state'
+    && message.room.teamPreview?.every((preview: { confirmed?: boolean }) => preview.confirmed)
   ))));
 
-  clients[0].send({ type: 'casual.start', roomId: created.room.id });
   const started = await clients[0].waitFor<any>(message => (
     message.type === 'casual.state' && message.room.status === 'battling'
   ));
@@ -159,8 +164,108 @@ test('product flow exposes arena snapshot, casual rooms, battle view, and tourna
   await server.close();
 });
 
+test('websocket Casual views hide opponent picks until both confirm and keep assigned presets', async () => {
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
+  const port = await server.listen(0);
+  const clients: [TestClient, TestClient] = [new TestClient(port), new TestClient(port)];
+  await Promise.all(clients.map(client => client.open()));
+  clients[0].send({ type: 'identify', playerId: 'demo-player-1' });
+  clients[1].send({ type: 'identify', playerId: 'demo-player-2' });
+  await Promise.all(clients.map(client => client.waitFor(message => message.type === 'ready' && message.playerId)));
+
+  clients[0].send({
+    type: 'casual.create',
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: 1_000,
+  });
+  const created = await clients[0].waitFor<any>(message => message.type === 'casual.created');
+  const roomId = created.room.id;
+  clients[1].send({ type: 'casual.accept', roomId });
+  const accepted = await Promise.all(clients.map(client => client.waitFor<any>(message => (
+    message.type === 'casual.state' && message.room.id === roomId && message.room.status === 'full'
+  ))));
+  assert.equal(accepted[0].room.teamPreview, undefined);
+
+  clients[0].send({ type: 'casual.ready', roomId, ready: true });
+  clients[1].send({ type: 'casual.ready', roomId, ready: true });
+  const dealt = await Promise.all(clients.map(client => client.waitFor<any>(message => (
+    message.type === 'casual.state' && message.room.id === roomId && message.room.status === 'drafting'
+  ))));
+  const creatorPreset = dealt[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.presetId;
+  const opponentPreset = dealt[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.presetId;
+  assert.ok(creatorPreset);
+  assert.ok(opponentPreset);
+  assert.notEqual(creatorPreset, opponentPreset);
+
+  clients[0].send({ type: 'casual.select', roomId, slots: [0, 2, 4], confirm: true });
+  const afterCreator = await Promise.all(clients.map(client => client.waitFor<any>(message => (
+    message.type === 'casual.state'
+    && message.room.id === roomId
+    && message.room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.confirmed === true
+  ))));
+  assert.deepEqual(
+    afterCreator[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.selectedSlots,
+    [0, 2, 4],
+  );
+  assert.equal(
+    afterCreator[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.selectedSlots,
+    undefined,
+  );
+  assert.equal(
+    afterCreator[1].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.selectedSlots,
+    undefined,
+  );
+  assert.equal(afterCreator[1].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.confirmed, true);
+
+  clients[0].send({ type: 'casual.subscribe', roomId });
+  const reconnect = await clients[0].waitFor<any>(message => (
+    message.type === 'casual.state'
+    && message.room.id === roomId
+    && JSON.stringify(message.room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.selectedSlots) === JSON.stringify([0, 2, 4])
+  ));
+  assert.equal(
+    reconnect.room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.presetId,
+    creatorPreset,
+  );
+  assert.equal(
+    reconnect.room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.presetId,
+    opponentPreset,
+  );
+  assert.deepEqual(
+    reconnect.room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.selectedSlots,
+    [0, 2, 4],
+  );
+
+  clients[1].send({ type: 'casual.select', roomId, slots: [1, 3, 5], confirm: true });
+  const revealed = await Promise.all(clients.map(client => client.waitFor<any>(message => (
+    message.type === 'casual.state'
+    && message.room.id === roomId
+    && message.room.teamPreview?.every((item: any) => item.confirmed)
+  ))));
+  assert.deepEqual(
+    revealed[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.selectedSlots,
+    [0, 2, 4],
+  );
+  assert.deepEqual(
+    revealed[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.selectedSlots,
+    [1, 3, 5],
+  );
+  assert.deepEqual(
+    revealed[1].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.selectedSlots,
+    [0, 2, 4],
+  );
+  assert.deepEqual(
+    revealed[1].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.selectedSlots,
+    [1, 3, 5],
+  );
+
+  await Promise.all(clients.map(client => client.close()));
+  await server.close();
+});
+
 test('stale casual choices are rejected and valid choices are accepted', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const clients: [TestClient, TestClient] = [new TestClient(port), new TestClient(port)];
   await Promise.all(clients.map(client => client.open()));
@@ -180,7 +285,13 @@ test('stale casual choices are rejected and valid choices are accepted', async (
   clients[0].send({ type: 'casual.ready', roomId: created.room.id, ready: true });
   clients[1].send({ type: 'casual.ready', roomId: created.room.id, ready: true });
   await Promise.all(clients.map(client => client.waitFor(message => (
-    message.type === 'casual.state' && message.room.status === 'ready'
+    message.type === 'casual.state' && message.room.status === 'drafting'
+  ))));
+  clients[0].send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+  clients[1].send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+  await Promise.all(clients.map(client => client.waitFor(message => (
+    message.type === 'casual.state'
+    && message.room.teamPreview?.every((preview: { confirmed?: boolean }) => preview.confirmed)
   ))));
   clients[0].send({ type: 'casual.start', roomId: created.room.id });
   const started = await clients[0].waitFor<any>(message => (

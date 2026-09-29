@@ -52,6 +52,7 @@ export interface TournamentWinInput {
 }
 
 export type DurableCasualRoomStatus =
+  | 'pending_deposit'
   | 'open'
   | 'full'
   | 'ready'
@@ -68,6 +69,8 @@ export interface CasualRoomCreateInput {
   creatorId: string;
   invitedPlayerId?: string;
   collateral: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  collateralLamports?: number;
 }
 
 export interface CasualRoomAcceptInput {
@@ -119,6 +122,9 @@ export interface DurableCasualRoom {
   resultStatus?: 'win' | 'tie';
   settlementKey?: string;
   battleInstanceId?: string;
+  /** `legacy_poke` (default) or `sol_chain`. */
+  rail?: 'legacy_poke' | 'sol_chain';
+  collateralLamports?: number;
 }
 
 /**

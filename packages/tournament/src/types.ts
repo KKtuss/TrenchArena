@@ -86,6 +86,10 @@ export interface Tournament {
   status: TournamentStatus;
   hostId: string;
   entryFee: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  entryAtoms?: number;
+  entryQuoteId?: string;
+  prizeLamports?: number;
   players: TournamentPlayer[];
   matchIds: TournamentMatchId[];
   winner?: TournamentPlayerId;
@@ -103,6 +107,10 @@ export interface CreateTournamentInput {
   matchTimeoutMs?: number;
   hostId?: string;
   entryFee?: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  entryAtoms?: number;
+  entryQuoteId?: string;
+  prizeLamports?: number;
 }
 
 export interface RegisterPlayerInput {

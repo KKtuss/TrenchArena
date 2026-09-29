@@ -6,10 +6,9 @@ import { useEffect, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 
 import { TeamStrip } from '@/components/showdown-visuals';
-import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
-import { shortenAddress } from '@/lib/trainer-profile';
 
 export default function ResultPage() {
   const params = useParams<{ id: string }>();
@@ -64,7 +63,7 @@ export default function ResultPage() {
         <div>
           <p className="pa-kicker"><i /> — Result · mock ledger —</p>
           <h1>{title}</h1>
-          <p className="pa-lead">Mock POKE settlement. Not an on-chain payout.</p>
+          <p className="pa-lead">Match settlement. With chain economy enabled, SOL payouts settle on-chain.</p>
         </div>
         <span className="pa-chip amber">{payoutReasonLabel(payout?.reason).toUpperCase()}</span>
       </header>
@@ -84,7 +83,7 @@ export default function ResultPage() {
           <div className="pa-result-banner">
             <span className="pa-result-banner-kicker">Winner takes</span>
             <strong>{formatPoke(payout.amount)}</strong>
-            <span className="pa-result-banner-who">{winner}</span>
+            <span className="pa-result-banner-who"><TrainerName playerId={winner} /></span>
           </div>
         ) : (
           <div className="pa-result-summary">
@@ -204,7 +203,7 @@ function ResultSide({
         <span className="pa-result-sprite-foot">{footer}</span>
       </div>
       <div className="pa-result-side-meta">
-        <b>{shortenAddress(playerId)}</b>
+        <b><TrainerName playerId={playerId} /></b>
         <small>{role}</small>
         {outcome === 'win' && payout !== undefined ? (
           <em className="pa-result-side-take">+{formatPoke(payout)}</em>

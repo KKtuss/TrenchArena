@@ -8,7 +8,7 @@ import { WebSocket } from 'ws';
 // Built API package — keeps this POC from re-implementing the gateway.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { ApiServer } = require('../../../../packages/api/dist/src/server') as {
-  ApiServer: new () => {
+  ApiServer: new (options?: { allowDemoAuth?: boolean }) => {
     listen(port?: number): Promise<number>;
     close(): Promise<void>;
   };
@@ -23,7 +23,7 @@ const publicDir = join(__dirname, '../../public');
  * - auto bot for demo-player-2 so one browser can exercise a full choice path
  */
 async function main(): Promise<void> {
-  const api = new ApiServer();
+  const api = new ApiServer({ allowDemoAuth: true });
   const apiPort = await api.listen(0);
 
   const http = createServer((request, response) => {

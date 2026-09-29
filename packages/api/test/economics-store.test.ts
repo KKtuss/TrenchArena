@@ -104,7 +104,7 @@ test('constructing ApiServer without options uses in-memory economics outside pr
   delete process.env.POKEARENA_ECONOMICS;
   try {
     if (resolveEconomicsBackend() === 'postgres') return;
-    const server = new ApiServer({ allowDemoAuth: true });
+    const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
     assert.equal(await server.economics.getBalance('demo-player-1'), 10_000_000);
     await server.close();
   } finally {

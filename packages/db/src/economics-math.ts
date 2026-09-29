@@ -42,7 +42,11 @@ export function previewCasual(collateral: number): CasualEconomicsPreview {
   };
 }
 
-/** Same integer fee math as `MockEconomics.previewTournament`. */
+/**
+ * Legacy POKE entry-fee preview. Kept for grandfathered tournaments only.
+ * New chain tournaments must NOT use this to derive prizes — prizes come from
+ * the SOL treasury via `previewTreasuryDeposit`.
+ */
 export function previewTournament(entryFee: number, playerCount: number): TournamentEconomicsPreview {
   if (!Number.isInteger(entryFee) || entryFee < 0) {
     throw new Error('Tournament entry fee must be a non-negative integer.');
@@ -63,5 +67,28 @@ export function previewTournament(entryFee: number, playerCount: number): Tourna
     devOpsShare,
     devOpsBps: TOURNAMENT_DEV_OPS_BPS,
     prizePool: treasuryShare,
+  };
+}
+
+/** 90/10 split for realized creator-reward SOL deposits into the treasury. */
+export function previewTreasuryDeposit(grossLamports: number): {
+  symbol: 'SOL';
+  grossLamports: number;
+  treasuryLamports: number;
+  treasuryBps: number;
+  operatorLamports: number;
+  operatorBps: number;
+} {
+  if (!Number.isInteger(grossLamports) || grossLamports <= 0) {
+    throw new Error('Gross treasury deposit must be a positive integer lamport amount.');
+  }
+  const treasuryLamports = Math.floor((grossLamports * TOURNAMENT_TREASURY_BPS) / 10_000);
+  return {
+    symbol: 'SOL',
+    grossLamports,
+    treasuryLamports,
+    treasuryBps: TOURNAMENT_TREASURY_BPS,
+    operatorLamports: grossLamports - treasuryLamports,
+    operatorBps: TOURNAMENT_DEV_OPS_BPS,
   };
 }

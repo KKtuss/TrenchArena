@@ -1,4 +1,10 @@
-import { migrate, Pool, PostgresEconomicsStore, PostgresTournamentStore } from '@pokearena/db';
+import {
+  migrate,
+  Pool,
+  PostgresChainStore,
+  PostgresEconomicsStore,
+  PostgresTournamentStore,
+} from '@pokearena/db';
 
 export type EconomicsBackend = 'memory' | 'postgres';
 
@@ -38,6 +44,7 @@ export function isPostgresEconomicsRequired(
 export async function connectPostgresEconomics(env: NodeJS.ProcessEnv = process.env): Promise<{
   store: PostgresEconomicsStore;
   tournaments: PostgresTournamentStore;
+  chain: PostgresChainStore;
   pool: Pool;
 }> {
   const url = env.POKEARENA_DATABASE_URL ?? env.DATABASE_URL;
@@ -74,6 +81,7 @@ export async function connectPostgresEconomics(env: NodeJS.ProcessEnv = process.
   return {
     store: new PostgresEconomicsStore(pool),
     tournaments: new PostgresTournamentStore(pool),
+    chain: new PostgresChainStore(pool),
     pool,
   };
 }

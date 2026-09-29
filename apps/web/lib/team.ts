@@ -139,6 +139,53 @@ export interface SavedRoster {
   teams: SavedTeam[];
 }
 
+export interface SearchableTeamHit {
+  name: string;
+  description?: string;
+  type?: string;
+  types?: string[];
+  category?: string;
+}
+
+export function filterSpeciesHits<T extends SearchableTeamHit>(
+  hits: T[],
+  query: string,
+  type = '',
+): T[] {
+  const needle = query.trim().toLowerCase();
+  return hits.filter(hit => (
+    (!type || (hit.types ?? []).includes(type))
+    && (!needle || hit.name.toLowerCase().includes(needle))
+  ));
+}
+
+export function filterItemHits<T extends SearchableTeamHit>(hits: T[], query: string): T[] {
+  const needle = query.trim().toLowerCase();
+  return hits.filter(hit => (
+    !needle
+    || hit.name.toLowerCase().includes(needle)
+    || (hit.description ?? '').toLowerCase().includes(needle)
+  ));
+}
+
+export function filterMoveHits<T extends SearchableTeamHit>(
+  hits: T[],
+  query: string,
+  type = '',
+  category = '',
+): T[] {
+  const needle = query.trim().toLowerCase();
+  return hits.filter(hit => (
+    (!type || hit.type === type)
+    && (!category || hit.category === category)
+    && (!needle || (
+      hit.name.toLowerCase().includes(needle)
+      || (hit.type ?? '').toLowerCase().includes(needle)
+      || (hit.description ?? '').toLowerCase().includes(needle)
+    ))
+  ));
+}
+
 const EMPTY_EVS: Record<StatId, number> = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
 const FULL_IVS: Record<StatId, number> = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
 

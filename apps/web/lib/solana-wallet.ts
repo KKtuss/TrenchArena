@@ -13,6 +13,16 @@ export type SolanaWalletAdapter = {
   connect(): Promise<{ publicKey?: { toString(): string } } | void>;
   disconnect(): Promise<void>;
   signMessage(message: Uint8Array): Promise<Uint8Array | { signature: Uint8Array }>;
+  signTransaction?<T>(transaction: T): Promise<T>;
+  signAndSendTransaction?<T>(
+    transaction: T,
+    options?: { skipPreflight?: boolean },
+  ): Promise<{ signature: string } | string>;
+  sendTransaction?<T>(
+    transaction: T,
+    connection?: unknown,
+    options?: { skipPreflight?: boolean },
+  ): Promise<string>;
 };
 
 declare global {

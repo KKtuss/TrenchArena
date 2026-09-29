@@ -11,6 +11,7 @@ export interface RateLimitConfig {
   casualCreate: number;
   tournamentCreate: number;
   teamSearch: number;
+  teamInspect: number;
   matchChoice: number;
 }
 
@@ -19,7 +20,8 @@ export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   authChallenge: 10,
   casualCreate: 20,
   tournamentCreate: 10,
-  teamSearch: 60,
+  teamSearch: 180,
+  teamInspect: 90,
   matchChoice: 120,
 };
 
@@ -38,6 +40,7 @@ export function resolveRateLimitConfig(overrides: Partial<RateLimitConfig> = {})
     tournamentCreate: overrides.tournamentCreate
       ?? envRate('POKEARENA_RATE_TOURNAMENT_CREATE', DEFAULT_RATE_LIMITS.tournamentCreate),
     teamSearch: overrides.teamSearch ?? envRate('POKEARENA_RATE_TEAM_SEARCH', DEFAULT_RATE_LIMITS.teamSearch),
+    teamInspect: overrides.teamInspect ?? envRate('POKEARENA_RATE_TEAM_INSPECT', DEFAULT_RATE_LIMITS.teamInspect),
     matchChoice: overrides.matchChoice ?? envRate('POKEARENA_RATE_MATCH_CHOICE', DEFAULT_RATE_LIMITS.matchChoice),
   };
 }
@@ -88,6 +91,7 @@ export class ProtocolRateLimiter {
   readonly casualCreate: SlidingWindowLimiter;
   readonly tournamentCreate: SlidingWindowLimiter;
   readonly teamSearch: SlidingWindowLimiter;
+  readonly teamInspect: SlidingWindowLimiter;
   readonly matchChoice: SlidingWindowLimiter;
   private readonly timer: NodeJS.Timeout;
 
@@ -96,6 +100,7 @@ export class ProtocolRateLimiter {
     this.casualCreate = new SlidingWindowLimiter(config.windowMs, config.casualCreate);
     this.tournamentCreate = new SlidingWindowLimiter(config.windowMs, config.tournamentCreate);
     this.teamSearch = new SlidingWindowLimiter(config.windowMs, config.teamSearch);
+    this.teamInspect = new SlidingWindowLimiter(config.windowMs, config.teamInspect);
     this.matchChoice = new SlidingWindowLimiter(config.windowMs, config.matchChoice);
     this.timer = setInterval(() => this.prune(), Math.max(config.windowMs, 1_000));
     this.timer.unref?.();
@@ -110,6 +115,7 @@ export class ProtocolRateLimiter {
     this.casualCreate.prune(now);
     this.tournamentCreate.prune(now);
     this.teamSearch.prune(now);
+    this.teamInspect.prune(now);
     this.matchChoice.prune(now);
   }
 

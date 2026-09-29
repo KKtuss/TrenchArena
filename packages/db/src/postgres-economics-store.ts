@@ -104,6 +104,8 @@ function roomFromRow(row: {
   result_status: string | null;
   settlement_key: string | null;
   battle_instance_id: string | null;
+  rail?: string | null;
+  collateral_lamports?: string | null;
 }): DurableCasualRoom {
   return {
     id: row.id,
@@ -121,6 +123,10 @@ function roomFromRow(row: {
       : {}),
     ...(row.settlement_key ? { settlementKey: row.settlement_key } : {}),
     ...(row.battle_instance_id ? { battleInstanceId: row.battle_instance_id } : {}),
+    ...(row.rail === 'sol_chain' || row.rail === 'legacy_poke' ? { rail: row.rail } : {}),
+    ...(row.collateral_lamports
+      ? { collateralLamports: pokeFromPg(row.collateral_lamports) }
+      : {}),
   };
 }
 
@@ -193,7 +199,8 @@ export class PostgresEconomicsStore implements EconomicsStore {
       const result = await client.query({
         text: `SELECT id, match_id, room_type, battle_size, creator_id, opponent_id,
                       invited_player_id, collateral, status, winner_id, result_status,
-                      settlement_key, battle_instance_id
+                      settlement_key, battle_instance_id,
+                      rail, collateral_lamports
                FROM casual_rooms WHERE id = $1`,
         values: [roomId],
       });
@@ -206,7 +213,8 @@ export class PostgresEconomicsStore implements EconomicsStore {
       const result = await client.query(
         `SELECT id, match_id, room_type, battle_size, creator_id, opponent_id,
                 invited_player_id, collateral, status, winner_id, result_status,
-                settlement_key, battle_instance_id
+                settlement_key, battle_instance_id,
+                rail, collateral_lamports
          FROM casual_rooms
          ORDER BY created_at`,
       );
@@ -352,11 +360,12 @@ export class PostgresEconomicsStore implements EconomicsStore {
     await this.transact(async client => {
       await this.upsertWallet(client, input.creatorId, 0);
       if (input.invitedPlayerId) await this.upsertWallet(client, input.invitedPlayerId, 0);
+      const rail = input.rail ?? 'legacy_poke';
       await client.query(
         `INSERT INTO casual_rooms (
            id, match_id, room_type, battle_size, format, creator_id, invited_player_id,
-           collateral, status
-         ) VALUES ($1, $2, $3, $4, 'gen9ou', $5, $6, $7::bigint, 'open')`,
+           collateral, status, rail, collateral_lamports
+         ) VALUES ($1, $2, $3, $4, 'gen9ou', $5, $6, $7::bigint, $8, $9, $10::bigint)`,
         [
           input.id,
           input.matchId,
@@ -365,13 +374,19 @@ export class PostgresEconomicsStore implements EconomicsStore {
           input.creatorId,
           input.invitedPlayerId ?? null,
           pokeToPg(input.collateral),
+          rail === 'sol_chain' ? 'pending_deposit' : 'open',
+          rail,
+          input.collateralLamports != null ? pokeToPg(input.collateralLamports) : null,
         ],
       );
-      await this.debit(client, input.creatorId, input.collateral);
-      await this.insertHold(client, holdKey, input.creatorId, input.collateral, {
-        purpose: 'casual_creator',
-        roomId: input.id,
-      });
+      // SOL-chain rooms escrow on-chain; do not debit the legacy POKE ledger.
+      if (rail !== 'sol_chain') {
+        await this.debit(client, input.creatorId, input.collateral);
+        await this.insertHold(client, holdKey, input.creatorId, input.collateral, {
+          purpose: 'casual_creator',
+          roomId: input.id,
+        });
+      }
     });
   }
 
@@ -383,19 +398,24 @@ export class PostgresEconomicsStore implements EconomicsStore {
       if (room.status === 'full' && room.opponent_id === input.opponentId) {
         const hold = await this.readHold(client, holdKey);
         if (hold?.status === 'reserved' && hold.playerId === input.opponentId) return;
+        if (room.rail === 'sol_chain') return;
       }
-      if (room.status !== 'open') throw new Error('This casual room is no longer open.');
+      const joinable = room.status === 'open'
+        || (room.rail === 'sol_chain' && room.status === 'pending_deposit');
+      if (!joinable) throw new Error('This casual room is no longer open.');
       if (room.opponent_id) throw new Error('This casual room is already full.');
       if (input.opponentId === room.creator_id) throw new Error('Creator already occupies this room.');
       if (room.invited_player_id && room.invited_player_id !== input.opponentId) {
         throw new Error('You were not invited to this private challenge.');
       }
       await this.upsertWallet(client, input.opponentId, 0);
-      await this.debit(client, input.opponentId, input.collateral);
-      await this.insertHold(client, holdKey, input.opponentId, input.collateral, {
-        purpose: 'casual_opponent',
-        roomId: input.roomId,
-      });
+      if (room.rail !== 'sol_chain') {
+        await this.debit(client, input.opponentId, input.collateral);
+        await this.insertHold(client, holdKey, input.opponentId, input.collateral, {
+          purpose: 'casual_opponent',
+          roomId: input.roomId,
+        });
+      }
       await client.query(
         `UPDATE casual_rooms
          SET opponent_id = $2, status = 'full', updated_at = now()
@@ -446,6 +466,31 @@ export class PostgresEconomicsStore implements EconomicsStore {
         if (existing) return existing;
       }
       if (room.status === 'cancelled') throw new Error('This casual room is no longer open.');
+      if (room.rail === 'sol_chain') {
+        // SOL settlement is on-chain; record a zero-POKE receipt for room completion.
+        const existing = await this.findSettlement(client, settlementKey);
+        if (existing) {
+          await this.markRoomCompleted(client, input.roomId, {
+            winnerId: existing.winnerId,
+            resultStatus: 'win',
+            settlementKey,
+          });
+          return existing;
+        }
+        const payout = await this.insertSettlement(client, {
+          key: settlementKey,
+          kind: input.reason,
+          winnerId: input.winnerId,
+          amount: 0,
+          protocolFee: 0,
+        });
+        await this.markRoomCompleted(client, input.roomId, {
+          winnerId: input.winnerId,
+          resultStatus: 'win',
+          settlementKey,
+        });
+        return payout;
+      }
       await this.lockHold(client, creatorHoldKey(input.roomId));
       await this.lockHold(client, opponentHoldKey(input.roomId));
       await this.consumeHold(client, creatorHoldKey(input.roomId));
@@ -487,6 +532,27 @@ export class PostgresEconomicsStore implements EconomicsStore {
         if (existing) return existing;
       }
       if (room.status === 'cancelled') throw new Error('This casual room is no longer open.');
+      if (room.rail === 'sol_chain') {
+        const existing = await this.findSettlement(client, settlementKey);
+        if (existing) {
+          await this.markRoomCompleted(client, input.roomId, {
+            resultStatus: 'tie',
+            settlementKey,
+          });
+          return existing;
+        }
+        const payout = await this.insertSettlement(client, {
+          key: settlementKey,
+          kind: 'casual-tie',
+          amount: 0,
+          protocolFee: 0,
+        });
+        await this.markRoomCompleted(client, input.roomId, {
+          resultStatus: 'tie',
+          settlementKey,
+        });
+        return payout;
+      }
       await this.lockHold(client, creatorHoldKey(input.roomId));
       await this.lockHold(client, opponentHoldKey(input.roomId));
       await this.consumeHold(client, creatorHoldKey(input.roomId));
@@ -769,6 +835,7 @@ export class PostgresEconomicsStore implements EconomicsStore {
     opponent_id: string | null;
     invited_player_id: string | null;
     collateral: string;
+    rail: string;
   } | undefined> {
     const result = await client.query<{
       status: string;
@@ -776,8 +843,10 @@ export class PostgresEconomicsStore implements EconomicsStore {
       opponent_id: string | null;
       invited_player_id: string | null;
       collateral: string;
+      rail: string;
     }>(
-      `SELECT status, creator_id, opponent_id, invited_player_id, collateral
+      `SELECT status, creator_id, opponent_id, invited_player_id, collateral,
+              COALESCE(rail, 'legacy_poke') AS rail
        FROM casual_rooms WHERE id = $1 FOR UPDATE`,
       [roomId],
     );

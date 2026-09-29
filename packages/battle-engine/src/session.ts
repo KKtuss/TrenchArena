@@ -44,6 +44,7 @@ type RoutedStreams = ReturnType<typeof getPlayerStreams>;
 export interface BattleSessionSetup {
   id: string;
   format: SupportedFormat;
+  showdownFormatId?: string;
   rules: readonly string[];
   seed: string;
   players: readonly [BattlePlayer, BattlePlayer];
@@ -58,6 +59,7 @@ export class BattleSession {
   readonly players: readonly [BattlePlayer, BattlePlayer];
 
   private readonly rules: readonly string[];
+  private readonly showdownFormatId: string;
   private readonly initialTeams: readonly [string, string];
   private readonly timeoutMs: number;
   private readonly playerSlots = new Map<PlayerId, PlayerSlot>();
@@ -88,6 +90,7 @@ export class BattleSession {
     this.seed = setup.seed;
     this.players = setup.players;
     this.rules = setup.rules;
+    this.showdownFormatId = setup.showdownFormatId ?? setup.format;
     this.initialTeams = setup.initialTeams;
     this.timeoutMs = setup.timeoutMs;
 
@@ -484,7 +487,7 @@ export class BattleSession {
     const [p1, p2] = this.players;
     const [team1, team2] = this.initialTeams;
     return [
-      `>start ${JSON.stringify({ formatid: this.format, seed: this.seed })}`,
+      `>start ${JSON.stringify({ formatid: this.showdownFormatId, seed: this.seed })}`,
       `>player p1 ${JSON.stringify({ name: p1.name, team: team1 })}`,
       `>player p2 ${JSON.stringify({ name: p2.name, team: team2 })}`,
     ].join('\n');

@@ -5,11 +5,10 @@ import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 
-import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
-import { shortenAddress } from '@/lib/trainer-profile';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
@@ -68,12 +67,12 @@ export default function BattlePage() {
         <div className="pa-battle-bar-fighters">
           <ProfileTrainerSprite label={you ?? 'You'} side="left" />
           <div>
-            <b>{you ? shortenAddress(you) : 'You'}</b>
+            <b>{you ? <TrainerName playerId={you} /> : 'You'}</b>
             <small>{contextLabel}</small>
           </div>
           <span className="pa-fight-vs">vs</span>
           <div className="end">
-            <b>{rival ? shortenAddress(rival) : 'Opponent'}</b>
+            <b>{rival ? <TrainerName playerId={rival} fallback="Opponent" /> : 'Opponent'}</b>
             <small>Rival</small>
           </div>
           <ProfileTrainerSprite label={rival ?? 'Opponent'} side="right" />
@@ -99,7 +98,8 @@ export default function BattlePage() {
 
       <ErrorToast error={error} onDismiss={() => setError(null)} />
       {match?.status === 'completed' && resultHref ? (
-        <div className="live-fight-banner">
+        <div className="pa-live-strip pa-fight-banner">
+          <span className="pa-live-pill"><i /> Fight over</span>
           <span>This fight is over. {match.winner ? `${match.winner} takes it.` : 'The pot is settled.'}</span>
           <Link className="pa-btn pa-btn-primary pa-btn-sm" href={resultHref}>View result</Link>
         </div>

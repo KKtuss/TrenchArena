@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
 
 import { ErrorToast } from '@/components/error-toast';
+import { TrainerName } from '@/components/profile-trainer';
 import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
@@ -49,8 +50,21 @@ export function ArenaShell({ children }: { children: ReactNode }) {
           </nav>
           <div className="shell-actions">
             <span className="wallet-chip">
-              <small>Poke</small>
-              <strong>{snapshot ? formatPoke(snapshot.wallet.balance) : '—'}</strong>
+              <small>{snapshot?.chainEconomyEnabled ? 'Passport' : 'Poke'}</small>
+              <strong>
+                {snapshot?.chainEconomyEnabled && snapshot.passport
+                  ? (snapshot.passport.eligible
+                    ? `Eligible · $${(snapshot.passport.usdCents / 100).toFixed(0)}`
+                    : `Need $20 · $${(snapshot.passport.usdCents / 100).toFixed(0)}`)
+                  : snapshot
+                    ? formatPoke(snapshot.wallet.balance)
+                    : '—'}
+              </strong>
+              {snapshot?.chainEconomyEnabled && snapshot.solBalances ? (
+                <small style={{ marginLeft: 8 }}>
+                  {(Number(snapshot.solBalances.freeLamports) / 1e9).toFixed(3)} SOL
+                </small>
+              ) : null}
               <span
                 className={`connection-dot ${connected ? 'online' : ''}`}
                 title={connected ? connectionState : 'offline'}
@@ -86,30 +100,29 @@ function LiveFightBanner() {
   const opponentId = fight.creatorId === playerId ? fight.opponentId : fight.creatorId;
 
   return (
-    <div className="live-fight-banner">
+    <div className="pa-live-strip pa-fight-banner">
+      <span className="pa-live-pill status-battling"><i /> Live fight</span>
       <span>
-        You are still in a fight{opponentId ? ` against ${opponentId}` : ''}. Leaving the battle tab does not end it.
+        You are still in a fight{opponentId ? <> against <TrainerName playerId={opponentId} /></> : null}. Leaving the battle tab does not end it.
         {error ? ` ${error}` : ''}
       </span>
-      <span className="row">
-        <Link className="btn btn-primary" href={`/battle/${fight.matchId}`}>Rejoin fight</Link>
-        <button
-          type="button"
-          className="btn btn-danger"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setError(null);
-            void client.request({ type: 'casual.forfeit', roomId: fight.id }).then(response => {
-              if (response.type === 'casual.state') router.push(`/result/${response.room.id}`);
-            }).catch(err => {
-              setError(err instanceof Error ? err.message : String(err));
-            }).finally(() => setBusy(false));
-          }}
-        >
-          {busy ? 'Forfeiting…' : 'Forfeit fight'}
-        </button>
-      </span>
+      <Link className="pa-btn pa-btn-primary pa-btn-sm" href={`/battle/${fight.matchId}`}>Rejoin fight</Link>
+      <button
+        type="button"
+        className="pa-btn pa-btn-danger pa-btn-sm"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setError(null);
+          void client.request({ type: 'casual.forfeit', roomId: fight.id }).then(response => {
+            if (response.type === 'casual.state') router.push(`/result/${response.room.id}`);
+          }).catch(err => {
+            setError(err instanceof Error ? err.message : String(err));
+          }).finally(() => setBusy(false));
+        }}
+      >
+        {busy ? 'Forfeiting…' : 'Forfeit fight'}
+      </button>
     </div>
   );
 }

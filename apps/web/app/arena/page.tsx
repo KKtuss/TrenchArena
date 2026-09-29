@@ -1,18 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 
 import { TeamStrip } from '@/components/showdown-visuals';
-import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
-import { readSavedTeam, type SavedTeam } from '@/lib/team';
-import { shortenAddress } from '@/lib/trainer-profile';
+import { formatCasualRoomLabel } from '@/lib/protocol';
 
-function formatLabel(format: string): string {
-  return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
+function formatLabel(room: CasualRoom): string {
+  return formatCasualRoomLabel(room).toUpperCase();
 }
 
 function roomHref(room: CasualRoom): string {
@@ -36,29 +35,23 @@ function actionLabel(room: CasualRoom): string {
 
 export default function ArenaPage() {
   const { client, playerId, snapshot, refreshSnapshot, connected } = useArena();
-  const [saved, setSaved] = useState<SavedTeam | null>(null);
 
   useEffect(() => {
     if (!connected) return;
     void client.request({ type: 'casual.list' }).then(() => refreshSnapshot()).catch(() => undefined);
   }, [client, connected, refreshSnapshot]);
 
-  useEffect(() => {
-    setSaved(playerId ? readSavedTeam(playerId) : null);
-  }, [playerId]);
-
   const rooms = [...(snapshot?.openCasualRooms ?? [])].sort((a, b) => roomRank(a) - roomRank(b));
   const openCount = rooms.filter(room => room.status === 'open').length;
-  const yourSpecies = saved?.species.filter(Boolean) ?? [];
 
   return (
     <div className="pa-page">
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <p className="pa-kicker"><i /> — Player-funded fights • Gen 9 OU —</p>
+          <p className="pa-kicker"><i /> — Player-funded fights • Casual or Competitive —</p>
           <h1>Find your fight.</h1>
           <p className="pa-lead">
-            Casual rooms are player-funded. Each trainer posts the same collateral. One 2% protocol fee comes off the gross pool when the match starts.
+            Hold at least $20 of POKE to play. Casual deals a random six after both trainers ready up. Competitive uses your own Gen 9 OU team.
           </p>
         </div>
         <Link className="pa-btn pa-btn-primary" href="/casual/create">Create challenge</Link>
@@ -77,22 +70,23 @@ export default function ArenaPage() {
           <span>{rooms.length} {rooms.length === 1 ? 'matchup' : 'matchups'}</span>
         </header>
         {rooms.length ? rooms.map(room => {
-          const yours = room.creatorId === playerId || room.opponentId === playerId;
-          const preview = yours && yourSpecies.length ? yourSpecies : undefined;
+          const yours = room.teamPreview?.find(preview => preview.playerId === playerId)
+            ?? room.teamPreview?.[0];
+          const preview = yours?.pokemon.map(mon => mon.species);
           return (
             <article key={room.id} className="pa-fight-card">
               <div className="pa-fight-trainers">
                 <div className="pa-fight-fighter">
                   <ProfileTrainerSprite label={room.creatorId} side="left" />
                   <div>
-                    <b>{shortenAddress(room.creatorId)}</b>
+                    <b><TrainerName playerId={room.creatorId} /></b>
                     <small>Challenger</small>
                   </div>
                 </div>
                 <span className="pa-fight-vs">vs</span>
                 <div className="pa-fight-fighter end">
                   <div>
-                    <b>{room.opponentId ? shortenAddress(room.opponentId) : 'Open slot'}</b>
+                    <b>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Open slot'}</b>
                     <small>{room.opponentId ? 'Rival' : 'Waiting'}</small>
                   </div>
                   {room.opponentId ? (
@@ -104,12 +98,18 @@ export default function ArenaPage() {
               </div>
 
               <div className="pa-fight-team">
-                <span>{preview ? 'Your team' : 'Roster sealed'}</span>
+                <span>
+                  {preview?.length
+                    ? (yours?.presetName ?? 'Your six')
+                    : room.ruleset === 'competitive'
+                      ? 'Bring your own six'
+                      : 'Teams drop after ready'}
+                </span>
                 <TeamStrip species={preview} />
               </div>
 
               <div className="pa-fight-meta">
-                <span>{formatLabel(room.format)}</span>
+                <span>{formatLabel(room)}</span>
                 <span>{room.battleSize}</span>
                 <span className={`pa-fight-status status-${room.status}`}>{room.status}</span>
               </div>

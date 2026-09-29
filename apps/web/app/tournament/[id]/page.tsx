@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { ErrorToast } from '@/components/error-toast';
 import { Gen1CupArt } from '@/components/gen1-cup-art';
-import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { BracketView, TournamentEconomicsBlock } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
@@ -16,7 +16,6 @@ import {
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
   previewTreasuryPrize,
-  shortenPlayer,
 } from '@/lib/tournament-schedule';
 
 type BracketMatch = {
@@ -200,7 +199,7 @@ export default function TournamentDetailPage() {
                 <span className="pa-live-pill"><i /> LIVE NOW</span>
                 <h2>Match in progress</h2>
                 <p>
-                  {shortenPlayer(liveMatch.player1)} vs {shortenPlayer(liveMatch.player2)} · Round {liveMatch.round}
+                  <TrainerName playerId={liveMatch.player1} fallback="TBD" /> vs <TrainerName playerId={liveMatch.player2} fallback="TBD" /> · Round {liveMatch.round}
                 </p>
               </div>
               <Link className="pa-btn pa-btn-primary" href={`/battle/${liveMatch.id}`}>
@@ -296,7 +295,7 @@ export default function TournamentDetailPage() {
                       <span className="pa-roster-empty" aria-hidden />
                     )}
                     <div>
-                      <b>{player ? shortenPlayer(player.id) : `Slot ${String(index + 1).padStart(2, '0')}`}</b>
+                      <b>{player ? <TrainerName playerId={player.id} /> : `Slot ${String(index + 1).padStart(2, '0')}`}</b>
                       <small>{player ? 'Registered' : 'Open'}</small>
                     </div>
                   </div>
@@ -327,7 +326,7 @@ export default function TournamentDetailPage() {
             <section className="pa-champion">
               <small>Champion</small>
               <ProfileTrainerSprite label={tournament.winner} side="left" />
-              <strong>{shortenPlayer(tournament.winner)}</strong>
+              <strong><TrainerName playerId={tournament.winner} /></strong>
             </section>
           ) : null}
         </>

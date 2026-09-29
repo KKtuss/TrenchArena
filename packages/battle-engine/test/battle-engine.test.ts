@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import {
   BattleEngine,
+  CASUAL_SHOWDOWN_FORMAT_ID,
+  CASUAL_TEAM_SIZE,
   InvalidChoiceError,
   InvalidLifecycleTransitionError,
   StaleChoiceError,
@@ -10,6 +12,7 @@ import {
   UnsupportedFormatError,
   UnknownPlayerError,
   WrongBattleError,
+  sliceTeamText,
   type AvailableChoice,
   type BattleSession,
   type PlayerChoice,
@@ -89,6 +92,31 @@ test('supports the created → started → awaiting-choice → ended lifecycle',
   assert.equal(battle.getState().lifecycle, 'created');
   await battle.start();
   assert.equal(battle.getState().lifecycle, 'awaiting-choice');
+  await playBattle(battle);
+  assert.equal(battle.getState().lifecycle, 'ended');
+});
+
+test('starts a 3-mon Casual format battle without changing gen9ou 6-mon battles', async () => {
+  const engine = new BattleEngine();
+  const battle = await engine.createBattle({
+    format: 'gen9ou',
+    showdownFormatId: CASUAL_SHOWDOWN_FORMAT_ID,
+    teamSize: CASUAL_TEAM_SIZE,
+    players: [
+      { id: PLAYER_ONE, name: 'Alice' },
+      { id: PLAYER_TWO, name: 'Bob' },
+    ],
+    teams: [sliceTeamText(TEAM_ONE, [0, 1, 2]), sliceTeamText(TEAM_TWO, [0, 1, 2])],
+    seed: '1,2,3,4',
+    timeoutMs: 15_000,
+  });
+  await battle.start();
+  const request = battle.getState(PLAYER_ONE).request;
+  assert.ok(request);
+  assert.notEqual(request.kind, 'wait');
+  const view = battle.getView(PLAYER_ONE);
+  assert.equal(view.sides[0].party.length, 3);
+  assert.equal(view.sides[1].party.length, 3);
   await playBattle(battle);
   assert.equal(battle.getState().lifecycle, 'ended');
 });

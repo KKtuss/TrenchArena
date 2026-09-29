@@ -2,35 +2,35 @@ import iconIndex from './showdown-icon-index.json';
 
 const icons = iconIndex as Record<string, number>;
 
-/** Gen 5 front sprites that the local Showdown manifest actually ships. */
-const FULL_SPRITES = new Set([
-  'clodsire',
-  'corviknight',
-  'dragapult',
-  'dragonite',
-  'gholdengo',
-  'greattusk',
-  'heatran',
-  'ironvaliant',
-  'kingambit',
-  'meowscarada',
-  'rotom-wash',
-  'samurott-hisui',
-]);
-
 export const SHOWDOWN_SPRITES = '/showdown/sprites';
+export const SHOWDOWN_SPRITE_CDN = 'https://play.pokemonshowdown.com';
 
 export function speciesId(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-/** Filename used by the vendored gen5 sheets. Hyphenated formes keep the hyphen. */
+/** Filename used by Showdown gen5 sheets. Spaces collapse; formes keep a hyphen. */
 export function fullSpriteId(name: string): string | null {
-  const hyphen = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  const compact = speciesId(name);
-  if (FULL_SPRITES.has(hyphen)) return hyphen;
-  if (FULL_SPRITES.has(compact)) return compact;
-  return null;
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes('-')) {
+    return trimmed.toLowerCase().replace(/[^a-z0-9-]+/g, '').replace(/-+/g, '-');
+  }
+  return speciesId(trimmed);
+}
+
+export function applyShowdownSpriteCdn(dex?: {
+  resourcePrefix?: string;
+  fxPrefix?: string;
+  loadedSpriteData?: { xy?: number; bw?: number };
+}): void {
+  if (!dex) return;
+  dex.resourcePrefix = `${SHOWDOWN_SPRITE_CDN}/`;
+  dex.fxPrefix = `${SHOWDOWN_SPRITE_CDN}/fx/`;
+  if (dex.loadedSpriteData) {
+    dex.loadedSpriteData.xy = 1;
+    dex.loadedSpriteData.bw = 1;
+  }
 }
 
 export function pokemonIconOffset(name: string, dexNum?: number | null): { left: number; top: number } {

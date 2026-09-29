@@ -123,7 +123,7 @@ async function authenticate(client: TestClient, keypair: ReturnType<typeof creat
 }
 
 test('an authenticated socket cannot authenticate or identify again', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const client = new TestClient(port);
   const keypair = createSolanaKeypair();
@@ -155,7 +155,7 @@ test('an authenticated socket cannot authenticate or identify again', async () =
 });
 
 test('rejected re-auth keeps subscriptions and does not crash the process', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const creator = new TestClient(port);
   const opponent = new TestClient(port);
@@ -174,11 +174,17 @@ test('rejected re-auth keeps subscriptions and does not crash the process', asyn
     const roomId = created.room.id;
     opponent.send({ type: 'casual.accept', roomId });
     await opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'full');
-    creator.send({ type: 'casual.ready', roomId, ready: true, team: DEMO_TEAM_ONE });
-    opponent.send({ type: 'casual.ready', roomId, ready: true, team: DEMO_TEAM_TWO });
+    creator.send({ type: 'casual.ready', roomId, ready: true });
+    opponent.send({ type: 'casual.ready', roomId, ready: true });
     await Promise.all([
-      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready'),
-      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready'),
+      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+    ]);
+    creator.send({ type: 'casual.select', roomId, slots: [0, 1, 2], confirm: true });
+    opponent.send({ type: 'casual.select', roomId, slots: [0, 1, 2], confirm: true });
+    await Promise.all([
+      creator.waitFor(message => message.type === 'casual.state' && message.room.teamPreview?.every((preview: any) => preview.confirmed)),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.teamPreview?.every((preview: any) => preview.confirmed)),
     ]);
     creator.send({ type: 'casual.start', roomId });
     const started = await creator.waitFor<any>(message => (
@@ -226,7 +232,7 @@ test('rejected re-auth keeps subscriptions and does not crash the process', asyn
 });
 
 test('a second socket for the same wallet replaces the first session', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const first = new TestClient(port);
   const second = new TestClient(port);
@@ -284,7 +290,7 @@ test('a second socket for the same wallet replaces the first session', async () 
 });
 
 test('disconnect before a casual battle cancels the room and refunds once', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const creator = new TestClient(port);
   const opponent = new TestClient(port);
@@ -319,7 +325,7 @@ test('disconnect before a casual battle cancels the room and refunds once', asyn
 });
 
 test('a live casual disconnect waits for reconnect then forfeits exactly once', async () => {
-  const server = new ApiServer({ allowDemoAuth: true, disconnectGraceMs: 80 });
+  const server = new ApiServer({ allowDemoAuth: true, disconnectGraceMs: 80, countdownMs: 0 });
   const port = await server.listen(0);
   const creator = new TestClient(port);
   const opponent = new TestClient(port);
@@ -336,11 +342,17 @@ test('a live casual disconnect waits for reconnect then forfeits exactly once', 
     const created = await creator.waitFor<any>(message => message.type === 'casual.created');
     opponent.send({ type: 'casual.accept', roomId: created.room.id });
     await opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'full');
-    creator.send({ type: 'casual.ready', roomId: created.room.id, ready: true, team: DEMO_TEAM_ONE });
-    opponent.send({ type: 'casual.ready', roomId: created.room.id, ready: true, team: DEMO_TEAM_TWO });
+    creator.send({ type: 'casual.ready', roomId: created.room.id, ready: true });
+    opponent.send({ type: 'casual.ready', roomId: created.room.id, ready: true });
     await Promise.all([
-      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready'),
-      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready'),
+      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+    ]);
+    creator.send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+    opponent.send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+    await Promise.all([
+      creator.waitFor(message => message.type === 'casual.state' && message.room.teamPreview?.every((preview: any) => preview.confirmed)),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.teamPreview?.every((preview: any) => preview.confirmed)),
     ]);
     creator.send({ type: 'casual.start', roomId: created.room.id });
     await creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'battling');
@@ -379,7 +391,7 @@ test('a live casual disconnect waits for reconnect then forfeits exactly once', 
 });
 
 test('a live tournament disconnect forfeits the disconnected player and advances once', async () => {
-  const server = new ApiServer({ allowDemoAuth: true, disconnectGraceMs: 80 });
+  const server = new ApiServer({ allowDemoAuth: true, disconnectGraceMs: 80, countdownMs: 0 });
   const port = await server.listen(0);
   const host = new TestClient(port);
   const member = new TestClient(port);
@@ -432,7 +444,7 @@ test('a live tournament disconnect forfeits the disconnected player and advances
 });
 
 test('a stale viewer cannot crash an async match broadcast', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const creator = new TestClient(port);
   const opponent = new TestClient(port);
@@ -453,11 +465,17 @@ test('a stale viewer cannot crash an async match broadcast', async () => {
     const created = await creator.waitFor<any>(message => message.type === 'casual.created');
     opponent.send({ type: 'casual.accept', roomId: created.room.id });
     await opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'full');
-    creator.send({ type: 'casual.ready', roomId: created.room.id, ready: true, team: DEMO_TEAM_ONE });
-    opponent.send({ type: 'casual.ready', roomId: created.room.id, ready: true, team: DEMO_TEAM_TWO });
+    creator.send({ type: 'casual.ready', roomId: created.room.id, ready: true });
+    opponent.send({ type: 'casual.ready', roomId: created.room.id, ready: true });
     await Promise.all([
-      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready'),
-      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready'),
+      creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'drafting'),
+    ]);
+    creator.send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+    opponent.send({ type: 'casual.select', roomId: created.room.id, slots: [0, 1, 2], confirm: true });
+    await Promise.all([
+      creator.waitFor(message => message.type === 'casual.state' && message.room.teamPreview?.every((preview: any) => preview.confirmed)),
+      opponent.waitFor(message => message.type === 'casual.state' && message.room.teamPreview?.every((preview: any) => preview.confirmed)),
     ]);
     creator.send({ type: 'casual.start', roomId: created.room.id });
     const started = await creator.waitFor<any>(message => (

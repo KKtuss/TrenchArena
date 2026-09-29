@@ -6,7 +6,10 @@ import {
   getTrainerSprite,
   isTrainerUsername,
   parseStoredTrainerProfile,
+  publicTrainerName,
+  publicTrainerSpriteId,
   searchTrainerSprites,
+  shortenAddress,
   trainerProfileStorageKey,
   TRAINER_SPRITES,
 } from '../lib/trainer-profile';
@@ -46,4 +49,29 @@ test('stored trainer profile keeps a username and accepts a legacy sprite id', (
   assert.equal(isTrainerUsername('Red'), true);
   assert.equal(isTrainerUsername('A'), false);
   assert.equal(isTrainerUsername('name with spaces'), true);
+});
+
+test('public trainer names are visible for every wallet, not only self', () => {
+  const walletA = '8qbHbw2BbbRYBWQyPgemYbUqueezHPYmEkFNmUgHEf3g';
+  const walletB = '9qbHbw2BbbRYBWQyPgemYbUqueezHPYmEkFNmUgHEf3h';
+  const trainers = {
+    [walletA]: { username: 'Kaktuss', spriteId: 'blue-gen3' },
+    [walletB]: { username: 'Red', spriteId: 'red-gen1' },
+  };
+  assert.equal(publicTrainerName(walletA, trainers), 'Kaktuss');
+  assert.equal(
+    publicTrainerName(walletB, trainers, { id: walletA, username: 'Kaktuss' }),
+    'Red',
+  );
+  assert.equal(
+    publicTrainerName(walletA, {}, { id: walletA, username: 'Kaktuss' }),
+    'Kaktuss',
+  );
+  assert.equal(publicTrainerName(walletB, {}), shortenAddress(walletB));
+  assert.equal(publicTrainerName(walletB, {}, undefined, 'Ash'), 'Ash');
+  assert.equal(publicTrainerSpriteId(walletB, trainers), 'red-gen1');
+  assert.equal(
+    publicTrainerSpriteId(walletA, trainers, { id: walletA, spriteId: 'cynthia' }),
+    'cynthia',
+  );
 });

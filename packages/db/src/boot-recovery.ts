@@ -401,6 +401,17 @@ async function recoverCasualRooms(input: {
 
   for (const room of [...input.rooms].sort((left, right) => left.id.localeCompare(right.id))) {
     if (room.status === 'completed' || room.status === 'cancelled') continue;
+    // Chain-backed rooms must not be aborted/refunded without reading on-chain
+    // escrow state. Leave them for the chain recovery path.
+    if (room.rail === 'sol_chain') {
+      input.log({
+        level: 'info',
+        phase: 'casual',
+        message: 'Skipping automatic abort for sol_chain room; chain state is authoritative.',
+        roomId: room.id,
+      });
+      continue;
+    }
     if (room.status === 'starting' || room.status === 'battling') {
       await input.economics.abortCasualRoom(room.id);
       input.report.abortedCasualRoomIds.push(room.id);

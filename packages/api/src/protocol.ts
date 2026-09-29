@@ -1,9 +1,12 @@
 import type { BattleView, PlayerChoice } from '@pokearena/battle-engine';
 
 import type { CasualRoom } from './casual-service';
+import type { LiveFight } from './live-fights';
+import type { PublicTrainerProfile } from './trainer-directory';
 import type {
   CasualEconomicsPreview,
   MockPayoutResult,
+  ChainPayoutResult,
   TournamentEconomicsPreview,
   WalletSnapshot,
 } from './mock-economics';
@@ -19,17 +22,35 @@ export type ClientMessage =
       nonce: string;
     }
   | { type: 'arena.snapshot'; requestId: string }
+  | { type: 'passport.status'; requestId: string }
+  | { type: 'treasury.snapshot'; requestId: string }
+  | {
+      type: 'tx.confirm';
+      requestId: string;
+      intentId: string;
+      signature: string;
+    }
   | {
       type: 'casual.create';
       requestId: string;
       roomType: 'private' | 'open';
       battleSize: '1v1' | '2v2';
       collateral: number;
+      /** When set, collateral is interpreted as lamports (SOL rail). */
+      collateralLamports?: number;
       invitedPlayerId?: string;
+      ruleset?: 'casual' | 'competitive';
     }
   | { type: 'casual.list'; requestId: string }
   | { type: 'casual.accept'; requestId: string; roomId: string }
   | { type: 'casual.ready'; requestId: string; roomId: string; ready: boolean; team?: string }
+  | {
+      type: 'casual.select';
+      requestId: string;
+      roomId: string;
+      slots: number[];
+      confirm?: boolean;
+    }
   | { type: 'casual.start'; requestId: string; roomId: string; team?: string }
   | { type: 'casual.cancel'; requestId: string; roomId: string }
   | { type: 'casual.forfeit'; requestId: string; roomId: string }
@@ -37,10 +58,26 @@ export type ClientMessage =
   | { type: 'casual.preview'; requestId: string; collateral: number }
   | { type: 'tournament.create'; requestId: string; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number }
   | { type: 'tournament.list'; requestId: string }
-  | { type: 'tournament.join'; requestId: string; tournamentId: string; team?: string }
+  | {
+      type: 'tournament.join';
+      requestId: string;
+      tournamentId: string;
+      team?: string;
+      playerPokeAta?: string;
+    }
   | { type: 'tournament.start'; requestId: string; tournamentId: string }
+  | { type: 'tournament.cancel'; requestId: string; tournamentId: string }
   | { type: 'tournament.subscribe'; requestId: string; tournamentId: string }
   | { type: 'match.subscribe'; requestId: string; matchId: string }
+  | { type: 'live.list'; requestId: string }
+  | { type: 'live.watch'; requestId: string; matchId?: string }
+  | { type: 'live.unwatch'; requestId: string }
+  | {
+      type: 'trainer.profile';
+      requestId: string;
+      username: string;
+      spriteId: string;
+    }
   | {
       type: 'match.choice';
       requestId: string;
@@ -72,12 +109,48 @@ export interface TournamentSummary {
   winner?: string;
 }
 
+export interface PassportSnapshot {
+  eligible: boolean;
+  liquidAtoms: string;
+  heldEntryAtoms: string;
+  qualifyingAtoms: string;
+  usdCents: number;
+  thresholdUsdCents: number;
+  reason: string;
+  shortfallAtoms: string;
+  atomsForEntryAndPassport: string;
+  quote: {
+    priceMicroUsd: number;
+    decimals: number;
+    observedAt: number;
+    source: string;
+    confidenceBps: number;
+    quoteId: string;
+  };
+}
+
+export interface TxIntentPayload {
+  intentId: string;
+  serializedTx?: number[];
+  kind?: string;
+  entryAtoms?: string;
+  economics?: unknown;
+  passport?: PassportSnapshot;
+  quote?: PassportSnapshot['quote'];
+  burnKeys?: string[];
+  instructionCount?: number;
+}
+
 export interface ArenaSnapshot {
   wallet: WalletSnapshot;
   tournaments: TournamentSummary[];
   openCasualRooms: CasualRoom[];
   myCasualRooms: CasualRoom[];
   recentCasualResults: CasualRoom[];
+  chainEconomyEnabled?: boolean;
+  passport?: PassportSnapshot;
+  solBalances?: { freeLamports: string; treasuryLamports: string };
+  trainers?: Record<string, PublicTrainerProfile>;
 }
 
 export type ServerMessage = { requestId?: string } & (
@@ -93,15 +166,31 @@ export type ServerMessage = { requestId?: string } & (
   | { type: 'error'; code: string; message: string }
   | { type: 'pong' }
   | { type: 'arena.snapshot'; snapshot: ArenaSnapshot }
-  | { type: 'casual.created'; room: CasualRoom }
+  | { type: 'passport.status'; passport: PassportSnapshot; chainEconomyEnabled: boolean }
+  | {
+      type: 'treasury.snapshot';
+      deposits: Array<{
+        claimKey: string;
+        source: string;
+        grossLamports: number;
+        treasuryLamports: number;
+        operatorLamports: number;
+        signature?: string;
+        createdAt: string;
+      }>;
+      chainEconomyEnabled: boolean;
+    }
+  | { type: 'tx.intent'; intent: TxIntentPayload }
+  | { type: 'tx.update'; intentId: string; status: string; signature?: string; error?: string }
+  | { type: 'casual.created'; room: CasualRoom; intent?: TxIntentPayload }
   | { type: 'casual.list'; rooms: CasualRoom[]; recentResults: CasualRoom[] }
   | { type: 'casual.state'; room: CasualRoom }
-  | { type: 'casual.preview'; economics: CasualEconomicsPreview }
-  | { type: 'casual.result'; room: CasualRoom; payout?: MockPayoutResult }
+  | { type: 'casual.preview'; economics: CasualEconomicsPreview | Record<string, unknown> }
+  | { type: 'casual.result'; room: CasualRoom; payout?: MockPayoutResult | ChainPayoutResult }
   | { type: 'tournament.created'; tournament: unknown }
   | { type: 'tournament.list'; tournaments: TournamentSummary[] }
   | { type: 'tournament.state'; tournament: unknown }
-  | { type: 'tournament.result'; tournament: unknown; payout?: MockPayoutResult }
+  | { type: 'tournament.result'; tournament: unknown; payout?: MockPayoutResult | ChainPayoutResult }
   | {
       type: 'match.update';
       match: unknown;
@@ -119,6 +208,10 @@ export type ServerMessage = { requestId?: string } & (
       source: 'tournament' | 'casual';
     }
   | { type: 'match.choice.accepted'; matchId: string }
+  | { type: 'live.list'; fights: LiveFight[] }
+  | { type: 'live.update'; fight?: LiveFight; view?: BattleView; events?: unknown[] }
+  | { type: 'trainer.directory'; trainers: Record<string, PublicTrainerProfile> }
+  | { type: 'trainer.profile'; playerId: string; profile: PublicTrainerProfile }
   | { type: 'team.starter'; name: string; paste: string }
   | { type: 'team.inspect'; inspection: import('@pokearena/battle-engine').TeamInspection }
   | {
@@ -164,11 +257,33 @@ export function parseClientMessage(raw: string): ClientMessage {
         nonce: value.nonce as string,
       };
     case 'arena.snapshot':
+    case 'passport.status':
+    case 'treasury.snapshot':
     case 'casual.list':
     case 'tournament.list':
+    case 'live.list':
+    case 'live.unwatch':
     case 'ping':
     case 'team.starter':
       return { type: value.type, requestId: value.requestId as string };
+    case 'trainer.profile':
+      requireString(value, 'username');
+      requireString(value, 'spriteId');
+      return {
+        type: 'trainer.profile',
+        requestId: value.requestId as string,
+        username: value.username as string,
+        spriteId: value.spriteId as string,
+      };
+    case 'tx.confirm':
+      requireString(value, 'intentId');
+      requireString(value, 'signature');
+      return {
+        type: 'tx.confirm',
+        requestId: value.requestId as string,
+        intentId: value.intentId as string,
+        signature: value.signature as string,
+      };
     case 'team.inspect':
       requireString(value, 'team');
       if ((value.team as string).length > 12_000) throw new Error('team paste is too long.');
@@ -198,16 +313,26 @@ export function parseClientMessage(raw: string): ClientMessage {
       if (!Number.isInteger(value.collateral)) {
         throw new Error('collateral must be an integer.');
       }
+      if (value.collateralLamports !== undefined && !Number.isInteger(value.collateralLamports)) {
+        throw new Error('collateralLamports must be an integer.');
+      }
       if (value.invitedPlayerId !== undefined) requireString(value, 'invitedPlayerId');
+      if (value.ruleset !== undefined && value.ruleset !== 'casual' && value.ruleset !== 'competitive') {
+        throw new Error('ruleset must be casual or competitive.');
+      }
       return {
         type: 'casual.create',
         requestId: value.requestId as string,
         roomType: value.roomType,
         battleSize: value.battleSize,
         collateral: value.collateral as number,
+        ...(value.collateralLamports !== undefined
+          ? { collateralLamports: value.collateralLamports as number }
+          : {}),
         ...(value.invitedPlayerId !== undefined
           ? { invitedPlayerId: value.invitedPlayerId as string }
           : {}),
+        ...(value.ruleset !== undefined ? { ruleset: value.ruleset } : {}),
       };
     }
     case 'casual.accept':
@@ -220,6 +345,22 @@ export function parseClientMessage(raw: string): ClientMessage {
         requestId: value.requestId as string,
         roomId: value.roomId as string,
       };
+    case 'casual.select': {
+      requireString(value, 'roomId');
+      if (!Array.isArray(value.slots) || value.slots.some(slot => !Number.isInteger(slot))) {
+        throw new Error('slots must be an array of integers.');
+      }
+      if (value.confirm !== undefined && typeof value.confirm !== 'boolean') {
+        throw new Error('confirm must be a boolean.');
+      }
+      return {
+        type: 'casual.select',
+        requestId: value.requestId as string,
+        roomId: value.roomId as string,
+        slots: value.slots as number[],
+        ...(value.confirm !== undefined ? { confirm: value.confirm as boolean } : {}),
+      };
+    }
     case 'casual.start':
       requireString(value, 'roomId');
       return {
@@ -269,6 +410,7 @@ export function parseClientMessage(raw: string): ClientMessage {
         ...(value.entryFee !== undefined ? { entryFee: value.entryFee as number } : {}),
       };
     case 'tournament.start':
+    case 'tournament.cancel':
     case 'tournament.subscribe':
       requireString(value, 'tournamentId');
       return {
@@ -278,15 +420,26 @@ export function parseClientMessage(raw: string): ClientMessage {
       };
     case 'tournament.join':
       requireString(value, 'tournamentId');
+      if (value.playerPokeAta !== undefined) requireString(value, 'playerPokeAta');
       return {
         type: 'tournament.join',
         requestId: value.requestId as string,
         tournamentId: value.tournamentId as string,
+        ...(value.playerPokeAta !== undefined
+          ? { playerPokeAta: value.playerPokeAta as string }
+          : {}),
         ...optionalTeam(value),
       };
     case 'match.subscribe':
       requireString(value, 'matchId');
       return { type: value.type, requestId: value.requestId as string, matchId: value.matchId as string };
+    case 'live.watch':
+      if (value.matchId !== undefined) requireString(value, 'matchId');
+      return {
+        type: 'live.watch',
+        requestId: value.requestId as string,
+        ...(value.matchId !== undefined ? { matchId: value.matchId as string } : {}),
+      };
     case 'match.choice':
       requireString(value, 'matchId');
       requireString(value, 'battleInstanceId');

@@ -33,8 +33,13 @@ export function TrainerProfileControl() {
   } = useArena();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const selected = getTrainerSprite(trainerSpriteId);
   const showEditor = needsProfileSetup || editing;
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <div className="trainer-profile">
@@ -57,8 +62,8 @@ export function TrainerProfileControl() {
           <strong>{walletConnected ? playerLabel : 'Connect'}</strong>
         </span>
       </button>
-      {open && !showEditor ? (
-        <div className="trainer-popover" role="dialog" aria-label="Trainer profile">
+      {open && !showEditor && mounted ? createPortal(
+        <div className="trainer-popover trainer-popover-fixed" role="dialog" aria-label="Trainer profile">
           <div className="trainer-popover-head">
             <small>{walletConnected ? (previewSession ? 'Browser preview' : 'Trainer') : 'Wallet'}</small>
             <strong>{walletConnected ? (trainerUsername ?? selected.name) : 'Connect'}</strong>
@@ -84,14 +89,24 @@ export function TrainerProfileControl() {
                 </button>
               ))}
               {isDemoAuthEnabled() ? (
-                <button
-                  type="button"
-                  className="pa-btn pa-btn-surface"
-                  disabled={connectingWallet || authBusy}
-                  onClick={() => void connectPreviewSession()}
-                >
-                  Continue without a wallet
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="pa-btn pa-btn-surface"
+                    disabled={connectingWallet || authBusy}
+                    onClick={() => void connectPreviewSession('demo-player-1')}
+                  >
+                    Continue as Player 1
+                  </button>
+                  <button
+                    type="button"
+                    className="pa-btn pa-btn-surface"
+                    disabled={connectingWallet || authBusy}
+                    onClick={() => void connectPreviewSession('demo-player-2')}
+                  >
+                    Continue as Player 2
+                  </button>
+                </>
               ) : null}
             </div>
           ) : (
@@ -116,7 +131,8 @@ export function TrainerProfileControl() {
               </button>
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       ) : null}
       {showEditor ? (
         <TrainerSetup

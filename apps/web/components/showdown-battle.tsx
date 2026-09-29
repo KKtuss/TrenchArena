@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { PokemonSprite } from '@/components/showdown-visuals';
+import { acquireShowdownRuntime, releaseShowdownRuntime } from '@/lib/showdown-runtime';
 import type { ArenaApiClient } from '@/lib/api-client';
 import { useArena } from '@/lib/arena-context';
 import {
@@ -12,7 +13,7 @@ import {
   showdownChoiceToPlayerChoice,
 } from '@/lib/showdown-client-adapter';
 import type { BattleView, PlayerChoice, SideView } from '@/lib/protocol';
-import { shortenAddress } from '@/lib/trainer-profile';
+import { publicTrainerName } from '@/lib/trainer-profile';
 
 declare global {
   interface Window {
@@ -70,139 +71,6 @@ interface ShowdownRequest {
   rqid?: number;
 }
 
-interface ShowdownAsset {
-  kind: 'script' | 'style';
-  path: string;
-  global?: string;
-}
-
-const ASSETS: ShowdownAsset[] = [
-  { kind: 'script', path: '/showdown/js/lib/ps-polyfill.js' },
-  { kind: 'script', path: '/showdown/config.js', global: 'Config' },
-  { kind: 'script', path: '/showdown/js/lib/jquery-3.7.1.min.js', global: 'jQuery' },
-  { kind: 'script', path: '/showdown/js/lib/html-sanitizer-minified.js' },
-  { kind: 'script', path: '/showdown/js/battle-sound.js', global: 'BattleSound' },
-  { kind: 'script', path: '/showdown/js/battledata.js', global: 'Dex' },
-  { kind: 'script', path: '/showdown/js/battle-log.js', global: 'BattleLog' },
-  { kind: 'script', path: '/showdown/data/pokedex.js', global: 'BattlePokedex' },
-  { kind: 'script', path: '/showdown/data/moves.js', global: 'BattleMovedex' },
-  { kind: 'script', path: '/showdown/data/abilities.js', global: 'BattleAbilities' },
-  { kind: 'script', path: '/showdown/data/items.js', global: 'BattleItems' },
-  { kind: 'script', path: '/showdown/data/teambuilder-tables.js', global: 'BattleTeambuilderTable' },
-  { kind: 'script', path: '/showdown/data/graphics.js', global: 'BattleScene' },
-  { kind: 'script', path: '/showdown/js/battle-tooltips.js', global: 'BattleTooltips' },
-  { kind: 'script', path: '/showdown/js/battle.js', global: 'Battle' },
-  { kind: 'script', path: '/showdown/js/battle-choices.js', global: 'BattleChoiceBuilder' },
-  { kind: 'style', path: '/showdown/style/font-awesome.css' },
-  { kind: 'style', path: '/showdown/style/battle.css' },
-  { kind: 'style', path: '/showdown/style/replay.css' },
-];
-
-const SHOWDOWN_GLOBALS = [
-  'Battle',
-  'BattleChoiceBuilder',
-  'BattleLog',
-  'BattleScene',
-  'BattleSound',
-  'BattleText',
-  'BattlePokedex',
-  'BattleMovedex',
-  'BattleAbilities',
-  'BattleItems',
-  'BattleTeambuilderTable',
-  'BattlePokemonSprites',
-  'BattlePokemonSpritesBW',
-  'Config',
-  'Dex',
-  '$',
-  'jQuery',
-];
-
-let runtimePromise: Promise<void> | null = null;
-let runtimeUsers = 0;
-let runtimeCleanup: ReturnType<typeof setTimeout> | null = null;
-let previousGlobals: Map<string, unknown> | null = null;
-
-function loadResource(asset: ShowdownAsset): Promise<void> {
-  const selector = `[data-pokearena-showdown="${CSS.escape(asset.path)}"]`;
-  const existing = document.querySelector(selector);
-  if (existing) return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    const element = asset.kind === 'script'
-      ? document.createElement('script')
-      : document.createElement('link');
-    element.dataset.pokearenaShowdown = asset.path;
-    if (asset.kind === 'script') {
-      const script = element as HTMLScriptElement;
-      script.src = asset.path;
-      script.async = false;
-    } else {
-      const link = element as HTMLLinkElement;
-      link.rel = 'stylesheet';
-      link.href = asset.path;
-    }
-    element.addEventListener('load', () => resolve(), { once: true });
-    element.addEventListener('error', () => reject(new Error(`Failed to load ${asset.path}`)), { once: true });
-    document.head.appendChild(element);
-  });
-}
-
-function acquireShowdownRuntime(): Promise<void> {
-  runtimeUsers += 1;
-  if (runtimeCleanup) {
-    clearTimeout(runtimeCleanup);
-    runtimeCleanup = null;
-  }
-  if (!runtimePromise) {
-    previousGlobals = new Map(SHOWDOWN_GLOBALS.map(name => [name, window[name]]));
-    runtimePromise = ASSETS.reduce(
-      (promise, asset) => promise.then(() => loadResource(asset)),
-      Promise.resolve(),
-    );
-  }
-  return runtimePromise;
-}
-
-function releaseShowdownRuntime(): void {
-  runtimeUsers = Math.max(0, runtimeUsers - 1);
-  if (runtimeUsers !== 0 || runtimeCleanup) return;
-
-  runtimeCleanup = setTimeout(() => {
-    runtimeCleanup = null;
-    if (runtimeUsers !== 0) return;
-    for (const element of document.querySelectorAll('[data-pokearena-showdown]')) {
-      element.remove();
-    }
-    for (const name of SHOWDOWN_GLOBALS) {
-      const previous = previousGlobals?.get(name);
-      try {
-        if (previous === undefined) {
-          delete window[name];
-        } else {
-          window[name] = previous;
-        }
-      } catch {
-        // Showdown declares Battle and its siblings as global functions.
-        // Those window properties cannot be deleted.
-        try {
-          window[name] = previous;
-        } catch {
-          // Leave the non-configurable global in place.
-        }
-      }
-    }
-    previousGlobals = null;
-    runtimePromise = null;
-  }, 0);
-}
-
-export const __showdownRuntimeForTest = {
-  acquire: acquireShowdownRuntime,
-  release: releaseShowdownRuntime,
-  assetCount: ASSETS.length,
-};
-
 function quietMissingAudio(): void {
   const sound = window.BattleSound as {
     muted?: boolean;
@@ -244,12 +112,30 @@ function applyViewpoint(battle: ShowdownBattle, viewpoint: 'p1' | 'p2') {
   if (parser) parser.perspective = viewpoint;
 }
 
-function FightRail({ side, align }: { side?: SideView; align: 'near' | 'far' }) {
-  const { playerId, trainerUsername } = useArena();
+function railRole(you: boolean, watching: boolean, align: 'near' | 'far'): string {
+  if (you) return 'You';
+  if (watching) return align === 'near' ? 'Home' : 'Away';
+  return 'Rival';
+}
+
+function FightRail({
+  side,
+  align,
+  watching = false,
+}: {
+  side?: SideView;
+  align: 'near' | 'far';
+  watching?: boolean;
+}) {
+  const { playerId, trainerUsername, trainers } = useArena();
   const you = Boolean(side && playerId && side.playerId === playerId);
-  const name = you && trainerUsername
-    ? trainerUsername
-    : shortenAddress(side?.playerId || side?.name || 'Waiting');
+  const role = railRole(you, watching, align);
+  const name = publicTrainerName(
+    side?.playerId,
+    trainers,
+    { id: playerId, username: trainerUsername },
+    side?.name,
+  );
   const party = side?.party ?? [];
   const standing = party.filter(mon => !mon.fainted).length;
   const down = party.filter(mon => mon.fainted).length;
@@ -259,7 +145,7 @@ function FightRail({ side, align }: { side?: SideView; align: 'near' | 'far' }) 
     <aside className={`fight-rail fight-rail-${align}`}>
       <div className="fight-rail-body">
         <div className="fight-rail-card">
-          {align === 'near' ? <span className="fight-rail-role">{you ? 'You' : 'Rival'}</span> : null}
+          {align === 'near' ? <span className="fight-rail-role">{role}</span> : null}
           <span className="fight-rail-sprite">
               <ProfileTrainerSprite label={side?.playerId || name} side={align === 'near' ? 'left' : 'right'} />
             </span>
@@ -288,7 +174,7 @@ function FightRail({ side, align }: { side?: SideView; align: 'near' | 'far' }) 
                 ) : null}
               </div>
             ) : null}
-            {align === 'far' ? <span className="fight-rail-role">{you ? 'You' : 'Rival'}</span> : null}
+            {align === 'far' ? <span className="fight-rail-role">{role}</span> : null}
           </div>
           <span className="fight-rail-team">
             {Array.from({ length: 6 }, (_, index) => {
@@ -335,6 +221,7 @@ export function ShowdownBattle({
   events,
   client,
   onError,
+  mode = 'play',
 }: {
   playerId: string;
   matchId: string;
@@ -343,6 +230,7 @@ export function ShowdownBattle({
   events: unknown[];
   client: ArenaApiClient;
   onError: (message: string) => void;
+  mode?: 'play' | 'watch';
 }) {
   const frameRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -356,10 +244,14 @@ export function ShowdownBattle({
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [ready, setReady] = useState(false);
+  const watching = mode === 'watch';
 
   eventsRef.current = events;
   battleViewRef.current = battleView;
-  const viewpoint = ownViewpoint(battleView?.sides, playerId);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const inMatch = Boolean(battleView?.sides?.some(side => side.playerId === playerId));
+  const viewpoint = watching && !inMatch ? 'p1' : ownViewpoint(battleView?.sides, playerId);
 
   const rendererKey = `${matchId}:${battleInstanceId ?? 'pending'}`;
 
@@ -379,13 +271,15 @@ export function ShowdownBattle({
       playerId,
     );
     for (const line of feed.publicLines) battle.add(line);
-    const latest = latestRequestPayload(feed.requestPayloads);
-    if (latest !== undefined) {
-      const normalized = normalizeRequest(latest, battle);
-      if (normalized) setRequestState({ playerId, payload: normalized });
+    if (!watching) {
+      const latest = latestRequestPayload(feed.requestPayloads);
+      if (latest !== undefined) {
+        const normalized = normalizeRequest(latest, battle);
+        if (normalized) setRequestState({ playerId, payload: normalized });
+      }
     }
     sequenceRef.current = feed.lastSequence;
-  }, [playerId]);
+  }, [playerId, watching]);
 
   useEffect(() => {
     let disposed = false;
@@ -411,7 +305,7 @@ export function ShowdownBattle({
         consumeEvents(eventsRef.current);
       })
       .catch(error => {
-        if (!disposed) onError(error instanceof Error ? error.message : String(error));
+        if (!disposed) onErrorRef.current(error instanceof Error ? error.message : String(error));
       });
 
     return () => {
@@ -424,7 +318,7 @@ export function ShowdownBattle({
       setReady(false);
       releaseShowdownRuntime();
     };
-  }, [consumeEvents, matchId, onError, rendererKey, viewpoint]);
+  }, [consumeEvents, matchId, rendererKey, viewpoint]);
 
   useEffect(() => {
     consumeEvents(events);
@@ -442,7 +336,7 @@ export function ShowdownBattle({
 
   const submitChoice = useCallback(async (choiceText: string) => {
     const view = battleViewRef.current;
-    if (!battleInstanceId || !view?.request) return;
+    if (watching || !battleInstanceId || !view?.request) return;
     setSubmitting(true);
     setRequestState(null);
     try {
@@ -455,14 +349,14 @@ export function ShowdownBattle({
         choice,
       });
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onErrorRef.current(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
     }
-  }, [battleInstanceId, client, matchId, onError]);
+  }, [battleInstanceId, client, matchId, watching]);
 
   const choices = useMemo((): FightChoice[] => {
-    if (battleView?.result || battleView?.failure) return [];
+    if (watching || battleView?.result || battleView?.failure) return [];
     if (!request || request.wait || request.requestType === 'wait') return [];
 
     if (request.teamPreview || request.requestType === 'team') {
@@ -509,7 +403,7 @@ export function ShowdownBattle({
       }
     }
     return result;
-  }, [battleView?.failure, battleView?.result, request]);
+  }, [battleView?.failure, battleView?.result, request, watching]);
 
   const phaseLabel = battleView?.result
     ? 'Fight complete'
@@ -528,17 +422,43 @@ export function ShowdownBattle({
   const confirms = choices.filter(choice => choice.kind === 'confirm');
 
   return (
-    <section className="showdown-battle-root dark" data-testid="showdown-battle">
+    <section
+      className={`showdown-battle-root dark${watching ? ' is-watch' : ''}`}
+      data-testid={watching ? 'showdown-battle-watch' : 'showdown-battle'}
+      aria-label={watching ? 'Live spectator battle feed. This match is not playable from here.' : undefined}
+    >
       <div className="showdown-battle-stage">
         <div className="showdown-battle-frame">
-          <FightRail side={battleView?.sides[viewpoint === 'p2' ? 1 : 0]} align="near" />
+          <FightRail
+            side={battleView?.sides[viewpoint === 'p2' ? 1 : 0]}
+            align="near"
+            watching={watching}
+          />
           <div className="showdown-battle-scene">
             <div ref={frameRef} className="battle" data-testid="showdown-frame" />
           </div>
-          <FightRail side={battleView?.sides[viewpoint === 'p2' ? 0 : 1]} align="far" />
+          <FightRail
+            side={battleView?.sides[viewpoint === 'p2' ? 0 : 1]}
+            align="far"
+            watching={watching}
+          />
         </div>
-        <div ref={logRef} className="battle-log" data-testid="showdown-log" />
+        <div
+          ref={logRef}
+          className="battle-log"
+          data-testid="showdown-log"
+          hidden={watching}
+          aria-hidden={watching}
+        />
       </div>
+      {watching ? (
+      <div className="showdown-battle-controls is-idle">
+        <div className="showdown-battle-controls-header">
+          <span className="showdown-controls-label">Spectator feed</span>
+          <span className="showdown-phase">Watching · no moves</span>
+        </div>
+      </div>
+      ) : (
       <div className={`showdown-battle-controls${choices.length ? '' : ' is-idle'}`}>
         <div className="showdown-battle-controls-header">
           <span className="showdown-controls-label">Fight controls</span>
@@ -601,6 +521,7 @@ export function ShowdownBattle({
           </p>
         )}
       </div>
+      )}
     </section>
   );
 }

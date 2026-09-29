@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { __showdownRuntimeForTest } from '../components/showdown-battle';
+import { __showdownRuntimeForTest } from '../lib/showdown-runtime';
 
 test('Showdown runtime is shared across remounts and cleaned after final unmount', async () => {
   const originalWindow = globalThis.window;

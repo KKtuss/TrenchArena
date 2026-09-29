@@ -34,6 +34,10 @@ export interface DurableTournament {
   status: string;
   hostId: string;
   entryFee: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  entryAtoms?: number;
+  entryQuoteId?: string;
+  prizeLamports?: number;
   players: DurableTournamentPlayer[];
   matchIds: string[];
   winner?: string;

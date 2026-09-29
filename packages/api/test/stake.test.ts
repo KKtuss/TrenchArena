@@ -13,19 +13,13 @@ import { DEMO_TEAM_ONE } from '../src/demo-teams';
 import { DEFAULT_DEV_BALANCE_POKE, MockEconomics } from '../src/mock-economics';
 import { ApiServer } from '../src/server';
 import { encodeBase58 } from '../src/wallet-auth';
+import { bothConfirmCasual, openFullCasualRoom } from './casual-flow';
 
 const COLLATERAL = 1_000;
 
 async function openReadyRoom(casual: CasualRoomService, collateral = COLLATERAL) {
-  const room = await casual.createRoom({
-    creatorId: 'demo-player-1',
-    roomType: 'open',
-    battleSize: '1v1',
-    collateral,
-  });
-  await casual.acceptRoom(room.id, 'demo-player-2');
-  casual.setReady(room.id, 'demo-player-1', true);
-  casual.setReady(room.id, 'demo-player-2', true);
+  const room = await openFullCasualRoom(casual, 'demo-player-1', 'demo-player-2', collateral);
+  bothConfirmCasual(casual, room.id);
   return casual.getRoom(room.id);
 }
 
@@ -338,7 +332,7 @@ class TestClient {
 }
 
 test('the dev faucet follows demo auth and production wallets stay at zero', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const client = new TestClient(port);
   const keypair = createSolanaKeypair();
@@ -382,7 +376,7 @@ async function authenticate(client: TestClient, keypair: ReturnType<typeof creat
 }
 
 test('tournament entry is reserved with registration and released when registration fails', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const creator = new TestClient(port);
   try {
@@ -441,7 +435,7 @@ test('tournament entry is reserved with registration and released when registrat
 });
 
 test('a full tournament refunds only the rejected joiner', async () => {
-  const server = new ApiServer({ allowDemoAuth: true });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const seats = [new TestClient(port), new TestClient(port), new TestClient(port), new TestClient(port)];
   const rejected = new TestClient(port);

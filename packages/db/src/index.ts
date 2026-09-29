@@ -6,7 +6,26 @@ export {
   withClient,
 } from './migrate';
 export { pokeFromPg, pokeToPg, assertSafePoke, MAX_SAFE_POKE, InvalidPokeAmountError } from './poke';
-export { previewCasual, previewTournament, POKE_SYMBOL, CASUAL_FEE_BPS } from './economics-math';
+export {
+  previewCasual,
+  previewTournament,
+  previewTreasuryDeposit,
+  POKE_SYMBOL,
+  CASUAL_FEE_BPS,
+  TOURNAMENT_TREASURY_BPS,
+  TOURNAMENT_DEV_OPS_BPS,
+} from './economics-math';
+export {
+  PostgresChainStore,
+  type ChainAsset,
+  type ChainIntentKind,
+  type ChainIntentStatus,
+  type ChainIntentRow,
+  type ChainTxStatus,
+  type CreateIntentInput,
+  type PokeQuoteRow,
+  type TreasuryDepositRow,
+} from './chain-store';
 export {
   type EconomicsStore,
   type PayoutResult,

@@ -1,4 +1,5 @@
 import {
+  SHOWDOWN_SPRITE_CDN,
   SHOWDOWN_SPRITES,
   fullSpriteId,
   pokemonIconOffset,
@@ -38,8 +39,10 @@ export function PokemonSprite({
   const sprite = file ? (
     <img
       className="ps-sprite"
-      src={`${SHOWDOWN_SPRITES}/gen5/${file}.png`}
+      src={`${SHOWDOWN_SPRITE_CDN}/sprites/gen5/${file}.png`}
       alt={name}
+      loading="lazy"
+      decoding="async"
     />
   ) : (
     <PokemonIcon name={name} dexNum={dexNum} />

@@ -1,8 +1,8 @@
 export const DEFAULT_BIND_HOST = '127.0.0.1';
 export const DEFAULT_MAX_CONNECTIONS = 512;
 export const DEFAULT_MAX_CONNECTIONS_PER_IP = 16;
-/** Conservative cap above the 12,000-character team paste plus JSON framing. */
-export const DEFAULT_MAX_PAYLOAD_BYTES = 32_768;
+/** Cap above team paste framing and the Gen 9 OU species catalog (~46 KB). */
+export const DEFAULT_MAX_PAYLOAD_BYTES = 96_000;
 export const DEFAULT_CHALLENGE_CLEANUP_MS = 15_000;
 export const DEFAULT_AUTH_ORIGIN = 'http://127.0.0.1';
 

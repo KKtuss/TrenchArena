@@ -37,9 +37,12 @@ export class BattleEngine {
 
     const players = normalizePlayers(input.players);
     const format = input.format as SupportedFormat;
+    const showdownFormatId = input.showdownFormatId ?? format;
+    const teamSize = input.teamSize ?? 6;
+    const packOptions = { size: teamSize, showdownFormatId };
     const initialTeams: [string, string] = [
-      validateTeamInput(input.teams[0], format),
-      validateTeamInput(input.teams[1], format),
+      validateTeamInput(input.teams[0], format, packOptions),
+      validateTeamInput(input.teams[1], format, packOptions),
     ];
     const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -49,7 +52,8 @@ export class BattleEngine {
     const session = new BattleSession({
       id: randomUUID(),
       format,
-      rules: formatRules(format),
+      showdownFormatId,
+      rules: rulesFromShowdownFormatId(showdownFormatId, format),
       seed: input.seed ?? DEFAULT_SEED,
       players,
       initialTeams,
@@ -98,9 +102,19 @@ function normalizePlayers(
   return normalized;
 }
 
-function validateTeamInput(team: string, format: SupportedFormat): string {
+function validateTeamInput(
+  team: string,
+  format: SupportedFormat,
+  options: { size: number; showdownFormatId: string },
+): string {
   if (typeof team !== 'string') {
     throw new TeamValidationError('Team must be a Showdown export string.');
   }
-  return validateAndPackTeam(team, format);
+  return validateAndPackTeam(team, format, options);
+}
+
+function rulesFromShowdownFormatId(showdownFormatId: string, format: SupportedFormat): readonly string[] {
+  const extra = showdownFormatId.split('@@@')[1];
+  if (!extra) return formatRules(format);
+  return extra.split(',').map(rule => rule.trim()).filter(Boolean);
 }

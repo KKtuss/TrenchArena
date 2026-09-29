@@ -38,6 +38,19 @@ export interface MockPayoutResult {
   reason: 'casual-win' | 'casual-forfeit' | 'casual-tie' | 'tournament-win' | 'refund';
 }
 
+/** SOL prize payout for chain-economy cups (treasury reserve → pay_prize). */
+export interface ChainPayoutResult {
+  symbol: 'SOL';
+  rail: 'sol_chain';
+  winnerId?: string;
+  amount: number;
+  mocked?: false;
+  protocolFee?: number;
+  reason?: 'casual-win' | 'casual-forfeit' | 'casual-tie' | 'tournament-win' | 'refund';
+  settlementKey: string;
+  settlementKeyHex: string;
+}
+
 export interface WalletSnapshot {
   playerId: PlayerId;
   symbol: typeof POKE_SYMBOL;

@@ -127,7 +127,10 @@ export class InMemoryEconomicsStore implements EconomicsStore {
 
   async createCasualRoomWithHold(input: CasualRoomCreateInput): Promise<void> {
     await this.withLock(input.id, async () => {
-      await this.reserve(creatorHoldKey(input.id), input.creatorId, input.collateral);
+      const rail = input.rail ?? 'legacy_poke';
+      if (rail !== 'sol_chain') {
+        await this.reserve(creatorHoldKey(input.id), input.creatorId, input.collateral);
+      }
       this.rooms.set(input.id, {
         id: input.id,
         matchId: input.matchId,
@@ -136,7 +139,11 @@ export class InMemoryEconomicsStore implements EconomicsStore {
         creatorId: input.creatorId,
         ...(input.invitedPlayerId ? { invitedPlayerId: input.invitedPlayerId } : {}),
         collateral: input.collateral,
-        status: 'open',
+        status: rail === 'sol_chain' ? 'pending_deposit' : 'open',
+        rail,
+        ...(input.collateralLamports != null
+          ? { collateralLamports: input.collateralLamports }
+          : {}),
       });
     });
   }

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 
-import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { Badge, Panel } from '@/components/shell';
 import { formatPoke } from '@/lib/api-client';
 import type {
@@ -11,9 +11,11 @@ import type {
   TournamentEconomicsPreview,
   TournamentSummary,
 } from '@/lib/protocol';
-import { roundLabel, shortenPlayer } from '@/lib/tournament-schedule';
+import { roundLabel } from '@/lib/tournament-schedule';
 
-function formatLabel(format: string, battleSize?: string): string {
+function formatLabel(format: string, battleSize?: string, ruleset?: string): string {
+  if (ruleset === 'competitive') return 'Competitive · Gen 9 OU';
+  if (battleSize === '1v1') return 'Casual 6 → 3';
   const pretty = format === 'gen9ou' ? 'Gen 9 OU' : format.toUpperCase();
   return battleSize ? `${pretty} · ${battleSize}` : pretty;
 }
@@ -117,7 +119,7 @@ export function ResultCard({
           </div>
         </div>
         <div className="economy-row">
-          <span className="muted">Mock POKE payout</span>
+          <span className="muted">Match payout</span>
           <Badge tone="live">{payoutAmount !== undefined ? formatPoke(payoutAmount) : '—'}</Badge>
         </div>
         {reason ? <div className="muted">{reason}</div> : null}
@@ -132,7 +134,7 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
   return (
     <article className={`matchup-row matchup-${room.status}`}>
       <div className="matchup-rail">
-        <span className="broadcast-label">{formatLabel(room.format, room.battleSize)}</span>
+        <span className="broadcast-label">{formatLabel(room.format, room.battleSize, room.ruleset)}</span>
         <Badge tone={statusTone(room.status)}>{room.status}</Badge>
       </div>
       <div className="matchup-axis">
@@ -140,7 +142,7 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
           <TrainerFigure />
           <span>
             <small>Trainer</small>
-            <strong>{room.creatorId}</strong>
+            <strong><TrainerName playerId={room.creatorId} /></strong>
             <TeamChips filled={3} total={3} />
           </span>
         </div>
@@ -148,7 +150,7 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
         <div className="matchup-trainer matchup-trainer-inline matchup-trainer-foe">
           <span>
             <small>{waiting ? 'Open slot' : 'Opponent'}</small>
-            <strong>{room.opponentId ?? 'Waiting…'}</strong>
+            <strong>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Waiting…'}</strong>
             <TeamChips filled={waiting ? 0 : 3} total={3} />
           </span>
           <TrainerFigure foe />
@@ -172,7 +174,7 @@ export function FeaturedMatchup({ room }: { room: CasualRoom }) {
   return (
     <article className={`matchup-stage matchup-${room.status}`}>
       <div className="matchup-rail">
-        <span className="broadcast-label">{formatLabel(room.format, room.battleSize)}</span>
+        <span className="broadcast-label">{formatLabel(room.format, room.battleSize, room.ruleset)}</span>
         <span className="live-status"><span />{room.status === 'open' ? 'Open queue' : room.status}</span>
       </div>
       <div className="matchup-axis featured-axis">
@@ -180,7 +182,7 @@ export function FeaturedMatchup({ room }: { room: CasualRoom }) {
           <TrainerFigure size="lg" />
           <div className="trainer-card-copy">
             <small>Trainer card</small>
-            <strong>{room.creatorId}</strong>
+            <strong><TrainerName playerId={room.creatorId} /></strong>
             <TeamChips filled={5} total={6} />
           </div>
         </div>
@@ -189,7 +191,7 @@ export function FeaturedMatchup({ room }: { room: CasualRoom }) {
           <TrainerFigure foe size="lg" />
           <div className="trainer-card-copy">
             <small>{waiting ? 'Challenger' : 'Opponent'}</small>
-            <strong>{room.opponentId ?? 'Open slot'}</strong>
+            <strong>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Open slot'}</strong>
             <TeamChips filled={waiting ? 0 : 5} total={6} />
           </div>
         </div>
@@ -216,7 +218,7 @@ export function TournamentCard({ tournament }: { tournament: TournamentSummary }
       <div className="tournament-rail-id">
         <span className="broadcast-label">{formatLabel(tournament.format)}</span>
         <strong>{tournament.title}</strong>
-        {tournament.winner ? <p className="event-banner-champion">Champion {tournament.winner}</p> : null}
+        {tournament.winner ? <p className="event-banner-champion">Champion <TrainerName playerId={tournament.winner} /></p> : null}
       </div>
       <dl className="tournament-rail-stats">
         <div>
@@ -243,21 +245,21 @@ export function MatchPreview({ room }: { room: CasualRoom }) {
   return (
     <article className={`match-object match-${room.status}`}>
       <div className="match-object-rail">
-        <span className="broadcast-label">{formatLabel(room.format, room.battleSize)}</span>
+        <span className="broadcast-label">{formatLabel(room.format, room.battleSize, room.ruleset)}</span>
         <Badge tone={statusTone(room.status)}>{room.status}</Badge>
       </div>
       <div className="match-object-axis">
         <div className="match-object-trainer">
           <TrainerFigure />
           <span>
-            <strong>{room.creatorId}</strong>
+            <strong><TrainerName playerId={room.creatorId} /></strong>
             <TeamChips filled={3} total={3} />
           </span>
         </div>
         <span className="match-object-vs" aria-hidden>VS</span>
         <div className="match-object-trainer match-object-foe">
           <span>
-            <strong>{room.opponentId ?? 'Open slot'}</strong>
+            <strong>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Open slot'}</strong>
             <TeamChips filled={waiting ? 0 : 3} total={3} />
           </span>
           <TrainerFigure foe />
@@ -357,8 +359,8 @@ export function CompetitivePaths() {
     <div className="pa-paths">
       <article className="pa-path casual">
         <small>Casual</small>
-        <strong>Stake your own POKE</strong>
-        <p>Player-funded fights. Each side posts collateral; one 2% fee comes off the gross pool at match start.</p>
+        <strong>Wager SOL</strong>
+        <p>Ready up, wait for the countdown, then pick three from a random curated six — or bring your own Gen 9 OU team. Each side posts SOL collateral; one 2% fee comes off the gross pool at match start.</p>
         <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Find a fight</Link>
       </article>
       <article className="pa-path cup">
@@ -565,7 +567,7 @@ function BracketFighter({
     <div className={`pa-bracket-fighter ${side}${lost ? ' is-lost' : ''}${won ? ' is-won' : ''}`}>
       <ProfileTrainerSprite label={id ?? 'TBD'} side={side} />
       <div>
-        <b>{shortenPlayer(id)}</b>
+        <b>{id ? <TrainerName playerId={id} /> : 'TBD'}</b>
         <small>{won ? 'Winner' : lost ? 'Eliminated' : id ? 'Competitor' : 'Open slot'}</small>
       </div>
     </div>

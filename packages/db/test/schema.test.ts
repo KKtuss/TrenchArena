@@ -28,6 +28,9 @@ test('migrations are ordered, checksummed, and encode the durability contract', 
   assert.equal(files[1]?.fileName, '002_tournament_holds_without_parent.sql');
   assert.equal(files[2]?.fileName, '003_restore_tournament_parent_fks.sql');
   assert.equal(files[3]?.fileName, '004_interrupted_matches.sql');
+  assert.equal(files[4]?.fileName, '005_chain_intents.sql');
+  assert.equal(files[5]?.fileName, '006_asset_accounts.sql');
+  assert.equal(files[6]?.fileName, '007_treasury_ledger.sql');
   assert.equal(files[0]?.id, '001_initial.sql');
   assert.equal(files[0]?.checksum, checksumBuffer(files[0].sql));
   const sql = files.map(file => file.sql).join('\n');
@@ -49,7 +52,12 @@ test('migrations are ordered, checksummed, and encode the durability contract', 
   assert.match(sql, /status IN \('tied', 'interrupted'\) AND winner_id IS NULL/);
   assert.match(sql, /status <> 'interrupted' OR completed_at IS NOT NULL/);
   assert.equal(sql.includes('CREATE TABLE battle_instances'), false);
-  assert.equal(sql.includes('treasury'), false);
+  // Migrations 005–007 introduce treasury / chain tables; initial schema stays POKE-only.
+  assert.equal(files[0].sql.includes('treasury'), false);
+  assert.equal(sql.includes('treasury_deposits'), true);
+  assert.equal(sql.includes('chain_intents'), true);
+  assert.equal(sql.includes('poke_quotes'), true);
+  assert.equal(sql.includes('entry_escrows'), true);
   const statements = splitSqlStatements(sql);
   assert.equal(statements.some(statement => statement.includes('CREATE TABLE wallets')), true);
   assert.equal(statements.length > REQUIRED_TABLES.length, true);

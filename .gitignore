@@ -1,7 +1,15 @@
 node_modules/
 **/node_modules/
+node_modules.broken/
+**/node_modules.broken/
 dist/
 **/dist/
+target/
+**/target/
+.anchor/
+test-ledger/
+**/*.so
+programs/**/Cargo.lock
 *.tgz
 *.tsbuildinfo
 .superdesign

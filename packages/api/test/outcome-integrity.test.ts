@@ -10,8 +10,8 @@ import type {
 } from '@pokearena/battle-engine';
 
 import { CasualRoomService } from '../src/casual-service';
-import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from '../src/demo-teams';
 import { MockEconomics } from '../src/mock-economics';
+import { bothConfirmCasual, openFullCasualRoom } from './casual-flow';
 
 const COLLATERAL = 100_000;
 const WINNER_PAYOUT = 196_000;
@@ -30,15 +30,8 @@ function choiceFor(choice: AvailableChoice): PlayerChoice {
 }
 
 async function openReadyRoom(casual: CasualRoomService) {
-  const room = await casual.createRoom({
-    creatorId: 'demo-player-1',
-    roomType: 'open',
-    battleSize: '1v1',
-    collateral: COLLATERAL,
-  });
-  await casual.acceptRoom(room.id, 'demo-player-2');
-  casual.setReady(room.id, 'demo-player-1', true, DEMO_TEAM_ONE);
-  casual.setReady(room.id, 'demo-player-2', true, DEMO_TEAM_TWO);
+  const room = await openFullCasualRoom(casual, 'demo-player-1', 'demo-player-2', COLLATERAL);
+  bothConfirmCasual(casual, room.id);
   return casual.getRoom(room.id);
 }
 

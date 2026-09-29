@@ -19,6 +19,8 @@ import type {
   MatchPayload,
   MockPayoutResult,
   PlayerId,
+  DemoPlayerId,
+  PublicTrainerProfile,
   ServerMessage,
   TournamentSummary,
 } from './protocol';
@@ -56,22 +58,29 @@ interface ArenaContextValue {
   events: any[];
   setActiveMatchSubscription: (matchId: string | null) => void;
   walletAddress: string | null;
+  walletAdapter: SolanaWalletAdapter | null;
   walletConnected: boolean;
   availableWallets: DetectedWallet[];
   connectingWallet: boolean;
   connectInjectedWallet: (wallet?: DetectedWallet) => Promise<void>;
-  connectPreviewSession: () => Promise<void>;
+  connectPreviewSession: (playerId?: DemoPlayerId) => Promise<void>;
   disconnectInjectedWallet: () => Promise<void>;
   previewSession: boolean;
   trainerSpriteId: string;
   trainerUsername: string | null;
   needsProfileSetup: boolean;
   saveTrainerProfile: (username: string, spriteId: string) => void;
+  trainers: Record<string, PublicTrainerProfile>;
   authBusy: boolean;
 }
 
 const ArenaContext = createContext<ArenaContextValue | null>(null);
-const PREVIEW_PLAYER_ID = 'demo-player-1';
+const PREVIEW_PLAYER_IDS = ['demo-player-1', 'demo-player-2'] as const;
+const PREVIEW_SESSION_KEY = 'pokearena.preview-player';
+
+function isPreviewPlayer(id: string | null | undefined): id is DemoPlayerId {
+  return PREVIEW_PLAYER_IDS.some(playerId => playerId === id);
+}
 
 const emptySnapshot = (playerId: PlayerId): ArenaSnapshot => ({
   wallet: {
@@ -84,6 +93,7 @@ const emptySnapshot = (playerId: PlayerId): ArenaSnapshot => ({
   openCasualRooms: [],
   myCasualRooms: [],
   recentCasualResults: [],
+  trainers: {},
 });
 
 export function ArenaProvider({ children }: { children: ReactNode }) {
@@ -95,6 +105,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   const [authBusy, setAuthBusy] = useState(false);
   const [trainerSpriteId, setTrainerSpriteIdState] = useState(DEFAULT_TRAINER_SPRITE_ID);
   const [trainerUsername, setTrainerUsername] = useState<string | null>(null);
+  const [trainers, setTrainers] = useState<Record<string, PublicTrainerProfile>>({});
   const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connectionState, setConnectionState] = useState('idle');
@@ -127,6 +138,17 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     switch (message.type) {
       case 'arena.snapshot':
         setSnapshot(message.snapshot);
+        if (message.snapshot.trainers) setTrainers(message.snapshot.trainers);
+        break;
+      case 'trainer.directory':
+        setTrainers(message.trainers);
+        setSnapshot(current => current ? { ...current, trainers: message.trainers } : current);
+        break;
+      case 'trainer.profile':
+        setTrainers(current => ({ ...current, [message.playerId]: message.profile }));
+        setSnapshot(current => current
+          ? { ...current, trainers: { ...current.trainers, [message.playerId]: message.profile } }
+          : current);
         break;
       case 'casual.state':
       case 'casual.created':
@@ -188,6 +210,16 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     setLastTournamentResult(null);
   }, [client]);
 
+  const publishTrainerProfile = useCallback((username: string, spriteId: string) => {
+    const name = username.trim();
+    if (!isTrainerUsername(name)) return;
+    void client.request({
+      type: 'trainer.profile',
+      username: name,
+      spriteId: getTrainerSprite(spriteId).id,
+    }).catch(() => undefined);
+  }, [client]);
+
   const connectInjectedWallet = useCallback(async (wallet?: DetectedWallet) => {
     const selected = wallet ?? detectSolanaWallets()[0];
     if (!selected) {
@@ -213,6 +245,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
       setConnected(true);
       setConnectionState(client.connectionState);
       resetMatchState();
+      if (stored?.username) publishTrainerProfile(stored.username, stored.spriteId);
     } catch (err) {
       setConnected(false);
       setPlayerIdState(null);
@@ -223,9 +256,9 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
       setConnectingWallet(false);
       setAuthBusy(false);
     }
-  }, [client, resetMatchState]);
+  }, [client, publishTrainerProfile, resetMatchState]);
 
-  const connectPreviewSession = useCallback(async () => {
+  const connectPreviewSession = useCallback(async (playerId: DemoPlayerId = 'demo-player-1') => {
     if (!isDemoAuthEnabled()) {
       setError('Demo authentication is disabled.');
       return;
@@ -234,17 +267,19 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     setAuthBusy(true);
     setError(null);
     try {
-      await client.connect(PREVIEW_PLAYER_ID);
-      const stored = readTrainerProfile(PREVIEW_PLAYER_ID);
+      await client.connect(playerId);
+      sessionStorage.setItem(PREVIEW_SESSION_KEY, playerId);
+      const stored = readTrainerProfile(playerId);
       setWalletAdapter(null);
-      setWalletAddress(PREVIEW_PLAYER_ID);
+      setWalletAddress(playerId);
       setTrainerSpriteIdState(getTrainerSprite(stored?.spriteId).id);
       setTrainerUsername(stored?.username || null);
       setNeedsProfileSetup(!stored?.username);
-      setPlayerIdState(PREVIEW_PLAYER_ID);
+      setPlayerIdState(playerId);
       setConnected(true);
       setConnectionState(client.connectionState);
       resetMatchState();
+      if (stored?.username) publishTrainerProfile(stored.username, stored.spriteId);
     } catch (err) {
       setConnected(false);
       setPlayerIdState(null);
@@ -255,7 +290,15 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
       setConnectingWallet(false);
       setAuthBusy(false);
     }
-  }, [client, resetMatchState]);
+  }, [client, publishTrainerProfile, resetMatchState]);
+
+  useEffect(() => {
+    if (!isDemoAuthEnabled() || walletAddress) return;
+    const stored = sessionStorage.getItem(PREVIEW_SESSION_KEY);
+    if (isPreviewPlayer(stored)) {
+      void connectPreviewSession(stored);
+    }
+  }, [connectPreviewSession, walletAddress]);
 
   const disconnectInjectedWallet = useCallback(async () => {
     setAuthBusy(true);
@@ -266,6 +309,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     }
     client.close();
     client.clearAuth();
+    sessionStorage.removeItem(PREVIEW_SESSION_KEY);
     setWalletAdapter(null);
     setWalletAddress(null);
     setPlayerIdState(null);
@@ -273,6 +317,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     setSnapshot(null);
     setTrainerSpriteIdState(DEFAULT_TRAINER_SPRITE_ID);
     setTrainerUsername(null);
+    setTrainers({});
     setNeedsProfileSetup(false);
     resetMatchState();
     setConnectionState('closed');
@@ -287,11 +332,22 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     setTrainerSpriteIdState(sprite);
     setNeedsProfileSetup(false);
     writeTrainerProfile(walletAddress, { username: name, spriteId: sprite });
-  }, [walletAddress]);
+    publishTrainerProfile(name, sprite);
+  }, [publishTrainerProfile, walletAddress]);
+
+  useEffect(() => {
+    if (!connected || !playerId || !trainerUsername) return;
+    const published = trainers[playerId];
+    if (published?.username === trainerUsername && published.spriteId === trainerSpriteId) return;
+    publishTrainerProfile(trainerUsername, trainerSpriteId);
+  }, [connected, playerId, publishTrainerProfile, trainerSpriteId, trainerUsername, trainers]);
 
   const refreshSnapshot = useCallback(async () => {
     const response = await client.request({ type: 'arena.snapshot' });
-    if (response.type === 'arena.snapshot') setSnapshot(response.snapshot);
+    if (response.type === 'arena.snapshot') {
+      setSnapshot(response.snapshot);
+      if (response.snapshot.trainers) setTrainers(response.snapshot.trainers);
+    }
   }, [client]);
 
   const setActiveMatchSubscription = useCallback((matchId: string | null) => {
@@ -308,7 +364,11 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     client,
     playerId,
     playerLabel: trainerUsername ?? (
-      playerId === PREVIEW_PLAYER_ID ? 'Preview' : playerId ? shortenAddress(playerId) : 'Not connected'
+      playerId === 'demo-player-1'
+        ? 'Preview 1'
+        : playerId === 'demo-player-2'
+          ? 'Preview 2'
+          : playerId ? shortenAddress(playerId) : 'Not connected'
     ),
     connected,
     connectionState,
@@ -322,18 +382,20 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     battleView,
     events,
     setActiveMatchSubscription,
-    walletAddress,
-    walletConnected: Boolean(walletAddress),
-    availableWallets,
-    connectingWallet,
+  walletAddress,
+  walletAdapter,
+  walletConnected: Boolean(walletAddress),
+  availableWallets,
+  connectingWallet,
     connectInjectedWallet,
     connectPreviewSession,
     disconnectInjectedWallet,
-    previewSession: walletAddress === PREVIEW_PLAYER_ID,
+    previewSession: isPreviewPlayer(walletAddress),
     trainerSpriteId,
     trainerUsername,
     needsProfileSetup,
     saveTrainerProfile,
+    trainers,
     authBusy,
   };
 

@@ -1,18 +1,30 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatSolLamports } from '@/lib/api-client';
 
 export default function TreasuryPage() {
   const { client, snapshot, refreshSnapshot } = useArena();
+  const [deposits, setDeposits] = useState<Array<{
+    claimKey: string;
+    source: string;
+    grossLamports: number;
+    treasuryLamports: number;
+    operatorLamports: number;
+    signature?: string;
+    createdAt: string;
+  }>>([]);
 
   useEffect(() => {
     void Promise.all([
       client.request({ type: 'casual.list' }),
       client.request({ type: 'tournament.list' }),
+      client.request({ type: 'treasury.snapshot' }).then(response => {
+        if (response.type === 'treasury.snapshot') setDeposits(response.deposits);
+      }).catch(() => undefined),
     ]).then(() => refreshSnapshot());
   }, [client, refreshSnapshot]);
 
@@ -23,16 +35,49 @@ export default function TreasuryPage() {
   const casualGross = rooms.reduce((sum, room) => sum + room.economics.totalPot, 0);
   const casualFees = rooms.reduce((sum, room) => sum + room.economics.protocolFee, 0);
   const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => sum + (room.payout?.amount ?? 0), 0);
+  const chain = Boolean(snapshot?.chainEconomyEnabled);
 
   return (
     <div className="pa-page">
       <header className="pa-page-head">
-        <p className="pa-kicker"><i /> — Funding map • mock ledger —</p>
+        <p className="pa-kicker"><i /> — Funding map • {chain ? 'chain ledger' : 'legacy mock'} —</p>
         <h1>Treasury &amp; Economy</h1>
         <p className="pa-lead">
-          Two separate routes. Creator and developer rewards fund tournaments. Casual fights stay player-funded and pay one protocol fee at match start. Neither route is an immediately withdrawable vault.
+          POKE is your passport. SOL is what you compete for. Creator-reward SOL deposits split 90/10 into the
+          tournament treasury and operator allocation. Casual fights wager SOL with a 2% fee at match start.
         </p>
+        {chain && snapshot?.solBalances ? (
+          <p className="pa-lead">
+            Live treasury vault: <strong>{formatSolLamports(snapshot.solBalances.treasuryLamports)}</strong>
+          </p>
+        ) : null}
       </header>
+
+      {deposits.length > 0 ? (
+        <section className="pa-fly">
+          <header>
+            <div>
+              <h2><span>◆</span> Public treasury deposits</h2>
+              <p>Realized creator-reward SOL after the 90/10 split.</p>
+            </div>
+          </header>
+          <div className="stack">
+            {deposits.map(row => (
+              <article key={row.claimKey} className="pa-route-block">
+                <div className="pa-route-source">
+                  <b>{row.source}</b>
+                  <span>{row.createdAt}</span>
+                </div>
+                <p>
+                  Gross {formatSolLamports(row.grossLamports)} → treasury {formatSolLamports(row.treasuryLamports)} ·
+                  operator {formatSolLamports(row.operatorLamports)}
+                </p>
+                {row.signature ? <small>{row.signature}</small> : null}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="pa-fly">
         <header>
@@ -144,7 +189,7 @@ export default function TreasuryPage() {
             <header>
               <div>
                 <small>Casual</small>
-                <h3>Stake your own POKE.</h3>
+                <h3>Wager SOL in casual fights.</h3>
               </div>
               <span>Player-funded</span>
             </header>

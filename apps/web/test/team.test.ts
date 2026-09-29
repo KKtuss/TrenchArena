@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+  filterItemHits,
+  filterMoveHits,
+  filterSpeciesHits,
+} from '../lib/team';
+
+test('filters species hits by name and type without mutating the catalog', () => {
+  const hits = [
+    { name: 'Pelipper', types: ['Water', 'Flying'] },
+    { name: 'Rotom-Wash', types: ['Electric', 'Water'] },
+    { name: 'Great Tusk', types: ['Ground', 'Fighting'] },
+  ];
+
+  assert.deepEqual(filterSpeciesHits(hits, 'pel', 'Water').map(hit => hit.name), ['Pelipper']);
+  assert.deepEqual(filterSpeciesHits(hits, '', 'Water').map(hit => hit.name), ['Pelipper', 'Rotom-Wash']);
+  assert.deepEqual(hits.map(hit => hit.name), ['Pelipper', 'Rotom-Wash', 'Great Tusk']);
+});
+
+test('filters items by name or description', () => {
+  const hits = [
+    { name: 'Leftovers', description: 'Restores a little HP every turn.' },
+    { name: 'Choice Scarf', description: 'Raises Speed but locks the holder into one move.' },
+  ];
+
+  assert.deepEqual(filterItemHits(hits, 'speed').map(hit => hit.name), ['Choice Scarf']);
+  assert.deepEqual(filterItemHits(hits, 'left').map(hit => hit.name), ['Leftovers']);
+  assert.equal(filterItemHits(hits, 'does-not-exist').length, 0);
+});
+
+test('filters legal move hits by type, category, and searchable details', () => {
+  const hits = [
+    { name: 'Hydro Pump', type: 'Water', category: 'Special', description: 'A strong blast of water.' },
+    { name: 'Liquidation', type: 'Water', category: 'Physical', description: 'Slams the target with water.' },
+    { name: 'Roost', type: 'Flying', category: 'Status', description: 'Restores HP.' },
+  ];
+
+  assert.deepEqual(filterMoveHits(hits, '', 'Water', 'Special').map(hit => hit.name), ['Hydro Pump']);
+  assert.deepEqual(filterMoveHits(hits, 'restores', '', '').map(hit => hit.name), ['Roost']);
+  assert.deepEqual(filterMoveHits(hits, 'water', '', '').map(hit => hit.name), ['Hydro Pump', 'Liquidation']);
+});

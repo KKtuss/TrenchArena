@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
@@ -17,6 +17,9 @@ import {
   readRoster,
   readSavedTeam,
   clearSavedTeam,
+  filterItemHits,
+  filterMoveHits,
+  filterSpeciesHits,
   setsFromInspection,
   setsToPaste,
   writeSavedTeam,
@@ -26,16 +29,11 @@ import {
   type TeamInspection,
 } from '@/lib/team';
 
-type SearchField = `species` | `item` | `ability` | `move-${number}`;
-type SearchKind = 'species' | 'move' | 'item' | 'ability';
-
-interface SuggestionMenu {
-  field: SearchField;
-  kind: SearchKind;
-  hits: TeamSearchHit[];
-  scoped: boolean;
-  hint?: string;
-}
+type Picker =
+  | { kind: 'species'; slot: number }
+  | { kind: 'item'; slot: number }
+  | { kind: 'move'; slot: number; moveSlot: number }
+  | { kind: 'import' };
 
 const STAT_LABEL: Record<StatId, string> = {
   hp: 'HP',
@@ -46,6 +44,8 @@ const STAT_LABEL: Record<StatId, string> = {
   spe: 'Spe',
 };
 
+const MOVE_CATEGORIES = ['Physical', 'Special', 'Status'] as const;
+
 export function TeamBuilder() {
   const { client, playerId, connected } = useArena();
   const [name, setName] = useState('Demo Circuit');
@@ -53,16 +53,24 @@ export function TeamBuilder() {
   const [selected, setSelected] = useState(0);
   const [inspection, setInspection] = useState<TeamInspection | null>(null);
   const [notice, setNotice] = useState('Loading the Gen 9 OU validator.');
-  const [importOpen, setImportOpen] = useState(false);
   const [paste, setPaste] = useState('');
-  const [suggestions, setSuggestions] = useState<SuggestionMenu | null>(null);
   const [knownMoves, setKnownMoves] = useState<Record<string, TeamSearchHit>>({});
   const [saved, setSaved] = useState(false);
   const [teamId, setTeamId] = useState('');
   const [roster, setRoster] = useState<SavedRoster>({ activeId: '', teams: [] });
   const [hydrated, setHydrated] = useState(false);
+  const [picker, setPicker] = useState<Picker | null>(null);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [speciesCatalog, setSpeciesCatalog] = useState<TeamSearchHit[] | null>(null);
+  const [itemCatalog, setItemCatalog] = useState<TeamSearchHit[] | null>(null);
+  const [learnset, setLearnset] = useState<TeamSearchHit[]>([]);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [pickerError, setPickerError] = useState<string | null>(null);
   const inspectGeneration = useRef(0);
-  const searchGeneration = useRef(0);
+  const catalogGeneration = useRef(0);
+  const speciesGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,7 +126,11 @@ export function TeamBuilder() {
     const generation = ++inspectGeneration.current;
     const handle = window.setTimeout(() => {
       const nextPaste = setsToPaste(sets);
-      void client.request({ type: 'team.inspect', team: nextPaste || 'Empty' }).then(message => {
+      if (!nextPaste.trim()) {
+        if (generation === inspectGeneration.current) setInspection(null);
+        return;
+      }
+      void client.request({ type: 'team.inspect', team: nextPaste }).then(message => {
         if (generation !== inspectGeneration.current) return;
         if (message.type === 'team.inspect') setInspection(message.inspection);
       }).catch(error => {
@@ -127,9 +139,12 @@ export function TeamBuilder() {
       });
     }, 280);
     return () => window.clearTimeout(handle);
-  }, [client, hydrated, sets]);
+  }, [client, connected, hydrated, sets]);
 
   const current = sets[selected] ?? emptySet();
+  const pickerSet = picker && picker.kind !== 'import'
+    ? sets[picker.slot] ?? emptySet()
+    : current;
   const detail = useMemo(() => {
     if (!inspection || !current.species.trim()) return undefined;
     const position = sets.slice(0, selected + 1).filter(set => set.species.trim()).length - 1;
@@ -138,9 +153,25 @@ export function TeamBuilder() {
 
   const evSpent = STATS.reduce((sum, stat) => sum + (current.evs[stat.id] || 0), 0);
 
+  const filteredSpecies = useMemo(() => {
+    return filterSpeciesHits(speciesCatalog ?? [], pickerQuery, typeFilter);
+  }, [pickerQuery, speciesCatalog, typeFilter]);
+
+  const filteredItems = useMemo(() => {
+    return filterItemHits(itemCatalog ?? [], pickerQuery);
+  }, [itemCatalog, pickerQuery]);
+
+  const filteredMoves = useMemo(() => {
+    return filterMoveHits(learnset, pickerQuery, typeFilter, categoryFilter);
+  }, [categoryFilter, learnset, pickerQuery, typeFilter]);
+
   function updateSet(patch: Partial<EditorSet>) {
+    updateSetAt(selected, patch);
+  }
+
+  function updateSetAt(slot: number, patch: Partial<EditorSet>) {
     setSaved(false);
-    setSets(existing => existing.map((set, index) => index === selected ? { ...set, ...patch } : set));
+    setSets(existing => existing.map((set, index) => index === slot ? { ...set, ...patch } : set));
   }
 
   function updateEv(stat: StatId, raw: string) {
@@ -155,10 +186,14 @@ export function TeamBuilder() {
     updateSet({ ivs: { ...current.ivs, [stat]: value } });
   }
 
-  function updateMove(slot: number, value: string) {
-    const moves = [...current.moves] as EditorSet['moves'];
-    moves[slot] = value;
-    updateSet({ moves });
+  function updateMoveAt(targetSlot: number, moveSlot: number, value: string) {
+    setSaved(false);
+    setSets(existing => existing.map((set, index) => {
+      if (index !== targetSlot) return set;
+      const moves = [...set.moves] as EditorSet['moves'];
+      moves[moveSlot] = value;
+      return { ...set, moves };
+    }));
   }
 
   function rememberMoves(hits: TeamSearchHit[]) {
@@ -169,77 +204,120 @@ export function TeamBuilder() {
     });
   }
 
-  async function search(field: SearchField, kind: SearchKind, query: string) {
-    if (query.trim().length < 1 && kind !== 'ability' && !(kind === 'move' && current.species.trim())) {
-      setSuggestions(kind === 'move'
-        ? {
-            field,
-            kind,
-            hits: [],
-            scoped: false,
-            hint: 'Choose a Pokémon first. This list will show only the attacks it can learn.',
-          }
-        : null);
+  function closePicker() {
+    catalogGeneration.current += 1;
+    setPicker(null);
+    setPickerQuery('');
+    setTypeFilter('');
+    setCategoryFilter('');
+    setPickerError(null);
+  }
+
+  async function openSpeciesPicker(slot = selected) {
+    setSelected(slot);
+    setPicker({ kind: 'species', slot });
+    setPickerQuery('');
+    setTypeFilter('');
+    setPickerError(null);
+    const generation = ++catalogGeneration.current;
+    if (speciesCatalog) {
+      setCatalogBusy(false);
       return;
     }
-    const generation = ++searchGeneration.current;
+    setCatalogBusy(true);
+    try {
+      const message = await client.request({ type: 'team.search', kind: 'species', query: '' });
+      if (generation !== catalogGeneration.current) return;
+      if (message.type === 'team.search') {
+        setSpeciesCatalog(message.hits ?? message.results.map(name => ({ name })));
+      }
+    } catch (error) {
+      if (generation === catalogGeneration.current) {
+        setPickerError(error instanceof Error ? error.message : 'Pokédex unavailable.');
+      }
+    } finally {
+      if (generation === catalogGeneration.current) setCatalogBusy(false);
+    }
+  }
+
+  async function openItemPicker(slot = selected) {
+    setPicker({ kind: 'item', slot });
+    setPickerQuery('');
+    setPickerError(null);
+    const generation = ++catalogGeneration.current;
+    if (itemCatalog) {
+      setCatalogBusy(false);
+      return;
+    }
+    setCatalogBusy(true);
+    try {
+      const message = await client.request({ type: 'team.search', kind: 'item', query: '' });
+      if (generation !== catalogGeneration.current) return;
+      if (message.type === 'team.search') {
+        setItemCatalog(message.hits ?? message.results.map(name => ({ name })));
+      }
+    } catch (error) {
+      if (generation === catalogGeneration.current) {
+        setPickerError(error instanceof Error ? error.message : 'Item list unavailable.');
+      }
+    } finally {
+      if (generation === catalogGeneration.current) setCatalogBusy(false);
+    }
+  }
+
+  async function openMovePicker(moveSlot: number, slot = selected) {
+    const target = sets[slot] ?? emptySet();
+    if (!target.species.trim()) {
+      setNotice('Choose a Pokémon before picking attacks.');
+      return;
+    }
+    setPicker({ kind: 'move', slot, moveSlot });
+    setPickerQuery('');
+    setTypeFilter('');
+    setCategoryFilter('');
+    setPickerError(null);
+    setLearnset([]);
+    const generation = ++catalogGeneration.current;
+    setCatalogBusy(true);
     try {
       const message = await client.request({
         type: 'team.search',
-        kind,
-        query,
-        ...( (kind === 'ability' || kind === 'move') && current.species.trim()
-          ? { species: current.species.trim() }
-          : {}),
+        kind: 'move',
+        query: '',
+        species: target.species.trim(),
       });
-      if (generation !== searchGeneration.current || message.type !== 'team.search') return;
-      const hits = message.hits?.length
-        ? message.hits
-        : message.results.map(name => ({ name }));
-      if (kind === 'move') rememberMoves(hits);
-      setSuggestions({
-        field,
-        kind,
-        hits,
-        scoped: Boolean(message.scoped),
-        hint: hits.length ? undefined : 'Nothing matches that.',
-      });
+      if (generation !== catalogGeneration.current) return;
+      if (message.type === 'team.search') {
+        const hits = message.hits?.length ? message.hits : message.results.map(name => ({ name }));
+        setLearnset(hits);
+        rememberMoves(hits);
+      }
     } catch (error) {
-      if (generation !== searchGeneration.current) return;
-      const raw = error instanceof Error ? error.message : 'The list could not be loaded.';
-      setSuggestions({
-        field,
-        kind,
-        hits: [],
-        scoped: false,
-        hint: /authenticate|identify/i.test(raw)
-          ? 'Connect your wallet to load this list.'
-          : raw,
-      });
+      if (generation === catalogGeneration.current) {
+        setPickerError(error instanceof Error ? error.message : 'Move list unavailable.');
+      }
+    } finally {
+      if (generation === catalogGeneration.current) setCatalogBusy(false);
     }
   }
 
-  function applySuggestion(field: SearchField, value: string) {
-    if (field === 'species') {
-      void adoptSpecies(value);
-    } else if (field === 'item') updateSet({ item: value });
-    else if (field === 'ability') updateSet({ ability: value });
-    else updateMove(Number(field.slice(5)), value);
-    setSuggestions(null);
-  }
-
   async function adoptSpecies(species: string) {
-    const slot = selected;
-    setSuggestions(null);
+    const slot = picker?.kind === 'species' ? picker.slot : selected;
+    const generation = ++speciesGeneration.current;
     setSaved(false);
+    closePicker();
     try {
       const [abilities, moves] = await Promise.all([
         client.request({ type: 'team.search', kind: 'ability', query: '', species }),
         client.request({ type: 'team.search', kind: 'move', query: '', species }),
       ]);
+      if (generation !== speciesGeneration.current) return;
       const abilityNames = abilities.type === 'team.search' ? abilities.results : [];
       const moveNames = moves.type === 'team.search' ? moves.results : [];
-      if (moves.type === 'team.search' && moves.hits?.length) rememberMoves(moves.hits);
+      if (moves.type === 'team.search' && moves.hits?.length) {
+        rememberMoves(moves.hits);
+        setLearnset(moves.hits);
+      }
       const legal = new Set(moveNames.map(move => move.toLowerCase()));
       setSets(existing => existing.map((set, index) => {
         if (index !== slot) return set;
@@ -247,16 +325,23 @@ export function TeamBuilder() {
           ? set.ability
           : (abilityNames[0] ?? '');
         return {
-          ...set,
+          ...emptySet(),
           species,
           ability: keptAbility,
+          teraType: set.teraType,
+          nature: set.nature,
+          evs: set.evs,
+          ivs: set.ivs,
+          item: set.item,
           moves: set.moves.map(move => (
             move.trim() && legal.size && !legal.has(move.trim().toLowerCase()) ? '' : move
           )) as EditorSet['moves'],
         };
       }));
-    } catch {
-      updateSet({ species });
+    } catch (error) {
+      if (generation !== speciesGeneration.current) return;
+      updateSetAt(slot, { species });
+      setNotice(error instanceof Error ? error.message : 'Pokémon details unavailable.');
     }
   }
 
@@ -268,6 +353,7 @@ export function TeamBuilder() {
       setInspection(message.inspection);
       setSelected(0);
       setSaved(false);
+      closePicker();
       setNotice(message.inspection.packed ? 'Imported paste passes Gen 9 OU.' : 'Imported paste still has clause problems.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Import failed.');
@@ -280,8 +366,7 @@ export function TeamBuilder() {
     setSelected(0);
     setPaste('');
     setInspection(null);
-    setSuggestions(null);
-    setImportOpen(false);
+    closePicker();
     setSaved(false);
   }
 
@@ -299,7 +384,7 @@ export function TeamBuilder() {
     setTeamId(id);
     setName(nextName);
     setPaste(nextPaste);
-    setSuggestions(null);
+    closePicker();
     setSaved(true);
     if (!nextPaste.trim()) {
       blankEditor(nextName);
@@ -334,7 +419,7 @@ export function TeamBuilder() {
       setTeamId(created.id);
     }
     blankEditor('New team');
-    setNotice('Blank team. Choose a species in slot 1.');
+    setNotice('Blank team. Choose a Pokémon in slot 1.');
   }
 
   function clearTeam() {
@@ -343,7 +428,7 @@ export function TeamBuilder() {
     blankEditor('New team');
     if (playerId) clearSavedTeam(playerId);
     if (playerId) setRoster(readRoster(playerId));
-    setNotice('Blank team. Choose a species in slot 1.');
+    setNotice('Blank team. Choose a Pokémon in slot 1.');
   }
 
   function save() {
@@ -363,27 +448,36 @@ export function TeamBuilder() {
         : 'Draft saved. It does not pass Gen 9 OU, so it cannot be locked for a match.');
   }
 
+  function openImport() {
+    catalogGeneration.current += 1;
+    setPaste(setsToPaste(sets));
+    setPickerError(null);
+    setCatalogBusy(false);
+    setPicker({ kind: 'import' });
+  }
+
   return (
-    <div className="tb">
-      <header className="tb-file">
+    <div className="pa-page tb">
+      <header className="pa-page-head pa-page-head-row">
         <div>
-          <p>Tactical deployment file · prod sync · regulation compliant</p>
-          <input aria-label="Team name" value={name} onChange={event => { setName(event.target.value); setSaved(false); }} />
+          <p className="pa-kicker"><i /> — Gen 9 OU · Competitive roster —</p>
+          <h1>Team builder</h1>
+          <p className="pa-lead">Pick six from the Pokédex, lock four attacks each, then save for casual competitive or cups.</p>
         </div>
         <div className="tb-file-actions">
-          <span>Format: Gen 9 Overused</span>
+          <label className="tb-name">
+            Team name
+            <input aria-label="Team name" value={name} onChange={event => { setName(event.target.value); setSaved(false); }} />
+          </label>
           {roster.teams.length > 1 ? (
             <select aria-label="Saved teams" value={teamId} onChange={event => void switchTeam(event.target.value)}>
               {roster.teams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}
             </select>
           ) : null}
-          <button type="button" onClick={startNewTeam}>New team</button>
-          <button type="button" onClick={() => {
-            setPaste(setsToPaste(sets));
-            setImportOpen(open => !open);
-          }}>Import / export</button>
-          <button type="button" onClick={clearTeam}>Clear team</button>
-          <button type="button" className="primary" onClick={save}>{saved ? 'Saved' : 'Save team'}</button>
+          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={startNewTeam}>New</button>
+          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={openImport}>Import / export</button>
+          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={clearTeam}>Clear</button>
+          <button type="button" className="pa-btn pa-btn-primary pa-btn-sm" onClick={save}>{saved ? 'Saved' : 'Save team'}</button>
         </div>
       </header>
 
@@ -391,13 +485,6 @@ export function TeamBuilder() {
         {connected ? notice : 'Connecting to the validator…'}
         {inspection?.packed ? ' · 0 clause violations' : ''}
       </p>
-
-      {importOpen ? (
-        <div className="tb-import">
-          <textarea aria-label="Showdown paste" value={paste} onChange={event => setPaste(event.target.value)} rows={8} />
-          <button type="button" onClick={() => void applyPaste()}>Apply paste</button>
-        </div>
-      ) : null}
 
       {inspection && !inspection.packed && inspection.problems.length ? (
         <ul className="tb-problems">
@@ -407,22 +494,29 @@ export function TeamBuilder() {
 
       <div className="tb-grid">
         <aside className="tb-slots">
-          {sets.map((set, index) => (
-            <button
-              key={index}
-              type="button"
-              className={index === selected ? 'active' : ''}
-              onClick={() => { setSelected(index); setSuggestions(null); }}
-            >
-              <small>Slot {String(index + 1).padStart(2, '0')}{index === selected ? ' // active' : ''}</small>
-              <span className="tb-slot-ident">
-                {set.species.trim() ? <PokemonIcon name={set.species} /> : <PokemonIcon name="" />}
-                <strong>{set.species.trim() || 'Empty slot'}</strong>
-              </span>
-              <span>{set.ability || 'No ability'}{set.item ? ` · ${set.item}` : ''}</span>
-              {set.teraType ? <em>Tera {set.teraType}</em> : null}
-            </button>
-          ))}
+          {sets.map((set, index) => {
+            const empty = !set.species.trim();
+            return (
+              <button
+                key={index}
+                type="button"
+                className={index === selected ? 'active' : ''}
+                aria-pressed={index === selected}
+                onClick={() => {
+                  setSelected(index);
+                  if (empty) void openSpeciesPicker(index);
+                }}
+              >
+                <small>Slot {String(index + 1).padStart(2, '0')}{index === selected ? ' · editing' : ''}</small>
+                <span className="tb-slot-ident">
+                  {empty ? <PokemonIcon name="" /> : <PokemonIcon name={set.species} />}
+                  <strong>{empty ? 'Choose Pokémon' : set.species}</strong>
+                </span>
+                <span>{empty ? 'Open Pokédex' : (set.ability || 'No ability')}{set.item && !empty ? ` · ${set.item}` : ''}</span>
+                {set.teraType ? <em>Tera {set.teraType}</em> : null}
+              </button>
+            );
+          })}
         </aside>
 
         <section className="tb-set">
@@ -430,258 +524,420 @@ export function TeamBuilder() {
             <div className="tb-set-head">
               {current.species.trim() ? (
                 <PokemonSprite name={current.species} dexNum={detail?.dexNum} />
-              ) : null}
+              ) : (
+                <span className="ps-sprite-frame empty" aria-hidden />
+              )}
               <div>
-                <small>{detail?.dexNum ? `Natdex #${String(detail.dexNum).padStart(4, '0')}` : 'Species ident'}</small>
-                <h2>{current.species.trim() || 'Choose a species'}</h2>
+                <small>{detail?.dexNum ? `Natdex #${String(detail.dexNum).padStart(4, '0')}` : 'Slot identity'}</small>
+                <h2>{current.species.trim() || 'Empty slot'}</h2>
               </div>
             </div>
-            <div className="tb-types">
-              {(detail?.types ?? []).map(type => (
-                <span key={type}><TypeMark type={type} />{type}</span>
-              ))}
-            </div>
+            <button type="button" className="pa-btn pa-btn-primary pa-btn-sm" onClick={() => void openSpeciesPicker()}>
+              {current.species.trim() ? 'Change Pokémon' : 'Choose Pokémon'}
+            </button>
           </header>
-          {detail?.heightM != null ? (
-            <p className="tb-phys">Scale {detail.heightM}m · mass {detail.weightKg}kg</p>
-          ) : null}
+          <div className="tb-types">
+            {(detail?.types ?? []).map(type => (
+              <span key={type}><TypeMark type={type} />{type}</span>
+            ))}
+          </div>
 
-          <label>
-            Species
-            <input
-              value={current.species}
-              placeholder="Type a Pokémon name"
-              onChange={event => {
-                updateSet({ species: event.target.value });
-                void search('species', 'species', event.target.value);
-              }}
-              onFocus={() => void search('species', 'species', current.species)}
-            />
-          </label>
-          {suggestions?.field === 'species' ? <Suggestions menu={suggestions} onPick={value => applySuggestion('species', value)} /> : null}
-
-          <label>
-            Held item
-            <input
-              value={current.item}
-              onChange={event => {
-                updateSet({ item: event.target.value });
-                void search('item', 'item', event.target.value);
-              }}
-            />
-          </label>
-          {suggestions?.field === 'item' ? <Suggestions menu={suggestions} onPick={value => applySuggestion('item', value)} /> : null}
-
-          <label>
-            Ability
-            <input
-              value={current.ability}
-              onChange={event => {
-                updateSet({ ability: event.target.value });
-                void search('ability', 'ability', event.target.value);
-              }}
-              onFocus={() => void search('ability', 'ability', current.ability)}
-            />
-          </label>
-          {suggestions?.field === 'ability' ? <Suggestions menu={suggestions} onPick={value => applySuggestion('ability', value)} /> : null}
-          {detail?.abilities?.length ? (
-            <div className="tb-choices">
-              {detail.abilities.map(ability => (
-                <button
-                  key={ability}
-                  type="button"
-                  className={ability.toLowerCase() === current.ability.trim().toLowerCase() ? 'active' : ''}
-                  onClick={() => updateSet({ ability })}
-                >
-                  {ability}
-                </button>
-              ))}
+          <div className="tb-set-meta">
+            <div>
+              <small>Held item</small>
+              <button type="button" className="tb-pick" onClick={() => void openItemPicker(selected)}>
+                {current.item.trim() || 'Choose item'}
+              </button>
             </div>
-          ) : null}
+            <label>
+              Tera type
+              <select value={current.teraType} onChange={event => updateSet({ teraType: event.target.value })}>
+                <option value="">None</option>
+                {TERA_TYPES.map(type => <option key={type}>{type}</option>)}
+              </select>
+            </label>
+          </div>
 
-          <label>
-            Tera type
-            <select value={current.teraType} onChange={event => updateSet({ teraType: event.target.value })}>
-              <option value="">None</option>
-              {TERA_TYPES.map(type => <option key={type}>{type}</option>)}
-            </select>
-          </label>
+          <div className="tb-choices">
+            {(detail?.abilities ?? []).map(ability => (
+              <button
+                key={ability}
+                type="button"
+                className={ability.toLowerCase() === current.ability.trim().toLowerCase() ? 'active' : ''}
+                aria-pressed={ability.toLowerCase() === current.ability.trim().toLowerCase()}
+                onClick={() => updateSet({ ability })}
+              >
+                {ability}
+              </button>
+            ))}
+            {!current.species.trim() ? <p className="tb-plain">Abilities appear after you pick a Pokémon.</p> : null}
+          </div>
 
           <div className="tb-moves">
             <header>
               <strong>Attacks</strong>
               <span>{current.moves.filter(move => move.trim()).length} / 4</span>
             </header>
-            <ul className="tb-attack-key">
-              <li><span className="tb-cat is-physical">Physical</span><span>Attack vs Defense</span></li>
-              <li><span className="tb-cat is-special">Special</span><span>Sp. Atk vs Sp. Def</span></li>
-              <li><span className="tb-cat is-status">Status</span><span>No direct damage</span></li>
-            </ul>
             {current.moves.map((move, index) => {
-              const field = `move-${index}` as SearchField;
               const fact = moveFact(move, knownMoves, detail?.moveDetails);
               return (
-                <div key={index} className="tb-move">
-                  <input
-                    aria-label={`Move ${index + 1}`}
-                    placeholder={current.species.trim() ? 'Search this Pokémon’s attacks' : 'Attack name'}
-                    value={move}
-                    onChange={event => {
-                      updateMove(index, event.target.value);
-                      void search(field, 'move', event.target.value);
-                    }}
-                    onFocus={() => void search(field, 'move', move)}
-                  />
-                  {suggestions?.field === field ? (
-                    <Suggestions
-                      menu={suggestions}
-                      onPick={value => applySuggestion(field, value)}
-                    />
-                  ) : fact ? <AttackCard hit={fact} /> : null}
-                </div>
+                <button
+                  key={index}
+                  type="button"
+                  className="tb-move-row"
+                  onClick={() => void openMovePicker(index, selected)}
+                >
+                  {fact ? (
+                    <>
+                      <span className="tb-move-id">
+                        {fact.type ? <TypeMark type={fact.type} /> : null}
+                        <b>{fact.name}</b>
+                      </span>
+                      {fact.category ? <span className={`tb-cat is-${fact.category.toLowerCase()}`}>{fact.category}</span> : null}
+                      <span className="tb-move-power">{fact.category === 'Status' ? '—' : fact.power ? fact.power : 'Var'}</span>
+                    </>
+                  ) : (
+                    <span className="tb-move-empty">{current.species.trim() ? `Choose attack ${index + 1}` : 'Pick a Pokémon first'}</span>
+                  )}
+                </button>
               );
             })}
           </div>
         </section>
 
-        <section className="tb-stats">
-          <header>
-            <strong>Stat and EV calibration</strong>
-            <span>{510 - evSpent} / 510 EVs left</span>
-          </header>
-          <label>
-            Nature
-            <select value={current.nature} onChange={event => updateSet({ nature: event.target.value })}>
-              {NATURES.map(nature => <option key={nature} value={nature}>{natureLabel(nature)}</option>)}
-            </select>
-          </label>
-          <ul>
-            <li className="tb-stat-head">
-              <span>Stat</span>
-              <span>EV</span>
-              <span>IV</span>
-              <b>Final</b>
-            </li>
-            {STATS.map(stat => {
-              const row = detail?.stats.find(item => item.stat === stat.id);
-              return (
-                <li key={stat.id}>
-                  <span>
-                    {STAT_LABEL[stat.id]}
-                    {row?.nature === 'up' ? ' +' : ''}
-                    {row?.nature === 'down' ? ' −' : ''}
-                    {row ? ` · base ${row.base}` : ''}
-                  </span>
-                  <input
-                    aria-label={`${STAT_LABEL[stat.id]} EVs`}
-                    inputMode="numeric"
-                    value={current.evs[stat.id]}
-                    onChange={event => updateEv(stat.id, event.target.value)}
-                  />
-                  <input
-                    aria-label={`${STAT_LABEL[stat.id]} IVs`}
-                    inputMode="numeric"
-                    value={current.ivs[stat.id]}
-                    onChange={event => updateIv(stat.id, event.target.value)}
-                  />
-                  <b>{row ? row.value : '—'}</b>
-                </li>
-              );
-            })}
-          </ul>
-          <p className="tb-spread">
-            {natureLabel(current.nature)} · {STATS.filter(stat => current.evs[stat.id] > 0).map(stat => `${current.evs[stat.id]} ${STAT_LABEL[stat.id]}`).join(' / ') || 'No EVs'}
-          </p>
-        </section>
-      </div>
-
-      <div className="tb-lower">
-        <section>
-          <h3>Team defensive profile</h3>
-          {inspection?.threats.length ? (
+        <div className="tb-side">
+          <section className="tb-stats">
+            <header>
+              <strong>Stats</strong>
+              <span>{510 - evSpent} / 510 EVs left</span>
+            </header>
+            <label>
+              Nature
+              <select value={current.nature} onChange={event => updateSet({ nature: event.target.value })}>
+                {NATURES.map(nature => <option key={nature} value={nature}>{natureLabel(nature)}</option>)}
+              </select>
+            </label>
             <ul>
-              {inspection.threats.map(threat => (
-                <li key={threat.attack}>
-                  <strong>{threat.attack} {formatMultiplier(threat.worst)}</strong>
-                  <span>Exposed: {threat.exposed.join(', ') || '—'}</span>
-                  <span>Cover: {threat.covers.join(', ') || 'None'}</span>
-                </li>
-              ))}
+              <li className="tb-stat-head">
+                <span>Stat</span>
+                <span>EV</span>
+                <span>IV</span>
+                <b>Final</b>
+              </li>
+              {STATS.map(stat => {
+                const row = detail?.stats.find(item => item.stat === stat.id);
+                return (
+                  <li key={stat.id}>
+                    <span>
+                      {STAT_LABEL[stat.id]}
+                      {row?.nature === 'up' ? ' +' : ''}
+                      {row?.nature === 'down' ? ' −' : ''}
+                      {row ? ` · base ${row.base}` : ''}
+                    </span>
+                    <input
+                      aria-label={`${STAT_LABEL[stat.id]} EVs`}
+                      inputMode="numeric"
+                      value={current.evs[stat.id]}
+                      onChange={event => updateEv(stat.id, event.target.value)}
+                    />
+                    <input
+                      aria-label={`${STAT_LABEL[stat.id]} IVs`}
+                      inputMode="numeric"
+                      value={current.ivs[stat.id]}
+                      onChange={event => updateIv(stat.id, event.target.value)}
+                    />
+                    <b>{row ? row.value : '—'}</b>
+                  </li>
+                );
+              })}
             </ul>
-          ) : <p>No 2× weaknesses on the sets that the dex recognizes.</p>}
-        </section>
-        <section>
-          <h3>Speed ladder</h3>
-          {inspection?.speeds.length ? (
-            <ol>
-              {inspection.speeds.map(entry => (
-                <li key={entry.species}><span>{entry.species}</span><b>{entry.speed}</b></li>
+            <p className="tb-spread">
+              {natureLabel(current.nature)} · {STATS.filter(stat => current.evs[stat.id] > 0).map(stat => `${current.evs[stat.id]} ${STAT_LABEL[stat.id]}`).join(' / ') || 'No EVs'}
+            </p>
+          </section>
+
+          <section className="tb-intel">
+            <h3>Coverage</h3>
+            {inspection?.threats.length ? (
+              <ul>
+                {inspection.threats.slice(0, 6).map(threat => (
+                  <li key={threat.attack}>
+                    <strong>{threat.attack} {formatMultiplier(threat.worst)}</strong>
+                    <span>{threat.exposed.join(', ') || '—'}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p>Coverage appears after species resolve.</p>}
+            <h3>Speed</h3>
+            {inspection?.speeds.length ? (
+              <ol>
+                {inspection.speeds.map(entry => (
+                  <li key={entry.species}><span>{entry.species}</span><b>{entry.speed}</b></li>
+                ))}
+              </ol>
+            ) : <p>Speed appears after a species resolves.</p>}
+          </section>
+        </div>
+      </div>
+
+      {picker?.kind === 'species' ? (
+        <CatalogModal
+          title="Pokédex"
+          hint="Gen 9 OU legal Pokémon"
+          query={pickerQuery}
+          onQuery={setPickerQuery}
+          onClose={closePicker}
+          busy={catalogBusy}
+          error={pickerError}
+          meta={catalogBusy && !speciesCatalog ? 'Loading catalog…' : `${filteredSpecies.length} Pokémon`}
+          onRetry={() => {
+            if (picker?.kind === 'species') void openSpeciesPicker(picker.slot);
+          }}
+          filters={(
+            <>
+              <button type="button" className={!typeFilter ? 'active' : ''} aria-pressed={!typeFilter} onClick={() => setTypeFilter('')}>All types</button>
+              {TERA_TYPES.map(type => (
+                <button key={type} type="button" className={typeFilter === type ? 'active' : ''} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
+                  {type}
+                </button>
               ))}
-            </ol>
-          ) : <p>Speed appears after a species resolves.</p>}
-          {inspection?.benchmarks?.length ? (
-            <ul className="tb-benchmarks">
-              {inspection.benchmarks.map(mark => (
-                <li key={mark.label}><span>{mark.label}</span><b>{mark.speed}</b></li>
+            </>
+          )}
+        >
+          {catalogBusy && !speciesCatalog ? <p className="tb-plain" role="status">Loading Pokédex…</p> : null}
+          <div className="tb-dex-grid">
+            {filteredSpecies.map(hit => (
+              <button key={hit.name} type="button" className="tb-dex-cell" onClick={() => void adoptSpecies(hit.name)}>
+                <PokemonSprite name={hit.name} framed />
+                <strong>{hit.name}</strong>
+                <span className="tb-hit-meta">
+                  {(hit.types ?? []).map(type => (
+                    <span key={type}><TypeMark type={type} />{type}</span>
+                  ))}
+                </span>
+              </button>
+            ))}
+          </div>
+          {speciesCatalog && !filteredSpecies.length ? <p className="tb-plain">Nothing matches that search.</p> : null}
+        </CatalogModal>
+      ) : null}
+
+      {picker?.kind === 'move' ? (
+        <CatalogModal
+          title="Attacks"
+          hint={pickerSet.species.trim() ? `Legal for ${pickerSet.species}` : 'Pick a Pokémon first'}
+          query={pickerQuery}
+          onQuery={setPickerQuery}
+          onClose={closePicker}
+          busy={catalogBusy}
+          error={pickerError}
+          meta={catalogBusy && !learnset.length ? 'Loading learnset…' : `${filteredMoves.length} legal attacks`}
+          onRetry={() => {
+            if (picker?.kind === 'move') void openMovePicker(picker.moveSlot, picker.slot);
+          }}
+          filters={(
+            <>
+              <button type="button" className={!categoryFilter ? 'active' : ''} aria-pressed={!categoryFilter} onClick={() => setCategoryFilter('')}>All</button>
+              {MOVE_CATEGORIES.map(category => (
+                <button
+                  key={category}
+                  type="button"
+                  className={categoryFilter === category ? 'active' : ''}
+                  aria-pressed={categoryFilter === category}
+                  onClick={() => setCategoryFilter(category)}
+                >
+                  {category}
+                </button>
               ))}
-            </ul>
-          ) : null}
-        </section>
+              <button type="button" className={!typeFilter ? 'active' : ''} aria-pressed={!typeFilter} onClick={() => setTypeFilter('')}>Any type</button>
+              {TERA_TYPES.map(type => (
+                <button key={type} type="button" className={typeFilter === type ? 'active' : ''} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
+                  {type}
+                </button>
+              ))}
+            </>
+          )}
+        >
+          {catalogBusy && !learnset.length ? <p className="tb-plain" role="status">Loading learnset…</p> : null}
+          <div className="tb-move-list">
+            <button type="button" className="tb-clear-picker" onClick={() => { updateMoveAt(picker.slot, picker.moveSlot, ''); closePicker(); }}>
+              Clear attack
+            </button>
+            {filteredMoves.map(hit => (
+              <button
+                key={hit.name}
+                type="button"
+                className={hit.name.toLowerCase() === pickerSet.moves[picker.moveSlot]?.trim().toLowerCase() ? 'active' : ''}
+                aria-pressed={hit.name.toLowerCase() === pickerSet.moves[picker.moveSlot]?.trim().toLowerCase()}
+                onClick={() => {
+                  updateMoveAt(picker.slot, picker.moveSlot, hit.name);
+                  rememberMoves([hit]);
+                  closePicker();
+                }}
+              >
+                <AttackCard hit={hit} showName />
+              </button>
+            ))}
+          </div>
+          {learnset.length && !filteredMoves.length ? <p className="tb-plain">Nothing matches that search.</p> : null}
+        </CatalogModal>
+      ) : null}
+
+      {picker?.kind === 'item' ? (
+        <CatalogModal
+          title="Held item"
+          hint="Search by name or effect"
+          query={pickerQuery}
+          onQuery={setPickerQuery}
+          onClose={closePicker}
+          busy={catalogBusy}
+          error={pickerError}
+          meta={catalogBusy && !itemCatalog ? 'Loading catalog…' : `${filteredItems.length} items`}
+          onRetry={() => {
+            if (picker?.kind === 'item') void openItemPicker(picker.slot);
+          }}
+        >
+          {catalogBusy && !itemCatalog ? <p className="tb-plain" role="status">Loading items…</p> : null}
+          <div className="tb-item-list">
+            <button type="button" onClick={() => { updateSetAt(picker.slot, { item: '' }); closePicker(); }}>No item</button>
+            {filteredItems.map(hit => (
+              <button
+                key={hit.name}
+                type="button"
+                className={hit.name.toLowerCase() === pickerSet.item.trim().toLowerCase() ? 'active' : ''}
+                aria-pressed={hit.name.toLowerCase() === pickerSet.item.trim().toLowerCase()}
+                onClick={() => { updateSetAt(picker.slot, { item: hit.name }); closePicker(); }}
+              >
+                <span className="tb-hit-name">{hit.name}</span>
+                {hit.description ? <span className="tb-hit-desc">{hit.description}</span> : null}
+              </button>
+            ))}
+          </div>
+        </CatalogModal>
+      ) : null}
+
+      {picker?.kind === 'import' ? (
+        <CatalogModal title="Import / export" hint="Showdown paste" query="" onQuery={() => undefined} onClose={closePicker} hideSearch>
+          <textarea aria-label="Showdown paste" value={paste} onChange={event => setPaste(event.target.value)} rows={12} />
+          <button type="button" className="pa-btn pa-btn-primary" onClick={() => void applyPaste()}>Apply paste</button>
+        </CatalogModal>
+      ) : null}
+    </div>
+  );
+}
+
+function CatalogModal({
+  title,
+  hint,
+  query,
+  onQuery,
+  onClose,
+  filters,
+  hideSearch = false,
+  busy = false,
+  error,
+  meta,
+  onRetry,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  query: string;
+  onQuery: (value: string) => void;
+  onClose: () => void;
+  filters?: ReactNode;
+  hideSearch?: boolean;
+  busy?: boolean;
+  error?: string | null;
+  meta?: string;
+  onRetry?: () => void;
+  children: ReactNode;
+}) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const card = cardRef.current;
+    if (!card) return undefined;
+
+    const focusable = () => Array.from(card.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ));
+    const first = focusable()[0];
+    first?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const elements = focusable();
+      if (!elements.length) {
+        event.preventDefault();
+        return;
+      }
+      const firstElement = elements[0]!;
+      const lastElement = elements[elements.length - 1]!;
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, []);
+
+  const titleId = 'team-builder-modal-title';
+  const hintId = 'team-builder-modal-hint';
+  return (
+    <div className="tb-modal" onClick={onClose}>
+      <div
+        ref={cardRef}
+        className="tb-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={hint ? hintId : undefined}
+        aria-busy={busy}
+        onClick={event => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            {hint ? <small id={hintId}>{hint}</small> : null}
+            <h2 id={titleId}>{title}</h2>
+          </div>
+          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={onClose} aria-label={`Close ${title}`}>Close</button>
+        </header>
+        {hideSearch ? null : (
+          <input
+            aria-label={`Search ${title.toLowerCase()}`}
+            value={query}
+            placeholder="Search by name"
+            onChange={event => onQuery(event.target.value)}
+          />
+        )}
+        {filters ? <div className="tb-modal-filters">{filters}</div> : null}
+        {meta ? <p className="tb-modal-meta" aria-live="polite">{meta}</p> : null}
+        {error ? (
+          <div className="tb-picker-error" role="alert">
+            <p>{error}</p>
+            {onRetry ? <button type="button" onClick={onRetry}>Retry</button> : null}
+          </div>
+        ) : null}
+        <div className="tb-modal-body">{children}</div>
       </div>
     </div>
-  );
-}
-
-function Suggestions({ menu, onPick }: { menu: SuggestionMenu; onPick: (value: string) => void }) {
-  const title = menu.kind === 'move'
-    ? (menu.scoped ? 'Attacks this Pokémon can learn' : 'Matching attacks')
-    : menu.kind === 'species'
-      ? 'Pokémon'
-      : menu.kind === 'ability'
-        ? (menu.scoped ? 'Abilities this Pokémon can have' : 'Matching abilities')
-        : 'Matching items';
-  return (
-    <div className="tb-suggest" role="listbox" aria-label={title}>
-      <p className="tb-plain">{title}</p>
-      {menu.hint ? <p className="tb-plain">{menu.hint}</p> : null}
-      {menu.hits.map(hit => (
-        <button
-          key={hit.name}
-          type="button"
-          onMouseDown={event => event.preventDefault()}
-          onClick={() => onPick(hit.name)}
-        >
-          {menu.kind === 'species' ? <SpeciesHit hit={hit} /> : menu.kind === 'move' ? <AttackCard hit={hit} showName /> : <HitBody hit={hit} />}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function SpeciesHit({ hit }: { hit: TeamSearchHit }) {
-  return (
-    <span className="tb-hit-row">
-      <PokemonIcon name={hit.name} />
-      <span>
-        <span className="tb-hit-name">{hit.name}</span>
-        {hit.types?.length ? (
-          <span className="tb-hit-meta">
-            {hit.types.map(type => (
-              <span key={type}><TypeMark type={type} />{type}</span>
-            ))}
-          </span>
-        ) : null}
-      </span>
-    </span>
-  );
-}
-
-function HitBody({ hit }: { hit: TeamSearchHit }) {
-  return (
-    <span className="tb-hit-copy">
-      <span className="tb-hit-name">{hit.name}</span>
-      {hit.description ? <span className="tb-hit-desc">{hit.description}</span> : null}
-    </span>
   );
 }
 

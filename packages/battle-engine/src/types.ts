@@ -16,6 +16,10 @@ export interface CreateBattleInput {
   teams: readonly [string, string];
   seed?: string;
   timeoutMs?: number;
+  /** Showdown formatid used for validation and `>start`. Defaults to `format`. */
+  showdownFormatId?: string;
+  /** Required number of Pokémon in each team paste. Defaults to 6. */
+  teamSize?: number;
 }
 
 export interface BattlePlayer {

@@ -13,6 +13,7 @@ test('production CSP is same-origin, has no wildcards, and skips unsafe-eval', (
     assert.match(csp, /default-src 'self'/);
     assert.match(csp, /script-src 'self' 'unsafe-inline'/);
     assert.match(csp, /connect-src 'self'/);
+    assert.match(csp, /img-src 'self' data: https:\/\/play\.pokemonshowdown\.com/);
     assert.match(csp, /frame-ancestors 'none'/);
     assert.equal(csp.includes('*'), false);
     assert.equal(csp.includes('unsafe-eval'), false);

@@ -19,9 +19,20 @@ import {
 import { WebSocketServer, WebSocket } from 'ws';
 import type { RawData } from 'ws';
 
-import { previewCasual, previewTournament, recoverDurableState, RecoveryFailedError, type EconomicsStore, type PayoutResult, type Pool } from '@pokearena/db';
+import {
+  previewCasual,
+  previewTournament,
+  recoverDurableState,
+  RecoveryFailedError,
+  type EconomicsStore,
+  type PayoutResult,
+  type Pool,
+  type PostgresChainStore,
+} from '@pokearena/db';
 
-import { CasualRoomService } from './casual-service';
+import { CASUAL_START_COUNTDOWN_MS, CasualRoomService } from './casual-service';
+import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
+import { ChainEconomyService } from './chain-economy';
 import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from './demo-teams';
 import {
   connectPostgresEconomics,
@@ -33,6 +44,7 @@ import { InMemoryEconomicsStore } from './memory-economics-store';
 import {
   DEFAULT_TOURNAMENT_ENTRY_POKE,
   MockEconomics,
+  type ChainPayoutResult,
 } from './mock-economics';
 import {
   authorizeOrigin,
@@ -56,6 +68,7 @@ import {
   type RateLimitConfig,
 } from './rate-limit';
 import { publicTournamentForViewer } from './tournament-view';
+import { TrainerDirectory } from './trainer-directory';
 import {
   assertTournamentBackendMatchesEconomics,
   PostgresTournamentRepository,
@@ -87,10 +100,13 @@ export interface ApiServerOptions {
   challengeTtlMs?: number;
   challengeCleanupMs?: number;
   rateLimits?: Partial<RateLimitConfig>;
+  countdownMs?: number;
   economics?: EconomicsStore;
   casual?: CasualRoomService;
   tournaments?: TournamentService;
   tournamentRepository?: AsyncTournamentRepository;
+  chainStore?: PostgresChainStore | null;
+  chainEconomy?: ChainEconomyService;
 }
 
 export class TeamRequiredError extends Error {
@@ -131,6 +147,7 @@ interface ClientConnection {
   tournamentIds: Set<TournamentId>;
   matchIds: Set<string>;
   casualRoomIds: Set<string>;
+  watchedMatchId?: string;
   closed: boolean;
   replaced: boolean;
   ip: string;
@@ -144,9 +161,10 @@ export class ApiServer {
   readonly tournaments: TournamentService;
   readonly economics: EconomicsStore;
   readonly casual: CasualRoomService;
+  readonly chainEconomy: ChainEconomyService;
   readonly bindHost: string;
   /** Presentation cache of champion payouts. Settlement rows are authoritative. */
-  private readonly tournamentPayouts = new Map<TournamentId, PayoutResult>();
+  private readonly tournamentPayouts = new Map<TournamentId, PayoutResult | ChainPayoutResult>();
   private readonly settlementJobs = new Map<TournamentId, Promise<void>>();
   private readonly httpServer: Server;
   private readonly webSockets: WebSocketServer;
@@ -161,6 +179,7 @@ export class ApiServer {
   private readonly consumedNonces = new Map<string, number>();
   private readonly sessionsByPlayer = new Map<string, ClientConnection>();
   private readonly disconnectTimers = new Map<string, NodeJS.Timeout>();
+  private readonly trainers = new TrainerDirectory();
   private readonly allowDemoAuth: boolean;
   private readonly disconnectGraceMs: number;
   private readonly network: NetworkPolicy;
@@ -206,9 +225,22 @@ export class ApiServer {
       assertTournamentBackendMatchesEconomics(this.economics, repository);
     }
     this.tournaments = injectedTournaments ?? new TournamentService({ repository });
+    this.chainEconomy = options.chainEconomy
+      ?? new ChainEconomyService({ chainStore: options.chainStore ?? null });
     this.casual = casual ?? new CasualRoomService({
       economics: this.economics,
       allowDemoAuth: this.allowDemoAuth,
+      countdownMs: options.countdownMs ?? CASUAL_START_COUNTDOWN_MS,
+      ...(this.chainEconomy.enabled
+        ? {
+            chainSettlement: {
+              settle: input => this.chainEconomy.settleCasual(input),
+              refund: (roomId, creatorId, opponentId) => (
+                this.chainEconomy.refundCasual(roomId, creatorId, opponentId)
+              ),
+            },
+          }
+        : {}),
     });
     this.httpServer = createServer((request, response) => this.handleHttp(request, response));
     this.webSockets = new WebSocketServer({
@@ -251,7 +283,7 @@ export class ApiServer {
     if (resolveEconomicsBackend() === 'memory') {
       return new ApiServer(options);
     }
-    const { store, tournaments, pool } = await connectPostgresEconomics();
+    const { store, tournaments, chain, pool } = await connectPostgresEconomics();
     try {
       await recoverDurableState({ economics: store, tournaments });
     } catch (error) {
@@ -265,6 +297,8 @@ export class ApiServer {
       ...options,
       economics: store,
       tournamentRepository: new PostgresTournamentRepository(tournaments),
+      chainStore: chain,
+      chainEconomy: new ChainEconomyService({ chainStore: chain }),
     });
     server.attachEconomicsPool(pool);
     return server;
@@ -463,38 +497,202 @@ export class ApiServer {
           snapshot: await this.buildArenaSnapshot(playerId),
         }, message.requestId);
         return;
+      case 'trainer.profile': {
+        const profile = this.trainers.set(playerId, {
+          username: message.username,
+          spriteId: message.spriteId,
+        });
+        this.send(connection, {
+          type: 'trainer.profile',
+          playerId,
+          profile,
+        }, message.requestId);
+        this.broadcastTrainerDirectory();
+        return;
+      }
+      case 'passport.status': {
+        if (!this.chainEconomy.enabled) {
+          this.send(connection, {
+            type: 'passport.status',
+            passport: {
+              eligible: false,
+              liquidAtoms: '0',
+              heldEntryAtoms: '0',
+              qualifyingAtoms: '0',
+              usdCents: 0,
+              thresholdUsdCents: 2000,
+              reason: 'wallet_unavailable',
+              shortfallAtoms: '0',
+              atomsForEntryAndPassport: '0',
+              quote: {
+                priceMicroUsd: 0,
+                decimals: 6,
+                observedAt: Date.now(),
+                source: 'env',
+                confidenceBps: 0,
+                quoteId: 'disabled',
+              },
+            },
+            chainEconomyEnabled: false,
+          }, message.requestId);
+          return;
+        }
+        const passport = await this.chainEconomy.getPassport(playerId);
+        this.send(connection, {
+          type: 'passport.status',
+          passport,
+          chainEconomyEnabled: true,
+        }, message.requestId);
+        return;
+      }
+      case 'treasury.snapshot': {
+        const deposits = await this.chainEconomy.listTreasury();
+        this.send(connection, {
+          type: 'treasury.snapshot',
+          deposits: deposits.map(row => ({
+            claimKey: row.claimKey,
+            source: row.source,
+            grossLamports: row.grossLamports,
+            treasuryLamports: row.treasuryLamports,
+            operatorLamports: row.operatorLamports,
+            ...(row.signature ? { signature: row.signature } : {}),
+            createdAt: row.createdAt.toISOString(),
+          })),
+          chainEconomyEnabled: this.chainEconomy.enabled,
+        }, message.requestId);
+        return;
+      }
+      case 'tx.confirm': {
+        if (!this.chainEconomy.enabled) {
+          throw new Error('Chain economy is not enabled.');
+        }
+        const intent = await this.chainEconomy.getIntent(message.intentId);
+        if (!intent) throw new Error('Unknown transaction intent.');
+        if (intent.playerId && intent.playerId !== playerId) {
+          throw new Error('This transaction intent belongs to another wallet.');
+        }
+        const result = await this.chainEconomy.confirmIntent({
+          intentId: message.intentId,
+          signature: message.signature,
+        });
+        this.send(connection, {
+          type: 'tx.update',
+          intentId: message.intentId,
+          status: result.status,
+          signature: message.signature,
+        }, message.requestId);
+        if (result.status === 'confirmed' && intent.kind === 'poke_entry_deposit') {
+          try {
+            await this.tournaments.registerPlayer(intent.tournamentId as TournamentId, {
+              playerId: playerId as TournamentPlayerId,
+              displayName: playerId,
+              team: String(intent.metadata.team ?? ''),
+            });
+          } catch (error) {
+            await this.chainEconomy.refundPokeEntry({
+              tournamentId: intent.tournamentId!,
+              playerId,
+              playerPokeAta: String(intent.metadata.playerPokeAta),
+            });
+            throw error;
+          }
+          connection.tournamentIds.add(intent.tournamentId as TournamentId);
+          this.send(connection, {
+            type: 'tournament.state',
+            tournament: await this.serializeTournament(intent.tournamentId as TournamentId, playerId),
+          }, message.requestId);
+        }
+        void this.broadcastArenaSnapshots();
+        return;
+      }
       case 'casual.create': {
         this.rateLimiter.take(this.rateLimiter.casualCreate, `player:${playerId}:casual.create`);
+        if (this.chainEconomy.enabled) {
+          await this.chainEconomy.assertCanPlay(playerId);
+          const lamports = message.collateralLamports ?? message.collateral;
+          const room = await this.casual.createRoom({
+            creatorId: playerId,
+            roomType: message.roomType,
+            battleSize: message.battleSize,
+            collateral: lamports,
+            invitedPlayerId: message.invitedPlayerId,
+            rail: 'sol_chain',
+            ruleset: message.ruleset ?? 'casual',
+          });
+          const intent = await this.chainEconomy.createSolWagerDepositIntent({
+            roomId: room.id,
+            playerId,
+            side: 0,
+            collateralLamports: lamports,
+          });
+          connection.casualRoomIds.add(room.id);
+          this.ensureCasualSubscription(room.id);
+          this.send(connection, {
+            type: 'casual.created',
+            room,
+            intent: {
+              intentId: intent.intentId,
+              serializedTx: intent.serializedTx,
+              kind: 'sol_wager_deposit',
+              economics: intent.economics,
+            },
+          }, message.requestId);
+          void this.broadcastArenaSnapshots();
+          return;
+        }
         const room = await this.casual.createRoom({
           creatorId: playerId,
           roomType: message.roomType,
           battleSize: message.battleSize,
           collateral: message.collateral,
           invitedPlayerId: message.invitedPlayerId,
+          ruleset: message.ruleset ?? 'casual',
         });
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
-        this.send(connection, { type: 'casual.created', room }, message.requestId);
+        this.send(connection, { type: 'casual.created', room: this.casual.getRoom(room.id, playerId) }, message.requestId);
         void this.broadcastArenaSnapshots();
         return;
       }
       case 'casual.list':
         this.send(connection, {
           type: 'casual.list',
-          rooms: this.casual.listOpenRooms(),
-          recentResults: this.casual.listRecentResults(),
+          rooms: this.casual.listOpenRooms(playerId),
+          recentResults: this.casual.listRecentResults(10, playerId),
         }, message.requestId);
         return;
       case 'casual.preview':
         this.send(connection, {
           type: 'casual.preview',
-          economics: previewCasual(message.collateral),
+          economics: this.chainEconomy.enabled
+            ? { ...this.chainEconomy.previewCasual(message.collateral) }
+            : previewCasual(message.collateral),
         }, message.requestId);
         return;
       case 'casual.accept': {
+        if (this.chainEconomy.enabled) {
+          await this.chainEconomy.assertCanPlay(playerId);
+        }
         const room = await this.casual.acceptRoom(message.roomId, playerId);
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
+        if (this.chainEconomy.enabled) {
+          const intent = await this.chainEconomy.createSolWagerDepositIntent({
+            roomId: room.id,
+            playerId,
+            side: 1,
+            collateralLamports: room.collateral,
+          });
+          this.send(connection, {
+            type: 'tx.intent',
+            intent: {
+              intentId: intent.intentId,
+              serializedTx: intent.serializedTx,
+              kind: 'sol_wager_deposit',
+              economics: intent.economics,
+            },
+          }, message.requestId);
+        }
         this.send(connection, { type: 'casual.state', room }, message.requestId);
         this.broadcastCasual(room.id);
         void this.broadcastArenaSnapshots();
@@ -506,15 +704,26 @@ export class ApiServer {
         this.broadcastCasual(room.id);
         return;
       }
-      case 'casual.start': {
-        const room = await this.casual.startBattle(message.roomId, playerId, message.team);
-        connection.matchIds.add(room.matchId);
-        this.ensureCasualSubscription(room.id);
-        this.send(connection, { type: 'casual.state', room }, message.requestId);
-        this.broadcastCasual(room.id);
-        if (room.status === 'battling') {
-          this.broadcastCasualMatch(room.matchId);
+      case 'casual.select': {
+        const room = this.casual.selectTeam(
+          message.roomId,
+          playerId,
+          message.slots,
+          message.confirm ?? false,
+        );
+        const confirmed = room.status === 'drafting'
+          && room.teamPreview?.length === 2
+          && room.teamPreview.every(preview => preview.confirmed);
+        if (confirmed) {
+          await this.startCasualBattle(connection, message.roomId, playerId, undefined, message.requestId);
+        } else {
+          this.send(connection, { type: 'casual.state', room }, message.requestId);
+          this.broadcastCasual(room.id);
         }
+        return;
+      }
+      case 'casual.start': {
+        await this.startCasualBattle(connection, message.roomId, playerId, message.team, message.requestId);
         return;
       }
       case 'casual.forfeit': {
@@ -547,18 +756,37 @@ export class ApiServer {
         }
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
-        this.send(connection, { type: 'casual.state', room }, message.requestId);
+        this.send(connection, { type: 'casual.state', room: this.casual.getRoom(room.id, playerId) }, message.requestId);
         return;
       }
       case 'tournament.create': {
         this.rateLimiter.take(this.rateLimiter.tournamentCreate, `player:${playerId}:tournament.create`);
+        // Chain cups use quoted ~$5 POKE atoms (not host-chosen POKE). Legacy path keeps entryFee.
+        let entryFee = message.entryFee ?? DEFAULT_TOURNAMENT_ENTRY_POKE;
+        let chainEntryAtoms: number | undefined;
+        let chainQuoteId: string | undefined;
+        if (this.chainEconomy.enabled) {
+          const quoted = this.chainEconomy.quotedEntryAtoms();
+          await this.chainEconomy.persistQuote(quoted.quote);
+          chainEntryAtoms = Number(quoted.atoms);
+          chainQuoteId = quoted.quote.quoteId;
+          entryFee = 0;
+        }
         const tournament = await this.tournaments.createTournament({
           title: message.title ?? 'PokeArena Open',
           format: 'gen9ou',
           maxPlayers: message.maxPlayers ?? 4,
           matchTimeoutMs: 300_000,
           hostId: playerId,
-          entryFee: message.entryFee ?? DEFAULT_TOURNAMENT_ENTRY_POKE,
+          entryFee,
+          ...(this.chainEconomy.enabled
+            ? {
+                rail: 'sol_chain' as const,
+                entryAtoms: chainEntryAtoms,
+                entryQuoteId: chainQuoteId,
+                prizeLamports: Number(process.env.POKEARENA_TOURNAMENT_PRIZE_LAMPORTS ?? 100_000_000),
+              }
+            : {}),
         });
         await this.tournaments.openRegistration(tournament.id);
         connection.tournamentIds.add(tournament.id);
@@ -577,13 +805,45 @@ export class ApiServer {
         return;
       case 'tournament.join': {
         const tournamentId = message.tournamentId as TournamentId;
+        const targetTournament = await this.tournaments.getTournament(tournamentId);
         const team = this.teamForTournamentJoin(playerId, message.team);
         validateAndPackTeam(team, 'gen9ou');
-        await this.tournaments.registerPlayer(tournamentId, {
-          playerId,
-          displayName: playerId,
-          team,
-        });
+        if (this.chainEconomy.enabled) {
+          await this.chainEconomy.assertCanPlay(playerId);
+          if (!message.playerPokeAta) {
+            throw new Error('playerPokeAta is required for chain tournament entry.');
+          }
+          const entry = await this.chainEconomy.createPokeEntryDepositIntent({
+            tournamentId,
+            playerId,
+            playerPokeAta: message.playerPokeAta,
+            team,
+            ...(targetTournament.entryAtoms !== undefined
+              ? { entryAtoms: targetTournament.entryAtoms }
+              : {}),
+            ...(targetTournament.entryQuoteId
+              ? { quoteId: targetTournament.entryQuoteId }
+              : {}),
+          });
+          this.send(connection, {
+            type: 'tx.intent',
+            intent: {
+              intentId: entry.intentId,
+              serializedTx: entry.serializedTx,
+              kind: 'poke_entry_deposit',
+              entryAtoms: entry.entryAtoms,
+              quote: entry.quote,
+              passport: entry.passport,
+            },
+          }, message.requestId);
+        }
+        if (!this.chainEconomy.enabled) {
+          await this.tournaments.registerPlayer(tournamentId, {
+            playerId,
+            displayName: playerId,
+            team,
+          });
+        }
         connection.tournamentIds.add(tournamentId);
         this.send(connection, {
           type: 'tournament.state',
@@ -596,6 +856,17 @@ export class ApiServer {
       case 'tournament.start': {
         const tournamentId = message.tournamentId as TournamentId;
         await this.requireTournamentHost(playerId, tournamentId);
+        const beforeStart = await this.tournaments.getTournament(tournamentId);
+        if (this.chainEconomy.enabled) {
+          const registered = beforeStart.players
+            .filter(player => player.status === 'registered')
+            .map(player => player.id);
+          await this.chainEconomy.lockTournament({
+            tournamentId,
+            playerIds: registered,
+            prizeLamports: Number(process.env.POKEARENA_TOURNAMENT_PRIZE_LAMPORTS ?? 100_000_000),
+          });
+        }
         const tournament = await this.tournaments.startTournament(tournamentId);
         await this.startReadyMatches(tournament.id);
         await this.broadcastTournament(tournament.id);
@@ -603,6 +874,33 @@ export class ApiServer {
           type: 'tournament.state',
           tournament: await this.serializeTournament(tournament.id, playerId),
         }, message.requestId);
+        return;
+      }
+      case 'tournament.cancel': {
+        const tournamentId = message.tournamentId as TournamentId;
+        await this.requireTournamentHost(playerId, tournamentId);
+        const tournament = await this.tournaments.getTournament(tournamentId);
+        if (this.chainEconomy.enabled) {
+          for (const participant of tournament.players.filter(candidate => candidate.status === 'registered')) {
+            const intent = await this.chainEconomy.getIntentByScope(
+              'poke_entry_deposit',
+              `${tournamentId}:${participant.id}`,
+            );
+            if (intent?.status === 'confirmed') {
+              await this.chainEconomy.refundPokeEntry({
+                tournamentId,
+                playerId: participant.id,
+                playerPokeAta: String(intent.metadata.playerPokeAta),
+              });
+            }
+          }
+        }
+        const cancelled = await this.tournaments.cancelTournament(tournamentId);
+        this.send(connection, {
+          type: 'tournament.state',
+          tournament: await this.serializeTournament(tournamentId, playerId),
+        }, message.requestId);
+        void cancelled;
         return;
       }
       case 'tournament.subscribe': {
@@ -617,13 +915,32 @@ export class ApiServer {
       }
       case 'match.subscribe': {
         const matchId = message.matchId;
-        const casualRoom = this.casual.getRoomByMatchId(matchId);
+        const casualRoom = this.casual.getRoomByMatchId(matchId, playerId);
         if (casualRoom) {
           if (casualRoom.creatorId !== playerId && casualRoom.opponentId !== playerId) {
             throw new Error('You are not a player in this casual match.');
           }
           if (casualRoom.status === 'ready') {
-            await this.casual.startBattle(casualRoom.id, playerId);
+            const waiting = Boolean(
+              casualRoom.countdownEndsAt && Date.now() < casualRoom.countdownEndsAt,
+            );
+            if (!waiting) {
+              if ((casualRoom.ruleset ?? 'casual') !== 'casual' && this.chainEconomy.enabled) {
+                await this.chainEconomy.prepareCasualStart(casualRoom.id);
+              }
+              await this.casual.startBattle(casualRoom.id, playerId);
+            }
+          } else if (casualRoom.status === 'drafting') {
+            const bothPicked = Boolean(
+              casualRoom.teamPreview?.length === 2
+              && casualRoom.teamPreview.every(preview => preview.confirmed),
+            );
+            if (bothPicked) {
+              if (this.chainEconomy.enabled) {
+                await this.chainEconomy.prepareCasualStart(casualRoom.id);
+              }
+              await this.casual.startBattle(casualRoom.id, playerId);
+            }
           }
           connection.matchIds.add(matchId);
           connection.casualRoomIds.add(casualRoom.id);
@@ -653,7 +970,7 @@ export class ApiServer {
         }, message.requestId);
         return;
       case 'team.inspect':
-        this.rateLimiter.take(this.rateLimiter.teamSearch, `player:${playerId}:team.inspect`);
+        this.rateLimiter.take(this.rateLimiter.teamInspect, `player:${playerId}:team.inspect`);
         this.send(connection, {
           type: 'team.inspect',
           inspection: inspectTeam(message.team, 'gen9ou'),
@@ -704,19 +1021,52 @@ export class ApiServer {
         this.scheduleMatchBroadcast(matchId);
         return;
       }
+      case 'live.list':
+        this.send(connection, {
+          type: 'live.list',
+          fights: await this.listLiveFights(),
+        }, message.requestId);
+        return;
+      case 'live.watch':
+        await this.watchLiveFight(connection, playerId, message.matchId, message.requestId);
+        return;
+      case 'live.unwatch':
+        connection.watchedMatchId = undefined;
+        this.send(connection, { type: 'live.update' }, message.requestId);
+        return;
       default:
         throw new Error('Unhandled client message.');
     }
   }
 
   private async buildArenaSnapshot(playerId: string): Promise<ArenaSnapshot> {
-    return {
+    const base: ArenaSnapshot = {
       wallet: await this.economics.ensureWallet(playerId),
       tournaments: await this.listTournamentSummaries(),
-      openCasualRooms: this.casual.listOpenRooms(),
+      openCasualRooms: this.casual.listOpenRooms(playerId),
       myCasualRooms: this.casual.listRoomsForPlayer(playerId),
-      recentCasualResults: this.casual.listRecentResults(),
+      recentCasualResults: this.casual.listRecentResults(10, playerId),
+      chainEconomyEnabled: this.chainEconomy.enabled,
+      trainers: this.trainers.snapshot(),
     };
+    if (!this.chainEconomy.enabled || !this.chainEconomy.client) return base;
+    try {
+      const { PublicKey } = await import('@solana/web3.js');
+      const owner = new PublicKey(playerId);
+      const passport = await this.chainEconomy.getPassport(playerId);
+      const freeLamports = await this.chainEconomy.client.getSolBalance(owner);
+      const treasuryLamports = await this.chainEconomy.client.getTreasuryLamports();
+      return {
+        ...base,
+        passport,
+        solBalances: {
+          freeLamports: freeLamports.toString(),
+          treasuryLamports: treasuryLamports.toString(),
+        },
+      };
+    } catch {
+      return base;
+    }
   }
 
   private async listTournamentSummaries(): Promise<TournamentSummary[]> {
@@ -735,6 +1085,146 @@ export class ApiServer {
         ...(tournament.winner ? { winner: tournament.winner } : {}),
       };
     });
+  }
+
+  private async listLiveFights(): Promise<LiveFight[]> {
+    const fights: LiveFight[] = [];
+    for (const tournament of await this.tournaments.listTournaments()) {
+      if (tournament.status !== 'in-progress') continue;
+      for (const match of await this.tournaments.getBracket(tournament.id)) {
+        if (match.status !== 'active' && match.status !== 'battle-created') continue;
+        if (!match.player1 || !match.player2) continue;
+        fights.push({
+          matchId: match.id,
+          source: 'tournament',
+          title: tournament.title,
+          player1: match.player1,
+          player2: match.player2,
+          format: tournament.format,
+          tournamentId: tournament.id,
+          status: 'active',
+        });
+      }
+    }
+    for (const room of this.casual.listLiveBattles()) {
+      if (!room.opponentId) continue;
+      fights.push({
+        matchId: room.matchId,
+        source: 'casual',
+        title: room.ruleset === 'competitive' ? 'Competitive · Gen 9 OU' : 'Casual 6 → 3',
+        player1: room.creatorId,
+        player2: room.opponentId,
+        format: room.format,
+        battleSize: room.battleSize,
+        roomId: room.id,
+        status: 'active',
+      });
+    }
+    return fights;
+  }
+
+  private async watchLiveFight(
+    connection: ClientConnection,
+    playerId: string,
+    matchId: string | undefined,
+    requestId?: string,
+  ): Promise<void> {
+    const fights = await this.listLiveFights();
+    const fight = matchId
+      ? fights.find(item => item.matchId === matchId)
+      : pickLiveFight(fights, playerId, connection.watchedMatchId);
+    if (!fight) {
+      connection.watchedMatchId = undefined;
+      this.send(connection, { type: 'live.update' }, requestId);
+      return;
+    }
+    connection.watchedMatchId = fight.matchId;
+    if (fight.source === 'casual' && fight.roomId) this.ensureCasualSubscription(fight.roomId);
+    if (fight.source === 'tournament') this.ensureMatchSubscription(fight.matchId as TournamentMatchId);
+    await this.sendLiveUpdate(connection, fight, requestId);
+  }
+
+  private broadcastLiveWatchers(matchId: string): void {
+    for (const connection of [...this.connections.values()]) {
+      if (connection.watchedMatchId !== matchId || !connection.playerId || connection.closed) continue;
+      void this.sendLiveUpdate(connection).catch(() => {
+        connection.watchedMatchId = undefined;
+      });
+    }
+  }
+
+  private async sendLiveUpdate(
+    connection: ClientConnection,
+    knownFight?: LiveFight,
+    requestId?: string,
+  ): Promise<void> {
+    if (!connection.playerId || connection.closed) return;
+    const matchId = knownFight?.matchId ?? connection.watchedMatchId;
+    if (!matchId) {
+      this.send(connection, { type: 'live.update' }, requestId);
+      return;
+    }
+    const fights = knownFight ? [knownFight] : await this.listLiveFights();
+    let fight = knownFight ?? fights.find(item => item.matchId === matchId);
+    const casualRoom = this.casual.getRoomByMatchId(matchId);
+    if (casualRoom) {
+      if (casualRoom.roomType !== 'open') {
+        connection.watchedMatchId = undefined;
+        this.send(connection, { type: 'live.update' }, requestId);
+        return;
+      }
+      fight = {
+        matchId: casualRoom.matchId,
+        source: 'casual',
+        title: casualRoom.ruleset === 'competitive' ? 'Competitive · Gen 9 OU' : 'Casual 6 → 3',
+        player1: casualRoom.creatorId,
+        player2: casualRoom.opponentId,
+        format: casualRoom.format,
+        battleSize: casualRoom.battleSize,
+        roomId: casualRoom.id,
+        status: casualRoom.status === 'battling' ? 'active' : casualRoom.status,
+      };
+      const view = this.trainers.namedView(
+        spectatorBattleView(this.casual.getMatchView(matchId, 'spectator')),
+      );
+      const events = spectatorEvents(this.casual.getMatchEvents(matchId, 'spectator'));
+      this.send(connection, {
+        type: 'live.update',
+        fight,
+        ...(view ? { view } : {}),
+        events,
+      }, requestId);
+      return;
+    }
+    try {
+      const tournamentMatch = await this.tournaments.getMatch(matchId as TournamentMatchId);
+      const tournament = await this.tournaments.getTournament(tournamentMatch.match.tournamentId);
+      fight = {
+        matchId: tournamentMatch.match.id,
+        source: 'tournament',
+        title: tournament.title,
+        player1: tournamentMatch.match.player1 ?? '',
+        player2: tournamentMatch.match.player2,
+        format: tournament.format,
+        tournamentId: tournament.id,
+        status: tournamentMatch.match.status === 'active' || tournamentMatch.match.status === 'battle-created'
+          ? 'active'
+          : tournamentMatch.match.status,
+      };
+      const view = this.trainers.namedView(spectatorBattleView(
+        await this.tournaments.getMatchView(matchId as TournamentMatchId, 'spectator'),
+      ));
+      const eventLog = await this.tournaments.getMatchEvents(matchId as TournamentMatchId, 'spectator');
+      this.send(connection, {
+        type: 'live.update',
+        fight,
+        ...(view ? { view } : {}),
+        events: spectatorEvents(eventLog.events),
+      }, requestId);
+    } catch {
+      connection.watchedMatchId = undefined;
+      this.send(connection, { type: 'live.update' }, requestId);
+    }
   }
 
   private async serializeTournament(tournamentId: TournamentId, viewerId: string): Promise<unknown> {
@@ -826,6 +1316,28 @@ export class ApiServer {
       return;
     }
     const tournament = await this.tournaments.getTournament(tournamentId);
+    // Chain cups: champion prize is SOL via pay_prize (treasury reserve), not entry POKE.
+    if (this.chainEconomy.enabled) {
+      const payout = await this.chainEconomy.payTournamentPrize({
+        tournamentId,
+        winnerId: result.winner,
+      });
+      this.tournamentPayouts.set(tournamentId, payout);
+      for (const connection of [...this.connections.values()]) {
+        if (!connection.tournamentIds.has(tournamentId) || !connection.playerId || connection.closed) continue;
+        try {
+          this.send(connection, {
+            type: 'tournament.result',
+            tournament: await this.serializeTournament(tournamentId, connection.playerId),
+            payout,
+          });
+        } catch {
+          connection.tournamentIds.delete(tournamentId);
+        }
+      }
+      await this.broadcastArenaSnapshots();
+      return;
+    }
     const playerCount = tournament.players.filter(player => player.status === 'registered').length;
     const holdKeys = tournament.players
       .filter(player => player.status === 'registered')
@@ -878,6 +1390,7 @@ export class ApiServer {
         } else {
           this.broadcastTournamentMatch(matchId as TournamentMatchId);
         }
+        this.broadcastLiveWatchers(matchId);
       } catch {
         // Stale match broadcasts must not crash the process.
       }
@@ -916,7 +1429,7 @@ export class ApiServer {
       match: view.match,
       state,
       events: eventLog.events as unknown[],
-      view: battleView,
+      view: this.trainers.namedView(battleView),
       source: 'tournament',
     }, requestId);
   }
@@ -955,7 +1468,7 @@ export class ApiServer {
         },
         state,
         events: events as unknown[],
-        view: battleView,
+        view: this.trainers.namedView(battleView),
         source: 'casual',
       }, requestId);
     } catch {
@@ -985,21 +1498,52 @@ export class ApiServer {
 
   private broadcastCasual(roomId: string): void {
     try {
-      const room = this.casual.getRoom(roomId);
       for (const connection of [...this.connections.values()]) {
         if (!connection.casualRoomIds.has(roomId) || connection.closed) continue;
-        this.send(connection, { type: 'casual.state', room });
+        this.send(connection, {
+          type: 'casual.state',
+          room: this.casual.getRoom(roomId, connection.playerId),
+        });
       }
     } catch {
       // Unknown rooms are dropped rather than crashing a broadcast.
     }
   }
 
+  private async startCasualBattle(
+    connection: ClientConnection,
+    roomId: string,
+    playerId: string,
+    team?: string,
+    requestId?: string,
+  ): Promise<void> {
+    const before = this.casual.getRoom(roomId, playerId);
+    const launchingFight = before.status === 'battling'
+      || ((before.ruleset ?? 'casual') === 'competitive' && before.status === 'ready')
+      || (before.status === 'drafting' && Boolean(
+        before.teamPreview?.length === 2
+        && before.teamPreview.every(preview => preview.confirmed),
+      ));
+    if (this.chainEconomy.enabled && launchingFight) {
+      await this.chainEconomy.prepareCasualStart(roomId);
+    }
+    const room = await this.casual.startBattle(roomId, playerId, team);
+    if (room.status === 'battling') {
+      connection.matchIds.add(room.matchId);
+    }
+    this.ensureCasualSubscription(room.id);
+    this.send(connection, { type: 'casual.state', room }, requestId);
+    this.broadcastCasual(room.id);
+    if (room.status === 'battling') {
+      this.broadcastCasualMatch(room.matchId);
+    }
+  }
+
   private broadcastCasualResult(roomId: string): void {
     try {
-      const room = this.casual.getRoom(roomId);
       for (const connection of [...this.connections.values()]) {
         if (!connection.casualRoomIds.has(roomId) || connection.closed) continue;
+        const room = this.casual.getRoom(roomId, connection.playerId);
         this.send(connection, { type: 'casual.result', room, payout: room.payout });
       }
     } catch {
@@ -1030,6 +1574,14 @@ export class ApiServer {
           message: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+  }
+
+  private broadcastTrainerDirectory(): void {
+    const trainers = this.trainers.snapshot();
+    for (const connection of this.connections.values()) {
+      if (!connection.playerId || connection.closed) continue;
+      this.send(connection, { type: 'trainer.directory', trainers });
     }
   }
 
@@ -1169,7 +1721,7 @@ export class ApiServer {
   private async onPlayerDisconnected(playerId: string): Promise<void> {
     let liveFight = false;
     for (const room of this.casual.listRoomsForPlayer(playerId)) {
-      if (room.status === 'open' || room.status === 'full' || room.status === 'ready') {
+      if (room.status === 'open' || room.status === 'full' || room.status === 'ready' || room.status === 'drafting') {
         try {
           await this.casual.cancelRoom(room.id, playerId);
           this.broadcastCasual(room.id);

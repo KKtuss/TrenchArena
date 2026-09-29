@@ -5,15 +5,20 @@ import { useEffect, useState } from 'react';
 
 import { CompetitivePaths, TournamentEconomicsBlock } from '@/components/ui';
 import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
-import { ProfileTrainerSprite } from '@/components/profile-trainer';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
+import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
-import type { CasualRoom, TournamentSummary } from '@/lib/protocol';
+import type { BattleView, CasualRoom, LiveFight, TournamentSummary } from '@/lib/protocol';
+import { formatCasualRoomLabel } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
-import { shortenAddress } from '@/lib/trainer-profile';
 
 function formatLabel(format: string): string {
   return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
+}
+
+function formatRoomLabel(room: CasualRoom): string {
+  return formatCasualRoomLabel(room).toUpperCase();
 }
 
 function roomHref(room: CasualRoom): string {
@@ -36,19 +41,18 @@ function eventStatus(tournament: TournamentSummary): string {
   return tournament.status;
 }
 
-function Dots({ filled, tone }: { filled: number; tone: 'cyan' | 'coral' }) {
-  return (
-    <span className={`pa-dots pa-dots-${tone}`} aria-hidden>
-      {Array.from({ length: 6 }, (_, index) => (
-        <i key={index} className={index < filled ? 'on' : ''} />
-      ))}
-    </span>
-  );
+function liveHref(fight: LiveFight): string {
+  if (fight.source === 'tournament' && fight.tournamentId) return `/tournament/${fight.tournamentId}`;
+  return '/arena';
 }
+
+const EMPTY_EVENTS: unknown[] = [];
+const ignoreWatchError = () => undefined;
 
 export default function LandingPage() {
   const { client, playerId, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
   const [saved, setSaved] = useState<SavedTeam | null>(null);
+  const [live, setLive] = useState<{ fight?: LiveFight; view?: BattleView; events?: unknown[] } | null>(null);
 
   useEffect(() => {
     if (!connected) return;
@@ -57,6 +61,35 @@ export default function LandingPage() {
       client.request({ type: 'tournament.list' }),
     ]).then(() => refreshSnapshot()).catch(() => undefined);
   }, [client, connected, refreshSnapshot]);
+
+  useEffect(() => {
+    if (!connected) {
+      setLive(null);
+      return;
+    }
+    let cancelled = false;
+    let rotateTimer: number | undefined;
+    const unsubscribe = client.onMessage(message => {
+      if (message.type !== 'live.update' || cancelled) return;
+      setLive({ fight: message.fight, view: message.view, events: message.events ?? EMPTY_EVENTS });
+      const active = Boolean(
+        message.fight && (message.fight.status === 'active' || message.fight.status === 'battling'),
+      );
+      window.clearTimeout(rotateTimer);
+      if (!active) {
+        rotateTimer = window.setTimeout(() => {
+          if (!cancelled) void client.request({ type: 'live.watch' }).catch(() => undefined);
+        }, 8_000);
+      }
+    });
+    void client.request({ type: 'live.watch' }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(rotateTimer);
+      unsubscribe();
+      void client.request({ type: 'live.unwatch' }).catch(() => undefined);
+    };
+  }, [client, connected]);
 
   useEffect(() => {
     setSaved(playerId ? readSavedTeam(playerId) : null);
@@ -69,7 +102,9 @@ export default function LandingPage() {
   const flagship = tournaments.find(item => item.status !== 'completed') ?? tournaments[0];
   const minors = tournaments.filter(item => item.id !== flagship?.id).slice(0, 3);
   const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => sum + (room.payout?.amount ?? 0), 0);
-  const waiting = featured ? !featured.opponentId : true;
+  const liveFight = live?.fight;
+  const liveView = live?.view;
+  const liveActive = Boolean(liveFight && liveView && (liveFight.status === 'active' || liveFight.status === 'battling'));
 
   const flywheel = [
     { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards', copy: 'Token trading activity generates creator and developer rewards for the project.' },
@@ -94,7 +129,7 @@ export default function LandingPage() {
         <h1>POKEARENA</h1>
         <p className="pa-tag">Battle. Compete. Climb.</p>
         <p className="pa-lead">
-          Stake POKE in casual fights, or enter low-cost cups for Treasury prizes.
+          Hold POKE to enter. Play for SOL. Cups pay from the Tournament Treasury.
         </p>
         {saved?.species.some(Boolean) ? (
           <div className="pa-protocol">
@@ -120,100 +155,79 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="pa-duel">
+      <section
+        className={`pa-duel is-feed${liveActive ? '' : ' is-idle'}`}
+        aria-label={liveActive
+          ? 'Live fight feed. Spectator view only. This match is not playable from here.'
+          : 'Live fight feed. No match is live right now. Spectator view only.'}
+      >
+        <div className="pa-feed-bar" role="status">
+          {liveActive ? (
+            <>
+              <span className="pa-feed-rec"><i /> REC</span>
+              <strong>Live feed</strong>
+              <span>You are spectating a random match. This screen cannot send moves.</span>
+            </>
+          ) : (
+            <>
+              <span className="pa-feed-rec is-idle">OFF AIR</span>
+              <strong>Live feed</strong>
+              <span>No match is live right now. This screen cannot send moves.</span>
+            </>
+          )}
+        </div>
         <div className="pa-duel-rail">
           <div>
-            <i className="pa-ping coral" />
-            <strong>{featured ? (featured.status === 'battling' ? 'LIVE CASUAL FIGHT' : 'OPEN CASUAL CHALLENGE') : 'CASUAL BOARD OPEN'} • GEN 9 OU</strong>
-            <span className="pa-chip">{featured ? featured.battleSize.toUpperCase() : '1V1'}</span>
+            <i className={`pa-ping ${liveActive ? 'coral' : ''}`} />
+            <strong>
+              {liveActive
+                ? liveFight?.source === 'tournament'
+                  ? `LIVE FEED • CUP • ${liveFight.title.toUpperCase()}`
+                  : `LIVE FEED • CASUAL • ${liveFight?.title.toUpperCase()}`
+                : 'LIVE FEED • NO MATCH ON AIR'}
+              {' '}• GEN 9 OU
+            </strong>
+            <span className={`pa-chip ${liveActive ? 'rec' : ''}`}>{liveActive ? 'SPECTATING' : 'STANDBY'}</span>
+            <span className="pa-chip">{liveFight?.battleSize?.toUpperCase() ?? '1V1'}</span>
           </div>
           <div>
-            <span className="pa-chip amber">
-              {featured ? `EACH ${formatPoke(featured.collateral)}` : flagship ? `ENTRY ${formatPoke(flagship.entryFee)}` : 'BOARD CLEAR'}
-            </span>
+            <span className="pa-chip amber">{liveActive ? `TURN ${liveView?.turn ?? 1}` : 'IDLE'}</span>
           </div>
         </div>
-        <div className="pa-duel-grid">
-          <article className="pa-side cyan">
-            <header>
-              <div>
-                <small>Challenger</small>
-                <strong>{featured?.creatorId ? shortenAddress(featured.creatorId) : 'Open slot'}</strong>
-              </div>
-              <Dots filled={featured ? 3 : 0} tone="cyan" />
-            </header>
-            <div className="pa-mon">
-              <span className="pa-portrait">
-                <ProfileTrainerSprite label={featured?.creatorId ?? 'Open slot'} side="left" />
-              </span>
-              <div>
-                <div className="pa-mon-name">
-                  <b>{featured ? formatLabel(featured.format) : 'Open slot'}</b>
-                  <em>{featured ? 'LOCKED' : 'OPEN'}</em>
-                </div>
-                <div className="pa-bar"><span style={{ width: featured ? '100%' : '0%' }} /></div>
-                <div className="pa-mon-meta"><span>{featured ? featured.status : 'Waiting'}</span><span>Gen 9</span></div>
-              </div>
-            </div>
-            <div className="pa-pills">
-              <span className="hot">{featured ? `${formatPoke(featured.collateral)} each` : 'No collateral'}</span>
-              <span>Showdown</span>
-              <span>OU</span>
-            </div>
-          </article>
-          <div className="pa-vs">
-            <span className="pa-bo">{featured ? `${featured.battleSize.toUpperCase()} MATCH` : 'AWAITING MATCH'}</span>
-            <div className="pa-score">
-              <i>VS</i>
-            </div>
-            <span className="pa-timer">{featured ? featured.status.toUpperCase() : 'BOARD CLEAR'}</span>
-            <p className="pa-ticker">
-              {featured
-                ? <>{featured.creatorId} vs {featured.opponentId ?? 'open slot'} · winner {formatPoke(featured.economics.winnerPayout)} after 2% start fee</>
-                : 'No live fight on the board. Call a player-funded challenge from the Arena.'}
-            </p>
+        {liveActive && liveFight && liveView && playerId ? (
+          <div className="pa-duel-stage">
+            <div className="pa-feed-scan" aria-hidden />
+            <ShowdownBattle
+              mode="watch"
+              playerId={playerId}
+              matchId={liveFight.matchId}
+              battleInstanceId={liveView.battleId}
+              battleView={liveView}
+              events={live?.events ?? EMPTY_EVENTS}
+              client={client}
+              onError={ignoreWatchError}
+            />
           </div>
-          <article className="pa-side coral">
-            <header>
-              <Dots filled={waiting ? 0 : 3} tone="coral" />
-              <div>
-                <small>Rival</small>
-                <strong>{featured?.opponentId ? shortenAddress(featured.opponentId) : 'Open slot'}</strong>
-              </div>
-            </header>
-            <div className="pa-mon foe">
-              <span className="pa-portrait foe">
-                <ProfileTrainerSprite label={featured?.opponentId ?? 'Open slot'} side="right" />
-              </span>
-              <div>
-                <div className="pa-mon-name">
-                  <b>{waiting ? 'Open slot' : formatLabel(featured.format)}</b>
-                  <em className="foe">{waiting ? 'OPEN' : 'READY'}</em>
-                </div>
-                <div className="pa-bar foe"><span style={{ width: waiting ? '0%' : '100%' }} /></div>
-                <div className="pa-mon-meta"><span>{waiting ? 'Open queue' : 'Locked in'}</span><span>Gen 9</span></div>
-              </div>
-            </div>
-            <div className="pa-pills end">
-              <span className="hot foe">{featured ? `Winner ${formatPoke(featured.economics.winnerPayout)}` : 'No pool'}</span>
-              <span>1v1</span>
-            </div>
-          </article>
-        </div>
+        ) : (
+          <div className="pa-feed-empty">
+            <b>No fight is live</b>
+            <p>When a casual or cup match is battling, a random one appears here. You cannot send moves from this screen.</p>
+          </div>
+        )}
         <div className="pa-duel-foot">
           <div>
-            {featured ? (
-              <Link className="pa-btn pa-btn-primary pa-btn-sm" href={roomHref(featured)}>
-                <i className="pa-ping" />
-                {featured.status === 'open' ? 'Join fight' : 'Spectate full screen'}
+            <span className="pa-feed-note">Spectator feed · no moves from this screen</span>
+            {liveActive && liveFight ? (
+              <Link className="pa-btn pa-btn-surface pa-btn-sm" href={liveHref(liveFight)}>
+                {liveFight.source === 'tournament' ? 'Open cup bracket' : 'Go to arena'}
               </Link>
             ) : (
-              <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Find a fight</Link>
+              <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/arena">Find a fight</Link>
             )}
-            <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/casual/create">Create challenge</Link>
+            <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/casual/create">Start your own fight</Link>
           </div>
           <span className="pa-cheer">
-            {featured ? `Gross pool ${formatPoke(featured.economics.totalPot)}` : 'Casual board clear'}
+            {liveActive ? 'You are watching a random live match' : 'Waiting for the next live match'}
           </span>
         </div>
       </section>
@@ -222,9 +236,9 @@ export default function LandingPage() {
         <header>
           <div>
             <h2><span>◆</span> Two competitive paths</h2>
-            <p>Casual is player-funded collateral. Tournaments are Treasury-funded prizes.</p>
+            <p>Casual fights wager SOL. Tournaments burn a small POKE entry and pay SOL from the Treasury.</p>
           </div>
-          <span className="pa-live-pill"><i /> Mock POKE ledger</span>
+          <span className="pa-live-pill"><i /> POKE passport · SOL wagers</span>
         </header>
         <CompetitivePaths />
       </section>
@@ -263,12 +277,12 @@ export default function LandingPage() {
               <div>
                 <p className="pa-board-trainers">
                   <ProfileTrainerSprite label={room.creatorId} side="left" />
-                  <b>{shortenAddress(room.creatorId)}</b>
+                  <b><TrainerName playerId={room.creatorId} /></b>
                   <span>vs</span>
                   {room.opponentId ? <ProfileTrainerSprite label={room.opponentId} side="right" /> : null}
-                  <b>{room.opponentId ? shortenAddress(room.opponentId) : 'Open slot'}</b>
+                  <b>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Open slot'}</b>
                 </p>
-                <small>{formatLabel(room.format)} • {room.battleSize} • {room.status}</small>
+                <small>{formatRoomLabel(room)} • {room.battleSize} • {room.status}</small>
               </div>
               <div className="pa-board-side">
                 <strong>{formatPoke(room.collateral)}</strong>
@@ -375,7 +389,7 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="pa-foot-meta">
-          <span>◆ Mock POKE</span>
+          <span>◆ POKE passport</span>
           <span>◆ Gen 9 OU</span>
           <span>◆ Local prototype</span>
         </div>

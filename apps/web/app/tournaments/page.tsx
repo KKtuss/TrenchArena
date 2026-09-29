@@ -148,7 +148,11 @@ export default function TournamentsPage() {
             </div>
             <span>Low entry</span>
           </header>
-          <p>Small {formatPoke(TOURNAMENT_ENTRY_POKE)} entry. The major prize comes from the Tournament Treasury, not player collateral.</p>
+          <p>
+            About $5 of POKE is burned at bracket lock. The prize is SOL from the Tournament Treasury,
+            not player collateral.
+            {snapshot?.chainEconomyEnabled ? '' : ` (Legacy mock entry ${formatPoke(TOURNAMENT_ENTRY_POKE)}.)`}
+          </p>
           <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/treasury">See funding</Link>
         </article>
       </section>

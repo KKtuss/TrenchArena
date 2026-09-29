@@ -106,6 +106,31 @@ export function searchTrainerSprites(query: string, limit = 120): TrainerSpriteE
     .map(item => item.entry);
 }
 
+export function publicTrainerName(
+  playerId: string | undefined,
+  trainers?: Record<string, { username?: string }> | null,
+  self?: { id?: string | null; username?: string | null },
+  overlayName?: string | null,
+): string {
+  if (!playerId) return overlayName?.trim() || 'Waiting';
+  if (self?.id === playerId && self.username?.trim()) return self.username.trim();
+  const published = trainers?.[playerId]?.username?.trim();
+  if (published) return published;
+  if (overlayName?.trim() && overlayName.trim() !== playerId) return overlayName.trim();
+  return shortenAddress(playerId);
+}
+
+export function publicTrainerSpriteId(
+  playerId: string | undefined,
+  trainers?: Record<string, { spriteId?: string }> | null,
+  self?: { id?: string | null; spriteId?: string | null },
+): string | undefined {
+  if (!playerId) return undefined;
+  if (self?.id === playerId && self.spriteId) return self.spriteId;
+  const published = trainers?.[playerId]?.spriteId?.trim();
+  return published || undefined;
+}
+
 export function shortenAddress(address: string, size = 4): string {
   if (address.length <= size * 2 + 3) return address;
   return `${address.slice(0, size)}…${address.slice(-size)}`;
