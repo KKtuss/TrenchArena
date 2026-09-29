@@ -2,9 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  baselineEvs,
+  evsAreUntouched,
+  fillMoveSlots,
   filterItemHits,
   filterMoveHits,
   filterSpeciesHits,
+  pickStarterEvs,
+  pickStarterMoves,
+  pickStarterNature,
   sortMoveHits,
   visibleTeamProblems,
 } from '../lib/team';
@@ -66,4 +72,39 @@ test('sorts legal move hits by name, power, accuracy, and type', () => {
   assert.deepEqual(sortMoveHits(hits, 'power').map(hit => hit.name), ['Hydro Pump', 'Liquidation', 'Roost']);
   assert.deepEqual(sortMoveHits(hits, 'accuracy').map(hit => hit.name), ['Roost', 'Liquidation', 'Hydro Pump']);
   assert.deepEqual(sortMoveHits(hits, 'type').map(hit => hit.name), ['Roost', 'Hydro Pump', 'Liquidation']);
+});
+
+test('picks a usable starter set with a full 510 EV spread', () => {
+  const hits = [
+    { name: 'Giga Impact', type: 'Normal', category: 'Physical', power: 150 },
+    { name: 'Hydro Pump', type: 'Water', category: 'Special', power: 110 },
+    { name: 'Liquidation', type: 'Water', category: 'Physical', power: 85 },
+    { name: 'Hurricane', type: 'Flying', category: 'Special', power: 110 },
+    { name: 'Ice Beam', type: 'Ice', category: 'Special', power: 90 },
+    { name: 'Roost', type: 'Flying', category: 'Status', power: 0 },
+    { name: 'Protect', type: 'Normal', category: 'Status', power: 0 },
+  ];
+  const physicalHits = [
+    ...hits,
+    { name: 'Close Combat', type: 'Fighting', category: 'Physical', power: 120 },
+    { name: 'Earthquake', type: 'Ground', category: 'Physical', power: 100 },
+    { name: 'Ice Shard', type: 'Ice', category: 'Physical', power: 40 },
+  ];
+
+  const specialMoves = pickStarterMoves(hits, ['Water', 'Flying']);
+  assert.deepEqual(specialMoves, ['Hurricane', 'Hydro Pump', 'Ice Beam', 'Liquidation']);
+  assert.deepEqual(fillMoveSlots(['', 'Hurricane', '', ''], ['Hydro Pump', 'Hurricane', 'Ice Beam', 'Roost']), [
+    'Hydro Pump', 'Hurricane', 'Ice Beam', 'Roost',
+  ]);
+  assert.deepEqual(pickStarterEvs(specialMoves, hits), { hp: 0, atk: 0, def: 0, spa: 252, spd: 6, spe: 252 });
+  assert.equal(pickStarterNature(pickStarterEvs(specialMoves, hits), 'Serious'), 'Timid');
+  assert.deepEqual(pickStarterEvs(['Close Combat', 'Earthquake', 'Ice Shard', 'Protect'], physicalHits), {
+    hp: 0, atk: 252, def: 0, spa: 0, spd: 6, spe: 252,
+  });
+  assert.equal(pickStarterNature({ hp: 0, atk: 252, def: 0, spa: 0, spd: 6, spe: 252 }, ''), 'Jolly');
+  assert.equal(pickStarterNature({ hp: 0, atk: 252, def: 0, spa: 0, spd: 6, spe: 252 }, 'Adamant'), 'Adamant');
+  assert.equal(Object.values(pickStarterEvs(specialMoves, hits)).reduce((sum, ev) => sum + ev, 0), 510);
+  assert.equal(evsAreUntouched({ hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 }), true);
+  assert.equal(evsAreUntouched(baselineEvs()), true);
+  assert.equal(evsAreUntouched({ hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 }), false);
 });

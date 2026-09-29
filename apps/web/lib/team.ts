@@ -218,6 +218,136 @@ export function sortMoveHits<T extends SearchableTeamHit>(hits: T[], sort: MoveS
 
 const EMPTY_EVS: Record<StatId, number> = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
 const FULL_IVS: Record<StatId, number> = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
+const STARTER_STATUS = [
+  'Protect', 'Recover', 'Roost', 'Slack Off', 'Soft-Boiled', 'Synthesis',
+  'Stealth Rock', 'Spikes', 'U-turn', 'Volt Switch', 'Knock Off',
+  'Thunder Wave', 'Will-O-Wisp', 'Toxic',
+];
+const STARTER_SKIP = new Set([
+  'blast burn', 'explosion', 'fissure', 'frenzy plant', 'giga impact',
+  'guillotine', 'horn drill', 'hydro cannon', 'hyper beam', 'last resort',
+  'misty explosion', 'self-destruct', 'selfdestruct', 'sheer cold',
+  'sky attack', 'solar beam', 'solar blade',
+]);
+
+const STARTER_EV_PHYSICAL: Record<StatId, number> = { hp: 0, atk: 252, def: 0, spa: 0, spd: 6, spe: 252 };
+const STARTER_EV_SPECIAL: Record<StatId, number> = { hp: 0, atk: 0, def: 0, spa: 252, spd: 6, spe: 252 };
+const STARTER_EV_SPEEDY: Record<StatId, number> = { hp: 252, atk: 0, def: 0, spa: 0, spd: 6, spe: 252 };
+const STUB_EVS: Record<StatId, number> = { hp: 1, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
+const AUTO_NATURES = new Set(['', 'Serious', 'Hardy', 'Docile', 'Bashful', 'Quirky', 'Jolly', 'Timid']);
+
+function sameEvs(left: Record<StatId, number>, right: Record<StatId, number>): boolean {
+  return STATS.every(stat => (left[stat.id] || 0) === (right[stat.id] || 0));
+}
+
+export function baselineEvs(): Record<StatId, number> {
+  return { ...STARTER_EV_SPECIAL };
+}
+
+export function evsAreUntouched(evs: Record<StatId, number>): boolean {
+  return sameEvs(evs, EMPTY_EVS)
+    || sameEvs(evs, STUB_EVS)
+    || sameEvs(evs, STARTER_EV_PHYSICAL)
+    || sameEvs(evs, STARTER_EV_SPECIAL)
+    || sameEvs(evs, STARTER_EV_SPEEDY);
+}
+
+export function pickStarterEvs(
+  moves: readonly string[],
+  hits: readonly SearchableTeamHit[],
+): Record<StatId, number> {
+  const byName = new Map(hits.map(hit => [hit.name.toLowerCase(), hit]));
+  let physical = 0;
+  let special = 0;
+  let best: { category: 'Physical' | 'Special'; power: number } | null = null;
+  for (const move of moves) {
+    const hit = byName.get(move.trim().toLowerCase());
+    if (hit?.category !== 'Physical' && hit?.category !== 'Special') continue;
+    const power = hit.power ?? 0;
+    if (hit.category === 'Physical') physical += 1;
+    else special += 1;
+    if (!best || power > best.power) best = { category: hit.category, power };
+  }
+  if (!physical && !special) return { ...STARTER_EV_SPEEDY };
+  const physicalWins = physical === special ? best?.category === 'Physical' : physical > special;
+  return { ...(physicalWins ? STARTER_EV_PHYSICAL : STARTER_EV_SPECIAL) };
+}
+
+export function pickStarterNature(evs: Record<StatId, number>, current = ''): string {
+  if (current.trim() && !AUTO_NATURES.has(current.trim())) return current;
+  return (evs.atk || 0) >= 252 ? 'Jolly' : 'Timid';
+}
+
+export function pickStarterMoves(
+  hits: readonly SearchableTeamHit[],
+  types: readonly string[] = [],
+): [string, string, string, string] {
+  const picked: string[] = [];
+  const used = new Set<string>();
+  const stab = new Set(types);
+  const damaging = hits
+    .filter(hit => (
+      hit.category !== 'Status'
+      && (hit.power ?? 0) > 0
+      && !STARTER_SKIP.has(hit.name.toLowerCase())
+    ))
+    .sort((left, right) => {
+      const leftStab = stab.has(left.type ?? '') ? 1 : 0;
+      const rightStab = stab.has(right.type ?? '') ? 1 : 0;
+      return rightStab - leftStab
+        || (right.power ?? 0) - (left.power ?? 0)
+        || left.name.localeCompare(right.name);
+    });
+  const usedTypes = new Set<string>();
+  for (const hit of damaging) {
+    if (picked.length >= 3) break;
+    if (usedTypes.has(hit.type ?? '')) continue;
+    picked.push(hit.name);
+    used.add(hit.name.toLowerCase());
+    usedTypes.add(hit.type ?? '');
+  }
+  for (const hit of damaging) {
+    if (picked.length >= 4) break;
+    if (used.has(hit.name.toLowerCase())) continue;
+    picked.push(hit.name);
+    used.add(hit.name.toLowerCase());
+  }
+  for (const name of STARTER_STATUS) {
+    if (picked.length >= 4) break;
+    if (used.has(name.toLowerCase())) continue;
+    if (!hits.some(hit => hit.name === name)) continue;
+    picked.push(name);
+    used.add(name.toLowerCase());
+  }
+  for (const hit of hits) {
+    if (picked.length >= 4) break;
+    if (used.has(hit.name.toLowerCase())) continue;
+    picked.push(hit.name);
+    used.add(hit.name.toLowerCase());
+  }
+  while (picked.length < 4) picked.push('');
+  return [picked[0] ?? '', picked[1] ?? '', picked[2] ?? '', picked[3] ?? ''];
+}
+
+export function fillMoveSlots(
+  current: readonly string[],
+  starter: readonly string[],
+): [string, string, string, string] {
+  const next = [current[0] ?? '', current[1] ?? '', current[2] ?? '', current[3] ?? ''] as [string, string, string, string];
+  const used = new Set(next.map(move => move.trim().toLowerCase()).filter(Boolean));
+  let index = 0;
+  for (let slot = 0; slot < 4; slot += 1) {
+    if (next[slot].trim()) continue;
+    while (index < starter.length && (!starter[index]?.trim() || used.has(starter[index]!.trim().toLowerCase()))) {
+      index += 1;
+    }
+    if (index >= starter.length) break;
+    next[slot] = starter[index]!.trim();
+    used.add(next[slot].toLowerCase());
+    index += 1;
+  }
+  return next;
+}
 
 export function emptySet(): EditorSet {
   return {

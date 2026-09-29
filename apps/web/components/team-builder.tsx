@@ -13,7 +13,12 @@ import {
   activateTeam,
   addBlankTeam,
   emptySet,
+  evsAreUntouched,
+  fillMoveSlots,
   natureLabel,
+  pickStarterEvs,
+  pickStarterMoves,
+  pickStarterNature,
   readRoster,
   readSavedTeam,
   clearSavedTeam,
@@ -326,9 +331,12 @@ export function TeamBuilder() {
     }
   }
 
-  async function adoptSpecies(species: string) {
+  async function adoptSpecies(species: string, types: string[] = []) {
     const slot = picker?.kind === 'species' ? picker.slot : selected;
     const generation = ++speciesGeneration.current;
+    const speciesTypes = types.length
+      ? types
+      : (speciesCatalog ?? []).find(hit => hit.name === species)?.types ?? [];
     setSaved(false);
     closePicker();
     try {
@@ -339,11 +347,13 @@ export function TeamBuilder() {
       ]);
       if (generation !== speciesGeneration.current) return;
       const abilityNames = abilities.type === 'team.search' ? abilities.results : [];
-      const moveNames = moves.type === 'team.search' ? moves.results : [];
+      const moveHits = moves.type === 'team.search'
+        ? (moves.hits?.length ? moves.hits : moves.results.map(name => ({ name })))
+        : [];
       const itemNames = items.type === 'team.search' ? items.results : [];
-      if (moves.type === 'team.search' && moves.hits?.length) {
-        rememberMoves(moves.hits);
-        setLearnset(moves.hits);
+      if (moveHits.length) {
+        rememberMoves(moveHits);
+        setLearnset(moveHits);
       }
       if (items.type === 'team.search') {
         setItemCatalog({
@@ -351,7 +361,8 @@ export function TeamBuilder() {
           hits: items.hits?.length ? items.hits : items.results.map(name => ({ name })),
         });
       }
-      const legal = new Set(moveNames.map(move => move.toLowerCase()));
+      const legal = new Set(moveHits.map(hit => hit.name.toLowerCase()));
+      const starterMoves = pickStarterMoves(moveHits, speciesTypes);
       setSets(existing => existing.map((set, index) => {
         if (index !== slot) return set;
         const keptAbility = abilityNames.some(name => name.toLowerCase() === set.ability.trim().toLowerCase())
@@ -360,18 +371,21 @@ export function TeamBuilder() {
         const keptItem = itemNames.some(name => name.toLowerCase() === set.item.trim().toLowerCase())
           ? set.item
           : '';
+        const keptMoves = set.moves.map(move => (
+          move.trim() && legal.size && !legal.has(move.trim().toLowerCase()) ? '' : move
+        ));
+        const moves = fillMoveSlots(keptMoves, starterMoves);
+        const evs = evsAreUntouched(set.evs) ? pickStarterEvs(moves, moveHits) : set.evs;
         return {
           ...emptySet(),
           species,
           ability: keptAbility,
-          teraType: set.teraType,
-          nature: set.nature,
-          evs: set.evs,
+          teraType: set.teraType || speciesTypes[0] || '',
+          nature: evsAreUntouched(set.evs) ? pickStarterNature(evs, set.nature) : (set.nature || 'Serious'),
+          evs,
           ivs: set.ivs,
           item: keptItem,
-          moves: set.moves.map(move => (
-            move.trim() && legal.size && !legal.has(move.trim().toLowerCase()) ? '' : move
-          )) as EditorSet['moves'],
+          moves,
         };
       }));
     } catch (error) {
@@ -743,7 +757,7 @@ export function TeamBuilder() {
           {catalogBusy && !speciesCatalog ? <p className="tb-plain" role="status">Loading Pokédex…</p> : null}
           <div className="tb-dex-grid">
             {filteredSpecies.map(hit => (
-              <button key={hit.name} type="button" className="tb-dex-cell" onClick={() => void adoptSpecies(hit.name)}>
+              <button key={hit.name} type="button" className="tb-dex-cell" onClick={() => void adoptSpecies(hit.name, hit.types)}>
                 <PokemonSprite name={hit.name} framed />
                 <strong>{hit.name}</strong>
                 <span className="tb-hit-meta">
