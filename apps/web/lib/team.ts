@@ -168,6 +168,12 @@ export function filterItemHits<T extends SearchableTeamHit>(hits: T[], query: st
   ));
 }
 
+const DRAFT_MOVE_NAG = /has no moves \(it must have at least one to be usable\)/i;
+
+export function visibleTeamProblems(problems: readonly string[]): string[] {
+  return problems.filter(problem => !DRAFT_MOVE_NAG.test(problem));
+}
+
 export function filterMoveHits<T extends SearchableTeamHit>(
   hits: T[],
   query: string,
@@ -184,6 +190,27 @@ export function filterMoveHits<T extends SearchableTeamHit>(
       || (hit.description ?? '').toLowerCase().includes(needle)
     ))
   ));
+}
+
+export type MoveSort = 'name' | 'power' | 'accuracy' | 'type';
+
+function moveAccuracyRank(hit: SearchableTeamHit): number {
+  return hit.accuracy == null ? 101 : hit.accuracy;
+}
+
+export function sortMoveHits<T extends SearchableTeamHit>(hits: T[], sort: MoveSort): T[] {
+  return [...hits].sort((left, right) => {
+    if (sort === 'power') {
+      return (right.power ?? -1) - (left.power ?? -1) || left.name.localeCompare(right.name);
+    }
+    if (sort === 'accuracy') {
+      return moveAccuracyRank(right) - moveAccuracyRank(left) || left.name.localeCompare(right.name);
+    }
+    if (sort === 'type') {
+      return (left.type ?? '').localeCompare(right.type ?? '') || left.name.localeCompare(right.name);
+    }
+    return left.name.localeCompare(right.name);
+  });
 }
 
 const EMPTY_EVS: Record<StatId, number> = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };

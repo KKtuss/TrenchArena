@@ -355,17 +355,24 @@ export function searchTeamHits(
     return { scoped: false, hits: ouSpeciesHits(needle) };
   }
   if (kind === 'item') {
-    const hits = Dex.items.all()
-      .filter(item => (
-        item.exists
-        && !item.isNonstandard
-        && (!needle || item.name.toLowerCase().includes(needle))
+    if (speciesName && Dex.species.get(speciesName)?.exists) {
+      const legal = legalItemHits(speciesName);
+      const filtered = needle
+        ? legal.filter(hit => (
+          hit.name.toLowerCase().includes(needle)
+          || (hit.description ?? '').toLowerCase().includes(needle)
+        ))
+        : legal;
+      return { scoped: true, hits: needle ? filtered.slice(0, 48) : filtered };
+    }
+    const hits = genericOuItemHits();
+    const filtered = needle
+      ? hits.filter(hit => (
+        hit.name.toLowerCase().includes(needle)
+        || (hit.description ?? '').toLowerCase().includes(needle)
       ))
-      .map(item => ({
-        name: item.name,
-        description: readShortDesc(item),
-      }));
-    return { scoped: false, hits: needle ? hits.slice(0, 48) : hits };
+      : hits;
+    return { scoped: false, hits: needle ? filtered.slice(0, 48) : filtered };
   }
   if (kind === 'move') {
     if (!needle) return { scoped: false, hits: [] };
@@ -502,6 +509,8 @@ function readShortDesc(entry: object): string {
   return typeof description === 'string' ? description : '';
 }
 
+const DRAFT_MOVE_NAG = /has no moves \(it must have at least one to be usable\)/i;
+
 function collectProblems(imported: ImportedSet[] | null, format: SupportedFormat): string[] {
   if (!imported?.length) return ['Paste at least one Pokémon set.'];
   let problems: string[] = [];
@@ -510,6 +519,7 @@ function collectProblems(imported: ImportedSet[] | null, format: SupportedFormat
   } catch (error) {
     problems = [error instanceof Error ? error.message : 'Team could not be validated.'];
   }
+  problems = problems.filter(problem => !DRAFT_MOVE_NAG.test(problem));
   if (imported.length !== 6) {
     return [`A ${format} team must contain exactly six valid Pokémon sets.`, ...problems];
   }
@@ -544,6 +554,122 @@ function effectiveness(attack: string, defenderTypes: readonly string[]): number
     else if (taken === 3) return 0;
   }
   return modifier;
+}
+
+type DexItemLike = {
+  exists: boolean;
+  name: string;
+  id: string;
+  isNonstandard?: string | null;
+  megaStone?: unknown;
+  zMove?: unknown;
+  zMoveType?: unknown;
+  zMoveFrom?: unknown;
+  isPrimalOrb?: boolean;
+  isPokeball?: boolean;
+  itemUser?: string[];
+  forcedForme?: string;
+  onPlate?: string;
+  onMemory?: string;
+  onDrive?: string;
+};
+
+type DexSpeciesLike = ReturnType<typeof Dex.species.get>;
+
+const GEN9_OU_VALIDATOR = new TeamValidator('gen9ou');
+const legalItemCache = new Map<string, TeamSearchHit[]>();
+let genericOuItems: TeamSearchHit[] | undefined;
+
+function isHeldItemCandidate(item: DexItemLike): boolean {
+  if (!item.exists || item.isNonstandard || !item.name) return false;
+  if (item.megaStone || item.zMove || item.zMoveType || item.zMoveFrom || item.isPrimalOrb) return false;
+  if (item.isPokeball) return false;
+  return true;
+}
+
+function speciesAbilityNames(species: DexSpeciesLike): string[] {
+  return Object.values(species.abilities).filter((name): name is string => typeof name === 'string' && name.length > 0);
+}
+
+function speciesCanHoldItem(species: DexSpeciesLike, item: DexItemLike): boolean {
+  if (!isHeldItemCandidate(item)) return false;
+  const base = species.baseSpecies || species.name;
+  if (item.id === 'boosterenergy') {
+    return speciesAbilityNames(species).some(name => name === 'Protosynthesis' || name === 'Quark Drive');
+  }
+  if (item.id === 'eviolite') return Boolean(species.nfe);
+  if (item.itemUser?.length) {
+    return item.itemUser.some(user => {
+      const holder = Dex.species.get(user);
+      if (!holder?.exists) return user.toLowerCase() === species.name.toLowerCase();
+      return holder.baseSpecies === base;
+    });
+  }
+  if (item.forcedForme) {
+    const forme = Dex.species.get(item.forcedForme);
+    if (forme?.exists && forme.baseSpecies !== base) return false;
+  }
+  if (item.onPlate && base !== 'Arceus') return false;
+  if (item.onMemory && base !== 'Silvally') return false;
+  if (item.onDrive && base !== 'Genesect') return false;
+  return true;
+}
+
+function itemFailsOuClause(item: DexItemLike, species: DexSpeciesLike, move?: string): boolean {
+  if (!move) return false;
+  const ability = speciesAbilityNames(species)[0] ?? '';
+  const problems = GEN9_OU_VALIDATOR.validateSet({
+    name: species.name,
+    species: species.name,
+    item: item.name,
+    ability,
+    moves: [move],
+    nature: 'Serious',
+    evs: {},
+    ivs: {},
+  } as never, {}) ?? [];
+  const itemName = item.name.toLowerCase();
+  return problems.some(problem => {
+    const text = problem.toLowerCase();
+    return text.includes(itemName)
+      || text.includes('needs to hold')
+      || text.includes('cannot hold');
+  });
+}
+
+function describeItem(item: DexItemLike): TeamSearchHit {
+  return { name: item.name, description: readShortDesc(item) };
+}
+
+function legalItemHits(speciesName: string): TeamSearchHit[] {
+  const species = Dex.species.get(speciesName);
+  if (!species?.exists) return [];
+  const cached = legalItemCache.get(species.id);
+  if (cached) return cached;
+  const move = legalMoveNames(species.name)[0];
+  const hits = Dex.items.all()
+    .filter(item => speciesCanHoldItem(species, item) && !itemFailsOuClause(item, species, move))
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map(describeItem);
+  legalItemCache.set(species.id, hits);
+  return hits;
+}
+
+function genericOuItemHits(): TeamSearchHit[] {
+  if (genericOuItems) return genericOuItems;
+  const dummy = Dex.species.get('Great Tusk');
+  const move = legalMoveNames(dummy.name)[0];
+  genericOuItems = Dex.items.all()
+    .filter(item => {
+      if (!isHeldItemCandidate(item)) return false;
+      if (item.itemUser?.length) return false;
+      if (item.forcedForme || item.onPlate || item.onMemory || item.onDrive) return false;
+      if (item.id === 'boosterenergy' || item.id === 'eviolite') return false;
+      return !itemFailsOuClause(item, dummy, move);
+    })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map(describeItem);
+  return genericOuItems;
 }
 
 function legalMoveNames(speciesName: string): string[] {

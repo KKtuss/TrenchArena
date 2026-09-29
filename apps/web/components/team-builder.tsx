@@ -22,8 +22,11 @@ import {
   filterSpeciesHits,
   setsFromInspection,
   setsToPaste,
+  sortMoveHits,
+  visibleTeamProblems,
   writeSavedTeam,
   type EditorSet,
+  type MoveSort,
   type SavedRoster,
   type StatId,
   type TeamInspection,
@@ -45,6 +48,12 @@ const STAT_LABEL: Record<StatId, string> = {
 };
 
 const MOVE_CATEGORIES = ['Physical', 'Special', 'Status'] as const;
+const MOVE_SORTS: { id: MoveSort; label: string }[] = [
+  { id: 'name', label: 'Name' },
+  { id: 'power', label: 'Power' },
+  { id: 'accuracy', label: 'Accuracy' },
+  { id: 'type', label: 'Type' },
+];
 
 export function TeamBuilder() {
   const { client, playerId, connected } = useArena();
@@ -63,8 +72,9 @@ export function TeamBuilder() {
   const [pickerQuery, setPickerQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [moveSort, setMoveSort] = useState<MoveSort>('name');
   const [speciesCatalog, setSpeciesCatalog] = useState<TeamSearchHit[] | null>(null);
-  const [itemCatalog, setItemCatalog] = useState<TeamSearchHit[] | null>(null);
+  const [itemCatalog, setItemCatalog] = useState<{ species: string; hits: TeamSearchHit[] } | null>(null);
   const [learnset, setLearnset] = useState<TeamSearchHit[]>([]);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -158,12 +168,15 @@ export function TeamBuilder() {
   }, [pickerQuery, speciesCatalog, typeFilter]);
 
   const filteredItems = useMemo(() => {
-    return filterItemHits(itemCatalog ?? [], pickerQuery);
+    return filterItemHits(itemCatalog?.hits ?? [], pickerQuery);
   }, [itemCatalog, pickerQuery]);
+  const builderProblems = useMemo(() => (
+    inspection ? visibleTeamProblems(inspection.problems) : []
+  ), [inspection]);
 
   const filteredMoves = useMemo(() => {
-    return filterMoveHits(learnset, pickerQuery, typeFilter, categoryFilter);
-  }, [categoryFilter, learnset, pickerQuery, typeFilter]);
+    return sortMoveHits(filterMoveHits(learnset, pickerQuery, typeFilter, categoryFilter), moveSort);
+  }, [categoryFilter, learnset, moveSort, pickerQuery, typeFilter]);
 
   function updateSet(patch: Partial<EditorSet>) {
     updateSetAt(selected, patch);
@@ -210,6 +223,7 @@ export function TeamBuilder() {
     setPickerQuery('');
     setTypeFilter('');
     setCategoryFilter('');
+    setMoveSort('name');
     setPickerError(null);
   }
 
@@ -241,20 +255,30 @@ export function TeamBuilder() {
   }
 
   async function openItemPicker(slot = selected) {
+    const target = sets[slot] ?? emptySet();
+    const species = target.species.trim();
+    if (!species) {
+      setNotice('Choose a Pokémon before picking an item.');
+      return;
+    }
     setPicker({ kind: 'item', slot });
     setPickerQuery('');
     setPickerError(null);
     const generation = ++catalogGeneration.current;
-    if (itemCatalog) {
+    if (itemCatalog && itemCatalog.species.toLowerCase() === species.toLowerCase()) {
       setCatalogBusy(false);
       return;
     }
+    setItemCatalog(null);
     setCatalogBusy(true);
     try {
-      const message = await client.request({ type: 'team.search', kind: 'item', query: '' });
+      const message = await client.request({ type: 'team.search', kind: 'item', query: '', species });
       if (generation !== catalogGeneration.current) return;
       if (message.type === 'team.search') {
-        setItemCatalog(message.hits ?? message.results.map(name => ({ name })));
+        setItemCatalog({
+          species,
+          hits: message.hits?.length ? message.hits : message.results.map(name => ({ name })),
+        });
       }
     } catch (error) {
       if (generation === catalogGeneration.current) {
@@ -275,6 +299,7 @@ export function TeamBuilder() {
     setPickerQuery('');
     setTypeFilter('');
     setCategoryFilter('');
+    setMoveSort('name');
     setPickerError(null);
     setLearnset([]);
     const generation = ++catalogGeneration.current;
@@ -307,16 +332,24 @@ export function TeamBuilder() {
     setSaved(false);
     closePicker();
     try {
-      const [abilities, moves] = await Promise.all([
+      const [abilities, moves, items] = await Promise.all([
         client.request({ type: 'team.search', kind: 'ability', query: '', species }),
         client.request({ type: 'team.search', kind: 'move', query: '', species }),
+        client.request({ type: 'team.search', kind: 'item', query: '', species }),
       ]);
       if (generation !== speciesGeneration.current) return;
       const abilityNames = abilities.type === 'team.search' ? abilities.results : [];
       const moveNames = moves.type === 'team.search' ? moves.results : [];
+      const itemNames = items.type === 'team.search' ? items.results : [];
       if (moves.type === 'team.search' && moves.hits?.length) {
         rememberMoves(moves.hits);
         setLearnset(moves.hits);
+      }
+      if (items.type === 'team.search') {
+        setItemCatalog({
+          species,
+          hits: items.hits?.length ? items.hits : items.results.map(name => ({ name })),
+        });
       }
       const legal = new Set(moveNames.map(move => move.toLowerCase()));
       setSets(existing => existing.map((set, index) => {
@@ -324,6 +357,9 @@ export function TeamBuilder() {
         const keptAbility = abilityNames.some(name => name.toLowerCase() === set.ability.trim().toLowerCase())
           ? set.ability
           : (abilityNames[0] ?? '');
+        const keptItem = itemNames.some(name => name.toLowerCase() === set.item.trim().toLowerCase())
+          ? set.item
+          : '';
         return {
           ...emptySet(),
           species,
@@ -332,7 +368,7 @@ export function TeamBuilder() {
           nature: set.nature,
           evs: set.evs,
           ivs: set.ivs,
-          item: set.item,
+          item: keptItem,
           moves: set.moves.map(move => (
             move.trim() && legal.size && !legal.has(move.trim().toLowerCase()) ? '' : move
           )) as EditorSet['moves'],
@@ -486,9 +522,9 @@ export function TeamBuilder() {
         {inspection?.packed ? ' · 0 clause violations' : ''}
       </p>
 
-      {inspection && !inspection.packed && inspection.problems.length ? (
+      {inspection && !inspection.packed && builderProblems.length ? (
         <ul className="tb-problems">
-          {inspection.problems.slice(0, 6).map(problem => <li key={problem}>{problem}</li>)}
+          {builderProblems.slice(0, 6).map(problem => <li key={problem}>{problem}</li>)}
         </ul>
       ) : null}
 
@@ -725,6 +761,7 @@ export function TeamBuilder() {
       {picker?.kind === 'move' ? (
         <CatalogModal
           title="Attacks"
+          className="is-attacks"
           hint={pickerSet.species.trim() ? `Legal for ${pickerSet.species}` : 'Pick a Pokémon first'}
           query={pickerQuery}
           onQuery={setPickerQuery}
@@ -736,26 +773,46 @@ export function TeamBuilder() {
             if (picker?.kind === 'move') void openMovePicker(picker.moveSlot, picker.slot);
           }}
           filters={(
-            <>
-              <button type="button" className={!categoryFilter ? 'active' : ''} aria-pressed={!categoryFilter} onClick={() => setCategoryFilter('')}>All</button>
-              {MOVE_CATEGORIES.map(category => (
-                <button
-                  key={category}
-                  type="button"
-                  className={categoryFilter === category ? 'active' : ''}
-                  aria-pressed={categoryFilter === category}
-                  onClick={() => setCategoryFilter(category)}
-                >
-                  {category}
-                </button>
-              ))}
-              <button type="button" className={!typeFilter ? 'active' : ''} aria-pressed={!typeFilter} onClick={() => setTypeFilter('')}>Any type</button>
-              {TERA_TYPES.map(type => (
-                <button key={type} type="button" className={typeFilter === type ? 'active' : ''} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
-                  {type}
-                </button>
-              ))}
-            </>
+            <div className="tb-filter-groups">
+              <div className="tb-filter-row">
+                <span>Kind</span>
+                <button type="button" className={!categoryFilter ? 'active' : ''} aria-pressed={!categoryFilter} onClick={() => setCategoryFilter('')}>All</button>
+                {MOVE_CATEGORIES.map(category => (
+                  <button
+                    key={category}
+                    type="button"
+                    className={categoryFilter === category ? 'active' : ''}
+                    aria-pressed={categoryFilter === category}
+                    onClick={() => setCategoryFilter(category)}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+              <div className="tb-filter-row">
+                <span>Type</span>
+                <button type="button" className={!typeFilter ? 'active' : ''} aria-pressed={!typeFilter} onClick={() => setTypeFilter('')}>Any</button>
+                {TERA_TYPES.map(type => (
+                  <button key={type} type="button" className={typeFilter === type ? 'active' : ''} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
+                    {type}
+                  </button>
+                ))}
+              </div>
+              <div className="tb-filter-row">
+                <span>Sort</span>
+                {MOVE_SORTS.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={moveSort === option.id ? 'active' : ''}
+                    aria-pressed={moveSort === option.id}
+                    onClick={() => setMoveSort(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
         >
           {catalogBusy && !learnset.length ? <p className="tb-plain" role="status">Loading learnset…</p> : null}
@@ -786,7 +843,7 @@ export function TeamBuilder() {
       {picker?.kind === 'item' ? (
         <CatalogModal
           title="Held item"
-          hint="Search by name or effect"
+          hint="Legal items for this Pokémon"
           query={pickerQuery}
           onQuery={setPickerQuery}
           onClose={closePicker}
@@ -838,6 +895,7 @@ function CatalogModal({
   error,
   meta,
   onRetry,
+  className,
   children,
 }: {
   title: string;
@@ -851,6 +909,7 @@ function CatalogModal({
   error?: string | null;
   meta?: string;
   onRetry?: () => void;
+  className?: string;
   children: ReactNode;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -904,7 +963,7 @@ function CatalogModal({
     <div className="tb-modal" onClick={onClose}>
       <div
         ref={cardRef}
-        className="tb-modal-card"
+        className={`tb-modal-card${className ? ` ${className}` : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

@@ -404,10 +404,12 @@ test('inspects a Gen 9 OU paste and searches the dex', async () => {
   assert.ok(catalog.results.includes('Great Tusk'));
   assert.equal(catalog.results.includes('Koraidon'), false);
   assert.ok((catalog.hits?.length ?? 0) > 400);
-  client.send({ type: 'team.search', kind: 'item', query: 'choice' });
-  const items = await client.waitFor<any>(message => message.type === 'team.search' && message.scoped === false);
+  client.send({ type: 'team.search', kind: 'item', query: 'choice', species: 'Great Tusk' });
+  const items = await client.waitFor<any>(message => message.type === 'team.search' && message.scoped === true);
   assert.ok(items.results.includes('Choice Scarf'));
   assert.ok(items.hits?.some((hit: any) => hit.name === 'Choice Band'));
+  assert.equal(items.results.includes('Flame Plate'), false);
+  assert.equal(items.results.includes('Light Ball'), false);
   client.send({ type: 'team.search', kind: 'move', query: 'hydro', species: 'Pelipper' });
   const moves = await client.waitFor<any>(message => message.type === 'team.search' && message.scoped === true);
   assert.ok(moves.hits?.some((hit: any) => hit.name === 'Hydro Pump' && hit.type === 'Water'));

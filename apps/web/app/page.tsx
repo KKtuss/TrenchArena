@@ -41,16 +41,11 @@ function eventStatus(tournament: TournamentSummary): string {
   return tournament.status;
 }
 
-function liveHref(fight: LiveFight): string {
-  if (fight.source === 'tournament' && fight.tournamentId) return `/tournament/${fight.tournamentId}`;
-  return '/arena';
-}
-
 const EMPTY_EVENTS: unknown[] = [];
 const ignoreWatchError = () => undefined;
 
 export default function LandingPage() {
-  const { client, playerId, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
+  const { client, playerId, snapshot, refreshSnapshot, connected } = useArena();
   const [saved, setSaved] = useState<SavedTeam | null>(null);
   const [live, setLive] = useState<{ fight?: LiveFight; view?: BattleView; events?: unknown[] } | null>(null);
 
@@ -138,16 +133,6 @@ export default function LandingPage() {
           </div>
         ) : null}
         <div className="pa-ctas">
-          {!walletConnected ? (
-            <button
-              type="button"
-              className="pa-btn pa-btn-primary"
-              disabled={connectingWallet}
-              onClick={() => void connectInjectedWallet()}
-            >
-              {connectingWallet ? 'Connecting…' : 'Connect wallet'}
-            </button>
-          ) : null}
           <Link className="pa-btn pa-btn-primary" href="/arena">Fight casually</Link>
           <Link className="pa-btn pa-btn-surface" href={flagship ? `/tournament/${flagship.id}` : '/tournaments'}>
             Enter a tournament
@@ -215,17 +200,7 @@ export default function LandingPage() {
           </div>
         )}
         <div className="pa-duel-foot">
-          <div>
-            <span className="pa-feed-note">Spectator feed · no moves from this screen</span>
-            {liveActive && liveFight ? (
-              <Link className="pa-btn pa-btn-surface pa-btn-sm" href={liveHref(liveFight)}>
-                {liveFight.source === 'tournament' ? 'Open cup bracket' : 'Go to arena'}
-              </Link>
-            ) : (
-              <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/arena">Find a fight</Link>
-            )}
-            <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/casual/create">Start your own fight</Link>
-          </div>
+          <span className="pa-feed-note">Spectator feed · no moves from this screen</span>
           <span className="pa-cheer">
             {liveActive ? 'You are watching a random live match' : 'Waiting for the next live match'}
           </span>

@@ -5,6 +5,8 @@ import {
   filterItemHits,
   filterMoveHits,
   filterSpeciesHits,
+  sortMoveHits,
+  visibleTeamProblems,
 } from '../lib/team';
 
 test('filters species hits by name and type without mutating the catalog', () => {
@@ -30,6 +32,17 @@ test('filters items by name or description', () => {
   assert.equal(filterItemHits(hits, 'does-not-exist').length, 0);
 });
 
+test('hides unfinished-set move nags from the builder problem list', () => {
+  assert.deepEqual(visibleTeamProblems([
+    'A gen9ou team must contain exactly six valid Pokémon sets.',
+    'Great Tusk has no moves (it must have at least one to be usable).',
+    'Pelipper\'s item Flame Plate is banned.',
+  ]), [
+    'A gen9ou team must contain exactly six valid Pokémon sets.',
+    'Pelipper\'s item Flame Plate is banned.',
+  ]);
+});
+
 test('filters legal move hits by type, category, and searchable details', () => {
   const hits = [
     { name: 'Hydro Pump', type: 'Water', category: 'Special', description: 'A strong blast of water.' },
@@ -40,4 +53,17 @@ test('filters legal move hits by type, category, and searchable details', () => 
   assert.deepEqual(filterMoveHits(hits, '', 'Water', 'Special').map(hit => hit.name), ['Hydro Pump']);
   assert.deepEqual(filterMoveHits(hits, 'restores', '', '').map(hit => hit.name), ['Roost']);
   assert.deepEqual(filterMoveHits(hits, 'water', '', '').map(hit => hit.name), ['Hydro Pump', 'Liquidation']);
+});
+
+test('sorts legal move hits by name, power, accuracy, and type', () => {
+  const hits = [
+    { name: 'Roost', type: 'Flying', category: 'Status', power: 0, accuracy: null },
+    { name: 'Hydro Pump', type: 'Water', category: 'Special', power: 110, accuracy: 80 },
+    { name: 'Liquidation', type: 'Water', category: 'Physical', power: 85, accuracy: 100 },
+  ];
+
+  assert.deepEqual(sortMoveHits(hits, 'name').map(hit => hit.name), ['Hydro Pump', 'Liquidation', 'Roost']);
+  assert.deepEqual(sortMoveHits(hits, 'power').map(hit => hit.name), ['Hydro Pump', 'Liquidation', 'Roost']);
+  assert.deepEqual(sortMoveHits(hits, 'accuracy').map(hit => hit.name), ['Roost', 'Liquidation', 'Hydro Pump']);
+  assert.deepEqual(sortMoveHits(hits, 'type').map(hit => hit.name), ['Roost', 'Hydro Pump', 'Liquidation']);
 });
