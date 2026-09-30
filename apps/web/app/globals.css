@@ -1075,6 +1075,11 @@ main:has(.battle-page) {
   padding: 72px 0 12px;
 }
 
+main:has(.is-cup-hub) {
+  width: min(1440px, calc(100% - 24px));
+  padding: 72px 0 40px;
+}
+
 .battle-page.pa-page {
   width: 100%;
   max-width: none;

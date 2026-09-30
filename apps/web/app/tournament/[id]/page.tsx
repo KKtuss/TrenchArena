@@ -7,67 +7,136 @@ import { useEffect, useMemo, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 import { Gen1CupArt } from '@/components/gen1-cup-art';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
-import { BracketView, TournamentEconomicsBlock } from '@/components/ui';
+import { MatchDetailDialog, TournamentBracket } from '@/components/tournament-bracket';
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatSolLamports } from '@/lib/api-client';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
 import {
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
   previewTreasuryPrize,
 } from '@/lib/tournament-schedule';
+import {
+  bracketFieldSize,
+  buildMockTournament,
+  currentRound,
+  findLiveMatch,
+  findPlayerMatch,
+  formatName,
+  formatTimeout,
+  hubStatus,
+  isPlayableMatch,
+  matchActionLabel,
+  playerHubStatus,
+  registeredPlayers,
+  roundTitles,
+  visibleBracket,
+  type BracketMatch,
+  type TournamentDetail,
+} from '@/lib/tournament-hub';
 
-type BracketMatch = {
-  id: string;
-  round: number;
-  bracketPosition: number;
-  player1?: string;
-  player2?: string;
-  status: string;
-  winner?: string;
-};
+function PlayerStatusCopy({
+  kind,
+  opponentId,
+  roundLabel,
+}: {
+  kind: ReturnType<typeof playerHubStatus>['kind'];
+  opponentId?: string;
+  roundLabel?: string;
+}) {
+  if (kind === 'connect') return <>Connect a wallet to follow your path.</>;
+  if (kind === 'champion') return <>You won the cup.</>;
+  if (kind === 'complete') return <>Tournament complete.</>;
+  if (kind === 'watching-final') return <>Watching the final bracket.</>;
+  if (kind === 'live') {
+    return opponentId
+      ? <>You're live vs. <TrainerName playerId={opponentId} /></>
+      : <>Your match is live.</>;
+  }
+  if (kind === 'next') {
+    return opponentId
+      ? <>Your next match: vs. <TrainerName playerId={opponentId} /></>
+      : <>Your next match is waiting.</>;
+  }
+  if (kind === 'eliminated') return <>Eliminated · {roundLabel}</>;
+  if (kind === 'registered-locked') return <>You're in · bracket locked.</>;
+  if (kind === 'registered-waiting') return <>You're in · waiting for the field.</>;
+  if (kind === 'register') return <>Register to enter the bracket.</>;
+  if (kind === 'waiting-next') return <>Waiting for your next match.</>;
+  return <>Watching the bracket.</>;
+}
 
-type TournamentPlayer = {
-  id: string;
-  status: string;
-  displayName?: string;
-};
-
-type TournamentDetail = {
-  id: string;
-  title: string;
-  format: string;
-  status: string;
-  maxPlayers: number;
-  players?: TournamentPlayer[];
-  bracket?: BracketMatch[];
-  entryFee?: number;
-  hostId?: string;
-  economics?: {
-    prizePool: number;
-    entryFee: number;
-    playerCount: number;
-    treasuryShare: number;
-  };
-  winner?: string;
-};
+function SignupIcon({
+  name,
+}: {
+  name: 'trophy' | 'coins' | 'users' | 'check' | 'clipboard' | 'clock' | 'play';
+}) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {name === 'trophy' ? (
+        <>
+          <path d="M8 21h8" />
+          <path d="M12 17v4" />
+          <path d="M7 4h10v5a5 5 0 0 1-10 0V4Z" />
+          <path d="M17 8h1.5a3 3 0 0 0 0-6H17" />
+          <path d="M7 8H5.5a3 3 0 0 1 0-6H7" />
+        </>
+      ) : null}
+      {name === 'coins' ? (
+        <>
+          <ellipse cx="9" cy="15" rx="6" ry="5.2" />
+          <ellipse cx="15" cy="9.2" rx="6" ry="5.2" />
+        </>
+      ) : null}
+      {name === 'users' ? (
+        <>
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </>
+      ) : null}
+      {name === 'check' ? (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m8.5 12.2 2.4 2.4 4.6-5.1" />
+        </>
+      ) : null}
+      {name === 'clipboard' ? (
+        <>
+          <rect x="8" y="2.5" width="8" height="3.5" rx="1" />
+          <path d="M16 4.2h2a2 2 0 0 1 2 2V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.2a2 2 0 0 1 2-2h2" />
+        </>
+      ) : null}
+      {name === 'clock' ? (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7.5V12l3.2 2" />
+        </>
+      ) : null}
+      {name === 'play' ? <path d="M8.4 6.4v11.2L18.2 12 8.4 6.4Z" fill="currentColor" stroke="none" /> : null}
+    </svg>
+  );
+}
 
 export default function TournamentDetailPage() {
   const params = useParams<{ id: string }>();
   const tournamentId = params.id;
-  const { client, playerId, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
+  const { client, playerId, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
   const [tournament, setTournament] = useState<TournamentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<SavedTeam | null>(null);
+  const [selected, setSelected] = useState<BracketMatch | null>(null);
+  const [boardPreview, setBoardPreview] = useState<'live' | 1 | 2 | 3 | 4 | 'champion'>('live');
 
   useEffect(() => {
     setSaved(playerId ? readSavedTeam(playerId) : null);
   }, [playerId]);
 
   useEffect(() => {
-    if (!walletConnected) return;
+    if (!connected) return;
     const unsubscribe = client.onMessage(message => {
       if (
         (message.type === 'tournament.state' || message.type === 'tournament.created' || message.type === 'tournament.result')
@@ -80,7 +149,7 @@ export default function TournamentDetailPage() {
       if (response.type === 'tournament.state') setTournament(response.tournament as TournamentDetail);
     }).catch(err => setError(err instanceof Error ? err.message : String(err)));
     return unsubscribe;
-  }, [client, walletConnected, tournamentId]);
+  }, [client, connected, tournamentId]);
 
   const act = async (run: () => Promise<void>) => {
     setBusy(true);
@@ -94,201 +163,218 @@ export default function TournamentDetailPage() {
     }
   };
 
-  const registeredPlayers = useMemo(
-    () => (tournament?.players ?? []).filter(player => player.status === 'registered'),
-    [tournament?.players],
-  );
-  const registered = registeredPlayers.some(player => player.id === playerId);
+  const players = registeredPlayers(tournament);
+  const registered = players.some(player => player.id === playerId);
   const maxPlayers = tournament?.maxPlayers ?? TOURNAMENT_FIELD_SIZE;
   const entryFee = tournament?.entryFee ?? TOURNAMENT_ENTRY_POKE;
-  const liveMatch = tournament?.bracket?.find(match => (
-    match.status === 'active' || match.status === 'battle-created'
-  ));
-  const myMatch = tournament?.bracket?.find(match => (
-    (match.player1 === playerId || match.player2 === playerId)
-    && ['ready', 'active', 'battle-created', 'completed'].includes(match.status)
-  ));
-  const bracketLive = tournament?.status === 'in-progress' || tournament?.status === 'active';
+  const matches = useMemo(
+    () => (tournament ? visibleBracket(tournament) : []),
+    [tournament],
+  );
+  const previewTournament = useMemo(() => {
+    if (!isDemoAuthEnabled() || boardPreview === 'live') return null;
+    const viewerId = playerId ?? 'you';
+    if (boardPreview === 'champion') {
+      return buildMockTournament({ maxPlayers: 32, champion: true, viewerId });
+    }
+    return buildMockTournament({
+      maxPlayers: 32,
+      currentRound: boardPreview,
+      status: 'in-progress',
+      viewerId,
+    });
+  }, [boardPreview, playerId]);
+  const boardMatches = previewTournament?.bracket ?? matches;
+  const boardField = previewTournament ? 32 : bracketFieldSize(matches, maxPlayers);
+  const boardStatus = previewTournament?.status ?? tournament?.status;
+  const liveMatch = findLiveMatch(matches.filter(match => !match.placeholder));
+  const myMatch = findPlayerMatch(matches.filter(match => !match.placeholder), playerId);
+  const badge = hubStatus(tournament?.status);
+  const round = currentRound(boardMatches, boardStatus);
+  const rounds = roundTitles(boardField);
+  const you = tournament ? playerHubStatus(tournament, matches, playerId) : null;
   const canRegister = tournament?.status === 'registration' || tournament?.status === 'draft';
+  const projectedPrize = previewTreasuryPrize(entryFee, maxPlayers).prizePool;
+  const prizePool = badge === 'UPCOMING'
+    ? projectedPrize
+    : (tournament?.economics?.prizePool ?? projectedPrize);
+  const prizeLabel = tournament?.prizeLamports
+    ? formatSolLamports(tournament.prizeLamports)
+    : formatPoke(prizePool);
+  const myAction = myMatch ? matchActionLabel(myMatch, playerId) : null;
+  const description = tournament
+    ? `Single elimination ${formatName(tournament.format)} cup. ${maxPlayers} trainers. Best of 1. Treasury-funded prize.`
+    : 'Single elimination cup with a live bracket, compact rules, and a treasury-funded prize.';
+  const isCustomTeamTournament = tournament?.format === 'gen9ou';
+  const hasLegalSavedTeam = Boolean(saved?.validated && saved.paste.trim());
+  const canJoinTournament = !isCustomTeamTournament || hasLegalSavedTeam;
 
-  const prizePool = tournament?.economics?.prizePool
-    ?? previewTreasuryPrize(entryFee, maxPlayers).prizePool;
-  const statusLabel = (tournament?.status ?? 'registration').toUpperCase();
+  const joinCup = () => void act(async () => {
+    if (!playerId) throw new Error('Connect a wallet before joining.');
+    if (isCustomTeamTournament && !hasLegalSavedTeam) {
+      throw new Error('No legal saved team.');
+    }
+    const paste = battlePaste(playerId);
+    const response = await client.request({
+      type: 'tournament.join',
+      tournamentId,
+      ...(paste ? { team: paste } : {}),
+    });
+    if (response.type === 'tournament.state') {
+      setTournament(response.tournament as TournamentDetail);
+    }
+  });
 
-  return (
-    <div className="pa-page">
-      <section className="pa-gen1-hero-band">
-        <div className="pa-gen1-hero-copy">
-          <p className="pa-kicker"><i /> — Kanto · {maxPlayers}-player single elimination —</p>
-          <h1>{tournament?.title ?? 'GEN 1 CUP'}</h1>
-          <p className="pa-lead">
-            Low {formatPoke(entryFee)} entry. Prize pool funded by the PokeArena Tournament Treasury.
-          </p>
-          <div className="pa-schedule-prize">
-            <small>Projected treasury prize</small>
-            <strong>{formatPoke(prizePool)}</strong>
+  const startCup = () => void act(async () => {
+    const response = await client.request({ type: 'tournament.start', tournamentId });
+    if (response.type === 'tournament.state') {
+      setTournament(response.tournament as TournamentDetail);
+    }
+  });
+
+  if (tournament && canRegister) {
+    const signupEconomics = previewTreasuryPrize(
+      entryFee,
+      tournament.economics?.playerCount ?? Math.max(players.length, 1),
+    );
+    const statusLabel = tournament.status.toUpperCase();
+    return (
+      <div className="pa-page">
+        <ErrorToast error={error} onDismiss={() => setError(null)} />
+        <section className="pa-signup">
+          <div className="pa-signup-rail">
+            <div className="pa-signup-rail-identity">
+              <span>{formatName(tournament.format)}</span>
+              <i aria-hidden />
+              <span>{maxPlayers} PLAYER</span>
+              <i aria-hidden />
+              <span>SINGLE ELIMINATION</span>
+            </div>
+            <div className="pa-signup-rail-status">
+              <i aria-hidden />
+              <span>{statusLabel}</span>
+              {registered ? <span>· YOU'RE IN</span> : null}
+              <Link className="pa-signup-back" href="/tournaments">← Back to schedule</Link>
+            </div>
           </div>
-          <p className="pa-gen1-facts is-start">
-            <span>{formatPoke(entryFee)} entry</span>
-            <i aria-hidden />
-            <span className="pa-schedule-status status-registering">{statusLabel}</span>
-            <i aria-hidden />
-            <span>{registeredPlayers.length} / {maxPlayers}</span>
-          </p>
-          <div className="pa-gen1-hero-actions">
-            {!walletConnected ? (
-              <button
-                type="button"
-                className="pa-btn pa-btn-primary"
-                disabled={connectingWallet}
-                onClick={() => void connectInjectedWallet()}
-              >
-                {connectingWallet ? 'Connecting…' : 'Connect wallet'}
-              </button>
-            ) : !registered && canRegister ? (
-              <button
-                type="button"
-                className="pa-btn pa-btn-primary"
-                disabled={busy}
-                onClick={() => void act(async () => {
-                  if (!playerId) throw new Error('Connect a wallet before joining.');
-                  const paste = battlePaste(playerId);
-                  const response = await client.request({
-                    type: 'tournament.join',
-                    tournamentId,
-                    ...(paste ? { team: paste } : {}),
-                  });
-                  if (response.type === 'tournament.state') {
-                    setTournament(response.tournament as TournamentDetail);
-                  }
-                })}
-              >
-                Join tournament · {formatPoke(entryFee)}
-              </button>
-            ) : null}
-            <Link className="pa-gen1-back" href="/tournaments">← Back to schedule</Link>
-          </div>
-        </div>
-        <Gen1CupArt />
-      </section>
-
-      <ErrorToast error={error} onDismiss={() => setError(null)} />
-
-      {!walletConnected ? (
-        <section className="pa-team-file pa-team-empty">
-          <p>Connect a wallet to register, watch live matches, or open the bracket.</p>
-        </section>
-      ) : null}
-
-      {tournament ? (
-        <>
-          <div className="pa-live-strip">
-            <span className={`pa-live-pill${bracketLive ? '' : ''}`}>
-              <i /> {tournament.status.toUpperCase()}
-            </span>
-            <strong>{registeredPlayers.length} / {maxPlayers}</strong>
-            <span>{formatPoke(entryFee)} entry</span>
-            <span style={{ marginLeft: 'auto', color: '#8ea0c0' }}>
-              {tournament.format === 'gen9ou' ? 'GEN 9 OU RULES' : tournament.format.toUpperCase()}
-            </span>
-          </div>
-
-          {liveMatch ? (
-            <section className="pa-live-match">
-              <div>
-                <span className="pa-live-pill"><i /> LIVE NOW</span>
-                <h2>Match in progress</h2>
-                <p>
-                  <TrainerName playerId={liveMatch.player1} fallback="TBD" /> vs <TrainerName playerId={liveMatch.player2} fallback="TBD" /> · Round {liveMatch.round}
-                </p>
-              </div>
-              <Link className="pa-btn pa-btn-primary" href={`/battle/${liveMatch.id}`}>
-                Watch live
-              </Link>
-            </section>
-          ) : null}
-
-          <section className="pa-cup-featured">
-            <header>
-              <span>Cup funding</span>
-              <small>Treasury-backed</small>
-            </header>
-            <div className="pa-cup-body">
-              <div className="pa-cup-funding">
+          <div className="pa-signup-top">
+            <div className="pa-signup-copy">
+              <div className="pa-signup-identity">
+                <span className="pa-signup-mark"><SignupIcon name="trophy" /></span>
                 <div>
-                  <small>Entry</small>
-                  <b>{formatPoke(entryFee)}</b>
-                </div>
-                <div>
-                  <small>Prize pool</small>
-                  <b>{tournament.economics ? formatPoke(tournament.economics.prizePool) : '—'}</b>
-                </div>
-                <div>
-                  <small>Funded by</small>
-                  <b>POKEARENA TOURNAMENT TREASURY</b>
-                </div>
-                <div>
-                  <small>Field</small>
-                  <b>{maxPlayers} PLAYER CAP</b>
+                  <h1>{tournament.title}</h1>
+                  <p className="pa-lead">
+                    Prize pool funded by the PokeArena Tournament Treasury.
+                  </p>
                 </div>
               </div>
-              {tournament.economics ? (
-                <TournamentEconomicsBlock
-                  economics={tournament.economics as any}
-                  entryFee={entryFee}
-                />
-              ) : null}
-            </div>
-            <div className="pa-cup-actions">
-              {playerId && tournament.hostId === playerId && (tournament.status === 'registration' || tournament.status === 'ready') ? (
-                <button
-                  type="button"
-                  className="pa-btn pa-btn-primary"
-                  disabled={busy}
-                  onClick={() => void act(async () => {
-                    const response = await client.request({ type: 'tournament.start', tournamentId });
-                    if (response.type === 'tournament.state') {
-                      setTournament(response.tournament as TournamentDetail);
-                    }
-                  })}
-                >
-                  Start tournament
-                </button>
-              ) : null}
-              {myMatch ? (
-                <Link className="pa-btn pa-btn-surface" href={`/battle/${myMatch.id}`}>
-                  Enter my match
-                </Link>
-              ) : null}
-              {tournament.status === 'completed' ? (
-                <Link className="pa-btn pa-btn-primary" href={`/result/${tournament.id}`}>
-                  View results
-                </Link>
-              ) : null}
-            </div>
-            {!registered && canRegister ? (
-              <p className="pa-cup-note">
-                {saved?.validated
-                  ? `Bringing ${saved.name}`
-                  : isDemoAuthEnabled()
-                    ? (saved
-                      ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
-                      : 'No saved protocol. The demo team will be brought.')
-                    : 'A legal Gen 9 OU team is required to register.'}
+              <div className="pa-signup-stats">
+                <div className="pa-signup-stat">
+                  <span className="pa-signup-stat-icon"><SignupIcon name="coins" /></span>
+                  <div>
+                    <span>Entry</span>
+                    <strong>{formatPoke(entryFee)}</strong>
+                  </div>
+                </div>
+                <div className="pa-signup-stat is-prize">
+                  <span className="pa-signup-stat-icon"><SignupIcon name="trophy" /></span>
+                  <div>
+                    <span>Projected prize</span>
+                    <strong>{formatPoke(signupEconomics.prizePool)}</strong>
+                  </div>
+                </div>
+                <div className="pa-signup-stat">
+                  <span className="pa-signup-stat-icon"><SignupIcon name="users" /></span>
+                  <div>
+                    <span>Field</span>
+                    <strong>{players.length} / {maxPlayers}</strong>
+                  </div>
+                </div>
+              </div>
+              <p className="pa-signup-funding">
+                <SignupIcon name="check" />
+                Treasury-backed prize · projected estimate, not immediately withdrawable.
               </p>
-            ) : null}
-          </section>
-
-          <section className="pa-roster">
+              <div className="pa-gen1-hero-actions">
+                {!walletConnected ? (
+                  <button
+                    type="button"
+                    className="pa-btn pa-btn-primary"
+                    disabled={connectingWallet}
+                    onClick={() => void connectInjectedWallet()}
+                  >
+                    {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+                  </button>
+                ) : !registered && canJoinTournament ? (
+                  <button
+                    type="button"
+                    className="pa-btn pa-btn-primary"
+                    disabled={busy}
+                    onClick={joinCup}
+                  >
+                    Join tournament · {formatPoke(entryFee)}
+                  </button>
+                ) : !registered ? (
+                  <button type="button" className="pa-btn pa-btn-primary" disabled>
+                    No legal saved team
+                  </button>
+                ) : null}
+                {playerId && tournament.hostId === playerId ? (
+                  <button
+                    type="button"
+                    className="pa-btn pa-btn-gold"
+                    disabled={busy}
+                    onClick={startCup}
+                  >
+                    <SignupIcon name="play" />
+                    Start tournament
+                  </button>
+                ) : null}
+                {!registered && walletConnected && hasLegalSavedTeam ? (
+                  <p className="pa-cup-note">
+                    Bringing {saved?.name ?? 'your saved team'}.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="pa-signup-side">
+              <div className="pa-signup-meta">
+                <div className="pa-signup-rules-panel">
+                  <header>
+                    <SignupIcon name="clipboard" />
+                    Cup rules
+                  </header>
+                  <ul className="pa-signup-rules">
+                    <li>
+                      <strong><SignupIcon name="users" /> Teams</strong>
+                      <span>Each match is one {formatName(tournament.format)} singles battle. Bring six legal Pokémon. Species stay hidden until team preview.</span>
+                    </li>
+                    <li>
+                      <strong><SignupIcon name="clock" /> Timeouts</strong>
+                      <span>Matches time out after {formatTimeout(tournament.matchTimeoutMs)}. A no-show advances the opponent. Disconnecting grants 10s to reconnect, then a forfeit.</span>
+                    </li>
+                    <li>
+                      <strong><SignupIcon name="coins" /> Entry</strong>
+                      <span>The {formatPoke(entryFee)} entry is burned when the bracket locks.</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <div className="pa-signup-art">
+                <Gen1CupArt />
+              </div>
+            </div>
+          </div>
+          <div className="pa-signup-field">
             <header>
-              <h2>Field · {registeredPlayers.length} / {maxPlayers}</h2>
-              <span>{registeredPlayers.length >= maxPlayers ? 'FULL' : 'OPEN SLOTS'}</span>
+              <h2><SignupIcon name="users" /> Field · {players.length} / {maxPlayers}</h2>
+              <span>{players.length >= maxPlayers ? 'FULL' : 'OPEN SLOTS'}</span>
             </header>
             <div className="pa-roster-grid">
               {Array.from({ length: maxPlayers }, (_, index) => {
-                const player = registeredPlayers[index];
+                const player = players[index];
                 return (
-                  <div key={index} className={`pa-roster-slot${player ? ' is-filled' : ''}`}>
+                  <div key={player?.id ?? `slot-${index}`} className={`pa-roster-slot${player ? ' is-filled' : ''}`}>
                     {player ? (
                       <ProfileTrainerSprite label={player.id} side={index % 2 === 0 ? 'left' : 'right'} />
                     ) : (
@@ -302,37 +388,204 @@ export default function TournamentDetailPage() {
                 );
               })}
             </div>
-          </section>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
-          <section className="pa-bracket-panel">
+  return (
+    <div className="pa-page is-cup-hub">
+      <header className="pa-cup-head">
+        <div className="pa-cup-head-copy">
+          <p className="pa-kicker"><i /> — {formatName(tournament?.format)} · single elimination —</p>
+          <div className="pa-cup-title-row">
+            <h1>{tournament?.title ?? 'PokeArena Cup'}</h1>
+            <span className={`pa-cup-badge is-${badge.toLowerCase()}`}>{badge}</span>
+          </div>
+          <p className="pa-lead">{description}</p>
+          <p className="pa-cup-meta">
+            <span>{players.length} / {maxPlayers} players</span>
+            <i aria-hidden />
+            <span>Round {round} / {rounds.length} · {rounds[round - 1] ?? 'Registration'}</span>
+            <i aria-hidden />
+            <span>{prizeLabel}</span>
+          </p>
+          {you ? (
+            <p className={`pa-cup-you is-${you.kind}`}>
+              <PlayerStatusCopy kind={you.kind} opponentId={you.opponentId} roundLabel={you.roundLabel} />
+            </p>
+          ) : null}
+        </div>
+        <div className="pa-cup-head-actions">
+          {!walletConnected ? (
+            <button
+              type="button"
+              className="pa-btn pa-btn-primary"
+              disabled={connectingWallet}
+              onClick={() => void connectInjectedWallet()}
+            >
+              {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+            </button>
+          ) : !registered && canRegister ? (
+            <button
+              type="button"
+              className="pa-btn pa-btn-primary"
+              disabled={busy}
+              onClick={joinCup}
+            >
+              Join · {formatPoke(entryFee)}
+            </button>
+          ) : null}
+          {playerId && tournament?.hostId === playerId && (tournament.status === 'registration' || tournament.status === 'ready') ? (
+            <button
+              type="button"
+              className="pa-btn pa-btn-gold"
+              disabled={busy}
+              onClick={startCup}
+            >
+              Start tournament
+            </button>
+          ) : null}
+          {myMatch && myAction ? (
+            <Link
+              className={isPlayableMatch(myMatch.status) ? 'pa-btn pa-btn-primary' : 'pa-btn pa-btn-surface'}
+              href={`/battle/${myMatch.id}`}
+            >
+              {myAction}
+            </Link>
+          ) : liveMatch ? (
+            <Link className="pa-btn pa-btn-surface" href={`/battle/${liveMatch.id}`}>
+              Watch live
+            </Link>
+          ) : null}
+          {tournament?.status === 'completed' ? (
+            <Link className="pa-btn pa-btn-surface" href={`/result/${tournament.id}`}>
+              View results
+            </Link>
+          ) : null}
+          <Link className="pa-gen1-back" href="/tournaments">← Schedule</Link>
+        </div>
+      </header>
+
+      <ErrorToast error={error} onDismiss={() => setError(null)} />
+
+      {!walletConnected && canRegister ? (
+        <p className="pa-cup-note">Connect a wallet to register. The bracket stays visible.</p>
+      ) : null}
+      {!registered && canRegister && walletConnected ? (
+        <p className="pa-cup-note">
+          {saved?.validated
+            ? `Bringing ${saved.name}`
+            : isDemoAuthEnabled()
+              ? (saved
+                ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
+                : 'No saved protocol. The demo team will be brought.')
+              : 'A legal Gen 9 OU team is required to register.'}
+        </p>
+      ) : null}
+
+      {tournament ? (
+        <div className="pa-cup-layout">
+          <section className="pa-tree-panel" aria-label="Tournament bracket">
             <header>
-              <h2>32-player bracket</h2>
+              <h2>Bracket</h2>
               <span>
-                {tournament.bracket?.length
-                  ? 'Single elimination'
-                  : 'Bracket unlocks when the cup starts'}
+                {previewTournament ? 'Preview board' : tournament.bracket?.length ? 'Single elimination' : 'Field preview'}
               </span>
             </header>
-            {tournament.bracket?.length ? (
-              <BracketView matches={tournament.bracket} maxPlayers={maxPlayers} />
-            ) : (
-              <p className="pa-empty">
-                Round of 32 → Round of 16 → Quarters → Semis → Final → Champion. The board appears after start.
-              </p>
-            )}
+            {isDemoAuthEnabled() ? (
+              <div className="pa-board-preview" role="group" aria-label="Preview a full 32-player board">
+                {([
+                  ['live', 'Live'],
+                  [1, 'R32'],
+                  [2, 'R16'],
+                  [3, 'QF'],
+                  [4, 'SF'],
+                  ['champion', 'Champion'],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={boardPreview === id ? 'is-on' : undefined}
+                    onClick={() => {
+                      setSelected(null);
+                      setBoardPreview(id);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {previewTournament ? (
+              <p className="pa-board-preview-note">Sample board only. The live cup, matches, and prizes are unchanged.</p>
+            ) : null}
+            <TournamentBracket
+              matches={boardMatches}
+              maxPlayers={boardField}
+              viewerId={playerId}
+              winner={previewTournament ? previewTournament.winner : tournament.winner}
+              status={boardStatus}
+              selectedId={selected?.id}
+              onSelect={match => {
+                if (previewTournament || match.placeholder) return;
+                setSelected(match);
+              }}
+            />
           </section>
 
-          {tournament.winner ? (
-            <section className="pa-champion">
-              <small>Champion</small>
-              <ProfileTrainerSprite label={tournament.winner} side="left" />
-              <strong><TrainerName playerId={tournament.winner} /></strong>
+          <aside className="pa-cup-aside">
+            <section className="pa-cup-info">
+              <header>Format</header>
+              <dl className="pa-cup-facts">
+                <div><dt>Format</dt><dd>{formatName(tournament.format)}</dd></div>
+                <div><dt>Battle</dt><dd>Singles</dd></div>
+                <div><dt>Players</dt><dd>{maxPlayers}</dd></div>
+                <div><dt>Bracket</dt><dd>Single elimination</dd></div>
+                <div><dt>Match</dt><dd>Best of 1</dd></div>
+                <div><dt>Entry</dt><dd>{entryFee > 0 ? formatPoke(entryFee) : 'Treasury entry'}</dd></div>
+                <div><dt>Prize pool</dt><dd>{prizeLabel}</dd></div>
+                <div><dt>Time limit</dt><dd>{formatTimeout(tournament.matchTimeoutMs)}</dd></div>
+              </dl>
             </section>
-          ) : null}
-        </>
-      ) : walletConnected ? (
+
+            <section className="pa-cup-info">
+              <header>Rules</header>
+              <ul className="pa-cup-rules">
+                <li>Single elimination. Lose once and you are out.</li>
+                <li>Each match is one Gen 9 OU singles battle.</li>
+                <li>Bring a six-Pokémon legal team. Species stay hidden until team preview.</li>
+                <li>Matches time out after {formatTimeout(tournament.matchTimeoutMs)}. The opponent advances.</li>
+                <li>Disconnecting a live fight grants a 10s reconnect window, then a forfeit.</li>
+                <li>Winners are seeded into the next round until a champion is crowned.</li>
+                <li>A no-show is treated as a timeout. The present trainer moves on.</li>
+              </ul>
+            </section>
+
+            <section className="pa-cup-info">
+              <header>Field · {players.length} / {maxPlayers}</header>
+              <ul className="pa-cup-field">
+                {players.length ? players.map(player => (
+                  <li key={player.id}>
+                    <TrainerName playerId={player.id} />
+                    {player.id === playerId ? <small>You</small> : null}
+                    {tournament.winner === player.id ? <small>Champion</small> : null}
+                  </li>
+                )) : (
+                  <li className="is-empty">Waiting for trainers</li>
+                )}
+              </ul>
+            </section>
+          </aside>
+        </div>
+      ) : connected ? (
         <p className="pa-empty">Loading tournament…</p>
-      ) : null}
+      ) : (
+        <p className="pa-empty">Connect to load the live cup.</p>
+      )}
+
+      <MatchDetailDialog match={selected} viewerId={playerId} onClose={() => setSelected(null)} />
     </div>
   );
 }
