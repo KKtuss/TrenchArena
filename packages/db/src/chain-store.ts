@@ -191,7 +191,14 @@ export class PostgresChainStore {
         [id],
       );
       if (!current.rows[0]) throw new Error(`Unknown chain intent: ${id}`);
-      if (['confirmed', 'failed', 'expired', 'cancelled'].includes(current.rows[0].status)) {
+      const currentStatus = current.rows[0].status;
+      const retryConfirmed = currentStatus === 'failed' && status === 'confirmed';
+      if (
+        currentStatus === 'confirmed'
+        || currentStatus === 'expired'
+        || currentStatus === 'cancelled'
+        || (currentStatus === 'failed' && !retryConfirmed)
+      ) {
         const existing = await client.query(`SELECT * FROM chain_intents WHERE id = $1`, [id]);
         return mapIntent(existing.rows[0]);
       }

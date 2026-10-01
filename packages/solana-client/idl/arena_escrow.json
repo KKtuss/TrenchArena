@@ -10,6 +10,7 @@
     { "name": "initialize_config", "discriminator": [208, 127, 21, 1, 194, 190, 196, 70] },
     { "name": "create_match_escrow", "discriminator": [213, 8, 49, 71, 81, 20, 90, 142] },
     { "name": "deposit_sol_wager", "discriminator": [234, 235, 154, 250, 67, 37, 117, 136] },
+    { "name": "seat_match_opponent", "discriminator": [135, 14, 108, 24, 154, 104, 142, 23] },
     { "name": "refund_sol_wager", "discriminator": [254, 33, 45, 131, 158, 95, 168, 142] },
     { "name": "charge_match_fee", "discriminator": [151, 48, 94, 6, 72, 15, 165, 196] },
     { "name": "settle_match_win", "discriminator": [37, 247, 33, 6, 16, 29, 193, 209] },

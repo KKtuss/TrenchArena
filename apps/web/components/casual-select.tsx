@@ -1,116 +1,158 @@
 'use client';
 
-import { PokemonIcon, TypeMark } from '@/components/showdown-visuals';
+import { PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import type { CasualPreviewMon, CasualTeamPreview } from '@/lib/protocol';
+
+const SETUP_MOVES = new Set([
+  'Swords Dance', 'Nasty Plot', 'Dragon Dance', 'Calm Mind', 'Quiver Dance',
+  'Shell Smash', 'Bulk Up', 'Agility',
+]);
 
 export function CasualSelectBoard({
   yours,
-  rival,
   selected,
   confirmed,
   rivalConfirmed,
-  revealed,
+  secondsLeft,
   disabled,
+  busy,
   onToggle,
+  onLock,
 }: {
   yours?: CasualTeamPreview;
-  rival?: CasualTeamPreview;
   selected: readonly number[];
   confirmed: boolean;
   rivalConfirmed: boolean;
-  revealed: boolean;
+  secondsLeft?: number | null;
   disabled?: boolean;
+  busy?: boolean;
+  /** Ignored. Kept so older call sites compile. Picks stay private until battle. */
+  revealed?: boolean;
   onToggle: (slot: number) => void;
+  onLock?: () => void;
 }) {
+  const pool = yours?.pokemon.length ? yours.pokemon : emptySix();
+  const clock = secondsLeft == null ? null : formatClock(secondsLeft);
+  const matchPhase = Boolean(onLock);
   return (
-    <div className="pa-casual-select">
-      <CasualPreviewColumn
-        title={yours ? yours.presetName : 'Your team'}
-        kicker="Your six"
-        preview={yours}
-        selected={selected}
-        selectable={!confirmed && !disabled}
-        highlightSlots={selected}
-        onToggle={onToggle}
-      />
-      <CasualPreviewColumn
-        title={rival ? rival.presetName : 'Waiting…'}
-        kicker={revealed ? 'Rival’s three' : rivalConfirmed ? 'Rival locked' : 'Rival’s six'}
-        preview={rival}
-        selected={revealed ? (rival?.selectedSlots ?? []) : []}
-        selectable={false}
-        highlightSlots={revealed ? (rival?.selectedSlots ?? []) : []}
-        sealed={!revealed && rivalConfirmed}
-      />
-    </div>
-  );
-}
-
-function CasualPreviewColumn({
-  title,
-  kicker,
-  preview,
-  selected,
-  selectable,
-  highlightSlots,
-  sealed,
-  onToggle,
-}: {
-  title: string;
-  kicker: string;
-  preview?: CasualTeamPreview;
-  selected: readonly number[];
-  selectable: boolean;
-  highlightSlots: readonly number[];
-  sealed?: boolean;
-  onToggle?: (slot: number) => void;
-}) {
-  const pokemon = preview?.pokemon ?? [];
-  return (
-    <section className="pa-casual-column">
-      <header>
-        <small>{kicker}</small>
-        <strong>{title}</strong>
+    <section className={`pa-choose${confirmed ? ' is-locked' : ''}`} aria-label="Choose your 3">
+      <header className="pa-choose-head">
+        <div>
+          <small>Pre-battle</small>
+          <h1>Choose your 3</h1>
+          <p>Pick 3 Pokémon for this battle</p>
+        </div>
+        <div className="pa-choose-clock" role="timer" aria-live="polite">
+          {clock ? <b>{clock}</b> : null}
+          <em>{selected.length} / 3 selected</em>
+        </div>
       </header>
-      <div className="pa-casual-grid">
-        {(pokemon.length ? pokemon : Array.from({ length: 6 }, (_, slot) => ({
-          slot,
-          species: '',
-          item: '',
-          ability: '',
-          nature: '',
-          moves: [],
-          types: [],
-        } as CasualPreviewMon))).map(mon => {
-          const picked = highlightSlots.includes(mon.slot);
+
+      <div className="pa-choose-grid">
+        {pool.map(mon => {
+          const picked = selected.includes(mon.slot);
           const full = selected.length >= 3;
           return (
             <button
-              key={`${preview?.playerId ?? 'empty'}-${mon.slot}`}
+              key={`${yours?.presetId ?? 'pool'}-${mon.slot}`}
               type="button"
-              className={`pa-casual-mon${picked ? ' on' : ''}${sealed ? ' sealed' : ''}`}
-              disabled={!selectable || !mon.species || (full && !picked)}
-              onClick={() => onToggle?.(mon.slot)}
+              className={`pa-choose-mon${picked ? ' on' : ''}${confirmed ? ' locked' : ''}`}
+              disabled={confirmed || disabled || !mon.species || (full && !picked)}
+              aria-pressed={picked}
+              onClick={() => onToggle(mon.slot)}
             >
-              <span className="pa-casual-mon-head">
-                {mon.species ? <PokemonIcon name={mon.species} /> : <span className="ps-icon ps-icon-empty" />}
-                <b>{mon.species || '—'}</b>
+              <span className="pa-choose-art">
+                {mon.species ? <PokemonSprite name={mon.species} /> : <span className="ps-sprite-frame empty" />}
               </span>
-              {mon.types.length ? (
-                <span className="pa-casual-types">
-                  {mon.types.map(type => <TypeMark key={type} type={type} />)}
-                </span>
-              ) : null}
-              <em>{[mon.ability, mon.item].filter(Boolean).join(' · ') || 'Locked'}</em>
-              <ul>
-                {(mon.moves.length ? mon.moves : ['—']).map(move => (
-                  <li key={`${mon.slot}-${move}`}>{move}</li>
-                ))}
-              </ul>
+              <span className="pa-choose-copy">
+                <strong>{mon.species || '—'}</strong>
+                <em>{mon.species ? roleFor(mon) : 'Waiting'}</em>
+                {mon.types.length ? (
+                  <span className="pa-choose-types">
+                    {mon.types.map(type => <TypeMark key={type} type={type} />)}
+                  </span>
+                ) : null}
+                <span className="pa-choose-ability">{mon.ability || '—'}</span>
+                <ul>
+                  {(mon.moves.length ? mon.moves : ['—']).slice(0, 4).map(move => (
+                    <li key={`${mon.slot}-${move}`}>{move}</li>
+                  ))}
+                </ul>
+              </span>
+              <i>{picked ? (confirmed ? 'Locked' : 'Selected') : 'Open'}</i>
             </button>
           );
         })}
       </div>
+
+      <footer className="pa-choose-foot">
+        <p>
+          {matchPhase
+            ? confirmed
+              ? 'Locked in. Your three stay hidden until the battle starts.'
+              : 'Your rival cannot see which Pokémon you pick.'
+            : 'Pick any three from this shared six.'}
+          {matchPhase ? ` ${rivalConfirmed ? 'Opponent locked in.' : 'Opponent is choosing…'}` : ''}
+        </p>
+        {matchPhase && confirmed ? (
+          <strong className="pa-choose-ready">Ready</strong>
+        ) : matchPhase ? (
+          <button
+            type="button"
+            className="pa-btn pa-btn-gold"
+            disabled={busy || disabled || selected.length !== 3}
+            onClick={onLock}
+          >
+            Lock in
+          </button>
+        ) : null}
+      </footer>
     </section>
   );
+}
+
+export function CasualBattleReveal() {
+  return (
+    <section className="pa-match-vs" role="status" aria-live="assertive">
+      <small>Locked in</small>
+      <b>Let&apos;s battle</b>
+    </section>
+  );
+}
+
+export function CasualCountdown({ seconds }: { seconds: number }) {
+  const value = seconds > 0 ? seconds : 1;
+  return (
+    <section className="pa-match-count" role="status" aria-live="assertive">
+      <small>Match starting</small>
+      <b key={value}>{value}</b>
+    </section>
+  );
+}
+
+function roleFor(mon: CasualPreviewMon): string {
+  if (mon.moves.some(move => SETUP_MOVES.has(move))) return 'Setup';
+  if (mon.moves.some(move => /Protect|Recover|Roost|Wish|Toxic|Thunder Wave|Will-O-Wisp/.test(move))) {
+    return 'Support';
+  }
+  return 'Attacker';
+}
+
+function formatClock(totalSeconds: number): string {
+  const safe = Math.max(0, totalSeconds);
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function emptySix(): CasualPreviewMon[] {
+  return Array.from({ length: 6 }, (_, slot) => ({
+    slot,
+    species: '',
+    item: '',
+    ability: '',
+    nature: '',
+    moves: [],
+    types: [],
+  }));
 }

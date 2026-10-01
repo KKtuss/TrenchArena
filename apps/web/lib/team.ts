@@ -132,6 +132,8 @@ export interface SavedTeam {
   paste: string;
   species: string[];
   validated: boolean;
+  /** Format this team was built/saved for (Gen X Cup or Gen 9 OU). */
+  rulesetId?: string;
 }
 
 export interface SavedRoster {
@@ -400,12 +402,16 @@ export function setsFromInspection(inspection: TeamInspection): EditorSet[] {
   return slots;
 }
 
-export function teamStorageKey(playerId: string): string {
-  return `pokearena.team.${playerId}`;
+export function teamStorageKey(playerId: string, rulesetId = 'gen9ou'): string {
+  if (rulesetId === 'gen9ou') return `pokearena.team.${playerId}`;
+  return `pokearena.team.${playerId}.${rulesetId}`;
 }
 
 function newTeamId(): string {
-  return `team-${Date.now().toString(36)}`;
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `team-${crypto.randomUUID()}`;
+  }
+  return `team-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function asTeam(value: Partial<SavedTeam> | null | undefined, fallbackId: string): SavedTeam | null {
@@ -416,19 +422,34 @@ function asTeam(value: Partial<SavedTeam> | null | undefined, fallbackId: string
     paste: value.paste,
     species: Array.isArray(value.species) ? value.species.filter(item => typeof item === 'string') : [],
     validated: Boolean(value.validated),
+    ...(typeof value.rulesetId === 'string' && value.rulesetId ? { rulesetId: value.rulesetId } : {}),
   };
 }
 
-export function readRoster(playerId: string): SavedRoster {
+function dedupeTeams(teams: SavedTeam[]): SavedTeam[] {
+  const seen = new Set<string>();
+  const unique: SavedTeam[] = [];
+  for (let index = teams.length - 1; index >= 0; index -= 1) {
+    const team = teams[index]!;
+    if (seen.has(team.id)) continue;
+    seen.add(team.id);
+    unique.unshift(team);
+  }
+  return unique;
+}
+
+export function readRoster(playerId: string, rulesetId = 'gen9ou'): SavedRoster {
   if (typeof window === 'undefined') return { activeId: '', teams: [] };
-  const raw = window.localStorage.getItem(teamStorageKey(playerId));
+  const raw = window.localStorage.getItem(teamStorageKey(playerId, rulesetId));
   if (!raw) return { activeId: '', teams: [] };
   try {
     const value = JSON.parse(raw) as Partial<SavedRoster> & Partial<SavedTeam>;
     if (value && Array.isArray(value.teams)) {
-      const teams = value.teams
-        .map((team, index) => asTeam(team, `team-${index + 1}`))
-        .filter((team): team is SavedTeam => team !== null);
+      const teams = dedupeTeams(
+        value.teams
+          .map((team, index) => asTeam(team, `team-${index + 1}`))
+          .filter((team): team is SavedTeam => team !== null),
+      );
       const activeId = teams.some(team => team.id === value.activeId) ? value.activeId! : (teams[0]?.id ?? '');
       return { activeId, teams };
     }
@@ -439,45 +460,50 @@ export function readRoster(playerId: string): SavedRoster {
   }
 }
 
-export function writeRoster(playerId: string, roster: SavedRoster): void {
-  window.localStorage.setItem(teamStorageKey(playerId), JSON.stringify(roster));
+export function writeRoster(playerId: string, roster: SavedRoster, rulesetId = 'gen9ou'): void {
+  window.localStorage.setItem(teamStorageKey(playerId, rulesetId), JSON.stringify(roster));
 }
 
-export function readSavedTeam(playerId: string): SavedTeam | null {
-  const roster = readRoster(playerId);
+export function readSavedTeam(playerId: string, rulesetId = 'gen9ou'): SavedTeam | null {
+  const roster = readRoster(playerId, rulesetId);
   if (!roster.teams.length) return null;
   return roster.teams.find(team => team.id === roster.activeId) ?? roster.teams[0];
 }
 
-export function writeSavedTeam(playerId: string, team: SavedTeam): void {
-  const roster = readRoster(playerId);
-  const teams = roster.teams.some(item => item.id === team.id)
-    ? roster.teams.map(item => item.id === team.id ? team : item)
-    : [...roster.teams, team];
-  writeRoster(playerId, { activeId: team.id, teams });
+export function writeSavedTeam(playerId: string, team: SavedTeam, rulesetId = 'gen9ou'): void {
+  const roster = readRoster(playerId, rulesetId);
+  const stored = { ...team, rulesetId };
+  const teams = roster.teams.some(item => item.id === stored.id)
+    ? roster.teams.map(item => item.id === stored.id ? stored : item)
+    : [...roster.teams, stored];
+  writeRoster(playerId, { activeId: stored.id, teams }, rulesetId);
 }
 
-export function activateTeam(playerId: string, id: string): void {
-  const roster = readRoster(playerId);
+export function activateTeam(playerId: string, id: string, rulesetId = 'gen9ou'): void {
+  const roster = readRoster(playerId, rulesetId);
   if (!roster.teams.some(team => team.id === id)) return;
-  writeRoster(playerId, { ...roster, activeId: id });
+  writeRoster(playerId, { ...roster, activeId: id }, rulesetId);
 }
 
-export function addBlankTeam(playerId: string): SavedTeam {
+export function addBlankTeam(playerId: string, rulesetId = 'gen9ou'): SavedTeam {
   const team: SavedTeam = {
     id: newTeamId(),
     name: 'New team',
     paste: '',
     species: [],
     validated: false,
+    rulesetId,
   };
-  const roster = readRoster(playerId);
-  writeRoster(playerId, { activeId: team.id, teams: [...roster.teams, team] });
+  const roster = readRoster(playerId, rulesetId);
+  writeRoster(playerId, {
+    activeId: team.id,
+    teams: dedupeTeams([...roster.teams.filter(item => item.id !== team.id), team]),
+  }, rulesetId);
   return team;
 }
 
-export function clearSavedTeam(playerId: string): void {
-  const current = readSavedTeam(playerId);
+export function clearSavedTeam(playerId: string, rulesetId = 'gen9ou'): void {
+  const current = readSavedTeam(playerId, rulesetId);
   if (!current) return;
   writeSavedTeam(playerId, {
     ...current,
@@ -485,11 +511,63 @@ export function clearSavedTeam(playerId: string): void {
     paste: '',
     species: [],
     validated: false,
-  });
+  }, rulesetId);
 }
 
-export function battlePaste(playerId: string): string | undefined {
-  const saved = readSavedTeam(playerId);
+export function battlePaste(playerId: string, rulesetId = 'gen9ou'): string | undefined {
+  const saved = readSavedTeam(playerId, rulesetId);
   if (!saved?.validated || !saved.paste.trim()) return undefined;
   return saved.paste;
+}
+
+export function readAllFormatTeams(playerId: string): Array<SavedTeam & { rulesetId: string }> {
+  const out: Array<SavedTeam & { rulesetId: string }> = [];
+  for (const format of [
+    'gen1cup', 'gen2cup', 'gen3cup', 'gen4cup', 'gen5cup',
+    'gen6cup', 'gen7cup', 'gen8cup', 'gen9cup', 'gen9ou',
+  ]) {
+    const roster = readRoster(playerId, format);
+    for (const team of roster.teams) {
+      if (!team.paste.trim() && team.species.length === 0) continue;
+      out.push({ ...team, rulesetId: format });
+    }
+  }
+  return out;
+}
+
+export type LegalityTone = 'legal' | 'needs-changes' | 'illegal' | 'empty';
+
+export function teamLegalityTone(
+  filledSlots: number,
+  packed: boolean | undefined,
+  problems: readonly string[],
+): LegalityTone {
+  if (filledSlots === 0) return 'empty';
+  if (packed) return 'legal';
+  return problems.length ? 'illegal' : 'needs-changes';
+}
+
+export function classifyTeamProblems(problems: readonly string[]): {
+  pokemon: string[];
+  moves: string[];
+  abilities: string[];
+  items: string[];
+  other: string[];
+} {
+  const pokemon: string[] = [];
+  const moves: string[] = [];
+  const abilities: string[] = [];
+  const items: string[] = [];
+  const other: string[] = [];
+  for (const problem of problems) {
+    const lower = problem.toLowerCase();
+    if (/\bitem\b|held item/.test(lower)) items.push(problem);
+    else if (/\bability\b/.test(lower)) abilities.push(problem);
+    else if (/can't learn|cannot learn|learnset|\bmove\b/.test(lower)) moves.push(problem);
+    else if (/not legal|not allowed|banned|illegal species|is banned|not a gen \d+-introduced/.test(lower)) {
+      pokemon.push(problem);
+    }
+    else other.push(problem);
+  }
+  return { pokemon, moves, abilities, items, other };
 }

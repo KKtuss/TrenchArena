@@ -58,7 +58,7 @@ export interface BattleResult {
   winner?: PlayerId;
   score: readonly number[];
   turns: number;
-  /** Set when the process timeout ended the fight from pending decision state. */
+  /** Set when the current decision deadline elapsed with a player still owing a move. */
   endedBy?: 'timeout';
 }
 

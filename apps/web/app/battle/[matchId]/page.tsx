@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
+import { BattleIntro } from '@/components/motion';
 
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatRoomAmount } from '@/lib/api-client';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
@@ -24,6 +25,18 @@ export default function BattlePage() {
     setActiveMatchSubscription,
   } = useArena();
   const [error, setError] = useState<string | null>(null);
+  const introRestore = useRef<boolean | null>(null);
+  const seenOpen = useRef(connectionState === 'open');
+
+  useEffect(() => {
+    if (connectionState === 'open') seenOpen.current = true;
+  }, [connectionState]);
+
+  if (match && introRestore.current === null) {
+    introRestore.current = connectionState === 'reconnecting'
+      || match.status === 'completed'
+      || (battleView?.turn ?? 0) > 1;
+  }
 
   useEffect(() => {
     if (!playerId) return;
@@ -82,8 +95,8 @@ export default function BattlePage() {
             <span>Prize <strong>{tournament ? formatPoke(tournament.economics.prizePool) : '—'}</strong></span>
           ) : (
             <>
-              <span>Stake <strong>{casualRoom ? formatPoke(casualRoom.collateral) : '—'}</strong></span>
-              <span>Pot <strong>{casualRoom ? formatPoke(casualRoom.economics.totalPot) : '—'}</strong></span>
+              <span>Stake <strong>{casualRoom ? formatRoomAmount(casualRoom.collateral, casualRoom.rail) : '—'}</strong></span>
+              <span>Pot <strong>{casualRoom ? formatRoomAmount(casualRoom.economics.totalPot, casualRoom.rail) : '—'}</strong></span>
             </>
           )}
           <span className={`pa-live-pill ${connectionState === 'open' ? '' : 'warn'}`}>
@@ -95,6 +108,23 @@ export default function BattlePage() {
           <span className="pa-battle-id">#{matchId.slice(0, 8)}</span>
         </div>
       </header>
+
+      <BattleIntro active={Boolean(match)} restoring={introRestore.current === true}>
+        {introRestore.current ? 'Restoring this fight' : (
+          <>
+            <span>{you ? <TrainerName playerId={you} /> : 'You'}</span>
+            <b>VS</b>
+            <span>{rival ? <TrainerName playerId={rival} fallback="Rival" /> : 'Rival'}</span>
+          </>
+        )}
+      </BattleIntro>
+
+      {seenOpen.current && connectionState === 'reconnecting' ? (
+        <div className="pa-live-strip pa-restore" role="status">
+          <span className="pa-live-pill warn"><i /> Restoring</span>
+          <span>Reconnecting. This fight stays where it was.</span>
+        </div>
+      ) : null}
 
       <ErrorToast error={error} onDismiss={() => setError(null)} />
       {match?.status === 'completed' && resultHref ? (

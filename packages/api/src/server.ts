@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from 'node:stream';
 import { join } from 'node:path';
 
-import { inspectTeam, searchTeamHits, validateAndPackTeam } from '@pokearena/battle-engine';
+import { getRuleset, inspectTeam, isRulesetId, searchTeamHits, sliceTeamText, validateRulesetTeam } from '@pokearena/battle-engine';
 import {
   type BattleInstanceId,
 } from '@pokearena/tournament';
@@ -31,6 +31,8 @@ import {
 } from '@pokearena/db';
 
 import { CASUAL_START_COUNTDOWN_MS, CasualRoomService } from './casual-service';
+import { getGenerationPreset } from './generation-presets';
+import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor } from './fight-history';
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
 import { ChainEconomyService } from './chain-economy';
 import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from './demo-teams';
@@ -105,6 +107,8 @@ export interface ApiServerOptions {
   challengeCleanupMs?: number;
   rateLimits?: Partial<RateLimitConfig>;
   countdownMs?: number;
+  /** Passed through to casual battles. Defaults to the service timeout. */
+  matchTimeoutMs?: number;
   economics?: EconomicsStore;
   casual?: CasualRoomService;
   tournaments?: TournamentService;
@@ -191,6 +195,8 @@ export class ApiServer {
   private readonly network: NetworkPolicy;
   private readonly rateLimiter: ProtocolRateLimiter;
   private readonly challengeCleanupTimer: NodeJS.Timeout;
+  private readonly finalizationTimer: NodeJS.Timeout;
+  private readonly sealingTournaments = new Set<string>();
   private shuttingDown = false;
   private economicsPool: Pool | undefined;
 
@@ -239,6 +245,7 @@ export class ApiServer {
       economics: this.economics,
       allowDemoAuth: this.allowDemoAuth,
       countdownMs: options.countdownMs ?? CASUAL_START_COUNTDOWN_MS,
+      ...(options.matchTimeoutMs !== undefined ? { matchTimeoutMs: options.matchTimeoutMs } : {}),
       ...(this.chainEconomy.enabled
         ? {
             chainSettlement: {
@@ -278,6 +285,10 @@ export class ApiServer {
       this.network.challengeCleanupMs,
     );
     this.challengeCleanupTimer.unref?.();
+    this.finalizationTimer = setInterval(() => {
+      void this.sealDueFinalizations();
+    }, 1000);
+    this.finalizationTimer.unref?.();
   }
 
   attachEconomicsPool(pool: Pool): void {
@@ -292,8 +303,18 @@ export class ApiServer {
       return new ApiServer(options);
     }
     const { store, tournaments, chain, pool } = await connectPostgresEconomics();
+    const chainEconomy = new ChainEconomyService({ chainStore: chain });
     try {
-      await recoverDurableState({ economics: store, tournaments });
+      await recoverDurableState({
+        economics: store,
+        tournaments,
+        recoverSolCasualRoom: async room => {
+          if (!chainEconomy.enabled) {
+            throw new Error(`SOL room ${room.id} cannot be recovered while chain economy is disabled.`);
+          }
+          await chainEconomy.recoverCasualRoom(room, store);
+        },
+      });
     } catch (error) {
       await pool.end().catch(() => undefined);
       const detail = error instanceof RecoveryFailedError
@@ -306,7 +327,7 @@ export class ApiServer {
       economics: store,
       tournamentRepository: new PostgresTournamentRepository(tournaments),
       chainStore: chain,
-      chainEconomy: new ChainEconomyService({ chainStore: chain }),
+      chainEconomy,
     });
     server.attachEconomicsPool(pool);
     return server;
@@ -340,6 +361,7 @@ export class ApiServer {
   async close(): Promise<void> {
     this.shuttingDown = true;
     clearInterval(this.challengeCleanupTimer);
+    clearInterval(this.finalizationTimer);
     this.rateLimiter.stop();
     for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
     this.disconnectTimers.clear();
@@ -600,6 +622,7 @@ export class ApiServer {
               displayName: playerId,
               team: String(intent.metadata.team ?? ''),
             });
+            await this.maybeBeginFinalization(intent.tournamentId as TournamentId);
           } catch (error) {
             await this.chainEconomy.refundPokeEntry({
               tournamentId: intent.tournamentId!,
@@ -614,14 +637,31 @@ export class ApiServer {
             tournament: await this.serializeTournament(intent.tournamentId as TournamentId, playerId),
           }, message.requestId);
         }
+        if (result.status === 'confirmed' && intent.kind === 'sol_wager_deposit' && intent.roomId) {
+          const side = Number(intent.metadata?.side) === 1 ? 'opponent' : 'creator';
+          try {
+            this.casual.markSolDeposit(intent.roomId, side);
+            this.broadcastCasual(intent.roomId);
+          } catch {
+            // The on-chain deposit stands even if the room is already gone.
+          }
+        }
         void this.broadcastArenaSnapshots();
         return;
       }
       case 'casual.create': {
         this.rateLimiter.take(this.rateLimiter.casualCreate, `player:${playerId}:casual.create`);
-        if (this.chainEconomy.enabled) {
+        const stake = message.stake ?? 'mock';
+        if (stake === 'real') {
+          if (!this.chainEconomy.enabled) {
+            throw new Error('Real stake is unavailable. Chain economy is not enabled on this server.');
+          }
           await this.chainEconomy.assertCanPlay(playerId);
           const lamports = message.collateralLamports ?? message.collateral;
+          if (!Number.isSafeInteger(lamports) || lamports <= 0) {
+            throw new Error('Real stake must be a positive lamport amount.');
+          }
+          await this.assertSolStakeAvailable(playerId, lamports);
           const room = await this.casual.createRoom({
             creatorId: playerId,
             roomType: message.roomType,
@@ -673,22 +713,35 @@ export class ApiServer {
           recentResults: this.casual.listRecentResults(10, playerId),
         }, message.requestId);
         return;
+      case 'history.list': {
+        const cursor: FightHistoryCursor | undefined = message.beforeCompletedAt !== undefined && message.beforeId
+          ? { completedAt: message.beforeCompletedAt, id: message.beforeId }
+          : undefined;
+        const page = await this.fightHistory(playerId, message.limit ?? 20, cursor);
+        this.send(connection, { type: 'history.list', ...page }, message.requestId);
+        return;
+      }
       case 'casual.preview':
         this.send(connection, {
           type: 'casual.preview',
-          economics: this.chainEconomy.enabled
+          economics: message.stake === 'real' && this.chainEconomy.enabled
             ? { ...this.chainEconomy.previewCasual(message.collateral) }
             : previewCasual(message.collateral),
         }, message.requestId);
         return;
       case 'casual.accept': {
-        if (this.chainEconomy.enabled) {
+        const existing = this.casual.getRoom(message.roomId);
+        if (existing.rail === 'sol_chain') {
+          if (!this.chainEconomy.enabled) {
+            throw new Error('Real stake is unavailable. Chain economy is not enabled on this server.');
+          }
           await this.chainEconomy.assertCanPlay(playerId);
+          await this.assertSolStakeAvailable(playerId, existing.collateral);
         }
         const room = await this.casual.acceptRoom(message.roomId, playerId);
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
-        if (this.chainEconomy.enabled) {
+        if (room.rail === 'sol_chain') {
           const intent = await this.chainEconomy.createSolWagerDepositIntent({
             roomId: room.id,
             playerId,
@@ -708,6 +761,39 @@ export class ApiServer {
         this.send(connection, { type: 'casual.state', room }, message.requestId);
         this.broadcastCasual(room.id);
         void this.broadcastArenaSnapshots();
+        return;
+      }
+      case 'casual.stake': {
+        const room = this.casual.getRoom(message.roomId, playerId);
+        if (room.rail !== 'sol_chain') {
+          throw new Error('This challenge is a mock fight. No stake can be locked.');
+        }
+        if (!this.chainEconomy.enabled) {
+          throw new Error('Real stake is unavailable. Chain economy is not enabled on this server.');
+        }
+        if (room.status === 'cancelled' || room.status === 'completed' || room.status === 'battling') {
+          throw new Error('This match can no longer lock a stake.');
+        }
+        const side = room.creatorId === playerId ? 0 : room.opponentId === playerId ? 1 : null;
+        if (side === null) throw new Error('Accept the challenge before locking a stake.');
+        if (side === 0 && room.deposits?.creator) throw new Error('Your stake is already locked.');
+        if (side === 1 && room.deposits?.opponent) throw new Error('Your stake is already locked.');
+        await this.assertSolStakeAvailable(playerId, room.collateral);
+        const intent = await this.chainEconomy.createSolWagerDepositIntent({
+          roomId: room.id,
+          playerId,
+          side,
+          collateralLamports: room.collateral,
+        });
+        this.send(connection, {
+          type: 'tx.intent',
+          intent: {
+            intentId: intent.intentId,
+            serializedTx: intent.serializedTx,
+            kind: 'sol_wager_deposit',
+            economics: intent.economics,
+          },
+        }, message.requestId);
         return;
       }
       case 'casual.ready': {
@@ -784,9 +870,12 @@ export class ApiServer {
           chainQuoteId = quoted.quote.quoteId;
           entryFee = 0;
         }
+        const rulesetId = message.ruleset ?? 'gen9ou';
+        if (!isRulesetId(rulesetId)) throw new Error('Unknown tournament ruleset.');
         const tournament = await this.tournaments.createTournament({
           title: message.title ?? 'PokeArena Open',
           format: 'gen9ou',
+          ruleset: rulesetId,
           maxPlayers: message.maxPlayers ?? 4,
           matchTimeoutMs: 300_000,
           hostId: playerId,
@@ -818,8 +907,11 @@ export class ApiServer {
       case 'tournament.join': {
         const tournamentId = message.tournamentId as TournamentId;
         const targetTournament = await this.tournaments.getTournament(tournamentId);
-        const team = this.teamForTournamentJoin(playerId, message.team);
-        validateAndPackTeam(team, 'gen9ou');
+        const ruleset = getRuleset(targetTournament.ruleset);
+        const team = ruleset.teamMode === 'preset-6-choose-3'
+          ? this.presetTeamForJoin(ruleset.presetId, message.slots)
+          : this.customTeamForJoin(playerId, message.team, ruleset.id);
+        validateRulesetTeam(team, ruleset.id);
         if (this.chainEconomy.enabled) {
           await this.chainEconomy.assertCanPlay(playerId);
           if (!message.playerPokeAta) {
@@ -855,8 +947,51 @@ export class ApiServer {
             displayName: playerId,
             team,
           });
+          await this.maybeBeginFinalization(tournamentId);
         }
         connection.tournamentIds.add(tournamentId);
+        this.send(connection, {
+          type: 'tournament.state',
+          tournament: await this.serializeTournament(tournamentId, playerId),
+        }, message.requestId);
+        await this.broadcastTournament(tournamentId);
+        void this.broadcastArenaSnapshots();
+        return;
+      }
+      case 'tournament.updateTeam': {
+        const tournamentId = message.tournamentId as TournamentId;
+        const tournament = await this.tournaments.getTournament(tournamentId);
+        const ruleset = getRuleset(tournament.ruleset);
+        if (ruleset.teamMode !== 'custom') {
+          throw new Error('This tournament uses the shared preset, not a custom team.');
+        }
+        validateRulesetTeam(message.team, ruleset.id);
+        await this.tournaments.updateRegisteredTeam(tournamentId, playerId, message.team);
+        this.send(connection, {
+          type: 'tournament.state',
+          tournament: await this.serializeTournament(tournamentId, playerId),
+        }, message.requestId);
+        await this.broadcastTournament(tournamentId);
+        return;
+      }
+      case 'tournament.lockTeam': {
+        const tournamentId = message.tournamentId as TournamentId;
+        await this.tournaments.lockRegisteredTeam(tournamentId, playerId);
+        this.send(connection, {
+          type: 'tournament.state',
+          tournament: await this.serializeTournament(tournamentId, playerId),
+        }, message.requestId);
+        await this.broadcastTournament(tournamentId);
+        return;
+      }
+      case 'tournament.leave': {
+        const tournamentId = message.tournamentId as TournamentId;
+        const tournament = await this.tournaments.getTournament(tournamentId);
+        if (tournament.finalizesAt !== undefined && Date.now() >= tournament.finalizesAt) {
+          throw new Error('Team finalization has already closed.');
+        }
+        await this.tournaments.withdrawPlayer(tournamentId, playerId);
+        await this.releaseTournamentEntry(tournament, playerId);
         this.send(connection, {
           type: 'tournament.state',
           tournament: await this.serializeTournament(tournamentId, playerId),
@@ -869,6 +1004,9 @@ export class ApiServer {
         const tournamentId = message.tournamentId as TournamentId;
         await this.requireTournamentHost(playerId, tournamentId);
         const beforeStart = await this.tournaments.getTournament(tournamentId);
+        if (beforeStart.finalizesAt !== undefined && Date.now() < beforeStart.finalizesAt) {
+          throw new Error('Team finalization is still open.');
+        }
         if (this.chainEconomy.enabled) {
           const registered = beforeStart.players
             .filter(player => player.status === 'registered')
@@ -937,10 +1075,8 @@ export class ApiServer {
               casualRoom.countdownEndsAt && Date.now() < casualRoom.countdownEndsAt,
             );
             if (!waiting) {
-              if ((casualRoom.ruleset ?? 'casual') !== 'casual' && this.chainEconomy.enabled) {
-                await this.chainEconomy.prepareCasualStart(casualRoom.id);
-              }
-              await this.casual.startBattle(casualRoom.id, playerId);
+              const chargeFee = (casualRoom.ruleset ?? 'casual') !== 'casual' && this.chainEconomy.enabled;
+              await this.startChargedCasualBattle(casualRoom.id, playerId, chargeFee);
             }
           } else if (casualRoom.status === 'drafting') {
             const bothPicked = Boolean(
@@ -948,10 +1084,7 @@ export class ApiServer {
               && casualRoom.teamPreview.every(preview => preview.confirmed),
             );
             if (bothPicked) {
-              if (this.chainEconomy.enabled) {
-                await this.chainEconomy.prepareCasualStart(casualRoom.id);
-              }
-              await this.casual.startBattle(casualRoom.id, playerId);
+              await this.startChargedCasualBattle(casualRoom.id, playerId, this.chainEconomy.enabled);
             }
           }
           connection.matchIds.add(matchId);
@@ -983,14 +1116,16 @@ export class ApiServer {
         return;
       case 'team.inspect':
         this.rateLimiter.take(this.rateLimiter.teamInspect, `player:${playerId}:team.inspect`);
+        if (message.ruleset && !isRulesetId(message.ruleset)) throw new Error('Unknown ruleset.');
         this.send(connection, {
           type: 'team.inspect',
-          inspection: inspectTeam(message.team, 'gen9ou'),
+          inspection: inspectTeam(message.team, 'gen9ou', message.ruleset),
         }, message.requestId);
         return;
       case 'team.search': {
         this.rateLimiter.take(this.rateLimiter.teamSearch, `player:${playerId}:team.search`);
-        const found = searchTeamHits(message.kind, message.query, message.species);
+        if (message.ruleset && !isRulesetId(message.ruleset)) throw new Error('Unknown ruleset.');
+        const found = searchTeamHits(message.kind, message.query, message.species, message.ruleset);
         this.send(connection, {
           type: 'team.search',
           results: found.hits.map(hit => hit.name),
@@ -1051,6 +1186,18 @@ export class ApiServer {
     }
   }
 
+  private async assertSolStakeAvailable(playerId: string, lamports: number): Promise<void> {
+    if (!this.chainEconomy.client) {
+      throw new Error('Real stake is unavailable. The chain client is not configured.');
+    }
+    const { PublicKey } = await import('@solana/web3.js');
+    const free = await this.chainEconomy.client.getSolBalance(new PublicKey(playerId));
+    const needed = BigInt(lamports) + 10_000n;
+    if (free < needed) {
+      throw new Error('Insufficient SOL balance for this stake.');
+    }
+  }
+
   private async buildArenaSnapshot(playerId: string): Promise<ArenaSnapshot> {
     const base: ArenaSnapshot = {
       wallet: await this.economics.ensureWallet(playerId),
@@ -1081,6 +1228,56 @@ export class ApiServer {
     }
   }
 
+  private async fightHistory(playerId: string, limit: number, before?: FightHistoryCursor) {
+    const casual = this.casual.listCompletedFightRecords(playerId)
+      .map(record => casualFightEntry(record, playerId));
+    const cups = await this.tournamentHistory(playerId);
+    return pageFightHistory([...casual, ...cups], limit, before);
+  }
+
+  private async tournamentHistory(playerId: string) {
+    const tournaments = await this.tournaments.listTournaments();
+    const entries = [];
+    for (const tournament of tournaments) {
+      const playing = tournament.players.some(player => player.id === playerId && player.status === 'registered');
+      if (!playing) continue;
+      const matches = await this.tournaments.getBracket(tournament.id);
+      const mine = matches.filter(match => (
+        (match.player1 === playerId || match.player2 === playerId)
+        && (match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied')
+        && typeof match.completedAt === 'number'
+      ));
+      const last = [...mine].sort((a, b) => (
+        b.round - a.round || (b.completedAt ?? 0) - (a.completedAt ?? 0)
+      ))[0];
+      const cupSettled = tournament.status === 'completed' && typeof tournament.winner === 'string';
+      const symbol = tournament.rail === 'sol_chain' ? 'SOL' as const : 'POKE' as const;
+      const prize = symbol === 'SOL'
+        ? (tournament.prizeLamports ?? 0)
+        : previewTournament(tournament.entryFee, tournament.players.length).prizePool;
+      for (const match of mine) {
+        const opponentId = match.player1 === playerId ? match.player2 : match.player1;
+        if (!opponentId || match.completedAt === undefined) continue;
+        if (match.status !== 'completed' && match.status !== 'forfeited' && match.status !== 'tied') continue;
+        entries.push(tournamentFightEntry({
+          playerId,
+          matchId: match.id,
+          tournamentId: tournament.id,
+          opponentId,
+          status: match.status,
+          ...(match.winner ? { winnerId: match.winner } : {}),
+          completedAt: match.completedAt,
+          entryFee: symbol === 'SOL' ? (tournament.entryAtoms ?? tournament.entryFee) : tournament.entryFee,
+          prize,
+          symbol,
+          carriesCupBalance: cupSettled && last?.id === match.id,
+          playerWonCup: tournament.winner === playerId,
+        }));
+      }
+    }
+    return entries;
+  }
+
   private async listTournamentSummaries(): Promise<TournamentSummary[]> {
     const tournaments = await this.tournaments.listTournaments();
     return tournaments.map(tournament => {
@@ -1089,6 +1286,9 @@ export class ApiServer {
         id: tournament.id,
         title: tournament.title,
         format: tournament.format,
+        ruleset: tournament.ruleset ?? 'gen9ou',
+        createdAt: tournament.createdAt,
+        ...(tournament.finalizesAt === undefined ? {} : { finalizesAt: tournament.finalizesAt }),
         maxPlayers: tournament.maxPlayers,
         status: tournament.status,
         playerCount,
@@ -1239,11 +1439,114 @@ export class ApiServer {
     }
   }
 
+  private async maybeBeginFinalization(tournamentId: TournamentId): Promise<void> {
+    const tournament = await this.tournaments.getTournament(tournamentId);
+    const ruleset = getRuleset(tournament.ruleset);
+    if (ruleset.teamMode !== 'custom') return;
+    const registered = tournament.players.filter(player => player.status === 'registered').length;
+    if (registered !== tournament.maxPlayers || tournament.finalizesAt !== undefined) return;
+    await this.tournaments.beginTeamFinalization(tournamentId);
+  }
+
+  private async sealDueFinalizations(): Promise<void> {
+    if (this.shuttingDown) return;
+    const now = Date.now();
+    let due: TournamentId[] = [];
+    try {
+      due = (await this.tournaments.listTournaments())
+        .filter(tournament => (
+          tournament.status === 'registration'
+          && tournament.finalizesAt !== undefined
+          && tournament.finalizesAt <= now
+        ))
+        .map(tournament => tournament.id);
+    } catch {
+      return;
+    }
+    for (const tournamentId of due) {
+      await this.sealFinalization(tournamentId);
+    }
+  }
+
+  private async sealFinalization(tournamentId: TournamentId): Promise<void> {
+    if (this.sealingTournaments.has(tournamentId)) return;
+    this.sealingTournaments.add(tournamentId);
+    try {
+      let tournament = await this.tournaments.getTournament(tournamentId);
+      if (
+        tournament.status !== 'registration'
+        || tournament.finalizesAt === undefined
+        || tournament.finalizesAt > Date.now()
+      ) return;
+      const ruleset = getRuleset(tournament.ruleset);
+      for (const player of tournament.players.filter(candidate => candidate.status === 'registered')) {
+        try {
+          validateRulesetTeam(player.team, ruleset.id);
+          if (!player.teamLocked) await this.tournaments.lockRegisteredTeam(tournamentId, player.id);
+        } catch {
+          await this.tournaments.withdrawPlayer(tournamentId, player.id, { keepFinalization: true });
+          await this.releaseTournamentEntry(tournament, player.id);
+        }
+      }
+      tournament = await this.tournaments.getTournament(tournamentId);
+      const registered = tournament.players.filter(player => player.status === 'registered');
+      const count = registered.length;
+      const playable = count >= 2 && (count & (count - 1)) === 0;
+      if (!playable) {
+        if (this.chainEconomy.enabled) {
+          for (const player of registered) {
+            const intent = await this.chainEconomy.getIntentByScope(
+              'poke_entry_deposit',
+              `${tournamentId}:${player.id}`,
+            );
+            if (intent?.status === 'confirmed') {
+              await this.chainEconomy.refundPokeEntry({
+                tournamentId,
+                playerId: player.id,
+                playerPokeAta: String(intent.metadata.playerPokeAta),
+              });
+            }
+          }
+        }
+        for (const player of registered) await this.releaseTournamentEntry(tournament, player.id);
+        await this.tournaments.cancelTournament(tournamentId);
+        await this.broadcastTournament(tournamentId);
+        return;
+      }
+      const started = await this.tournaments.startTournament(tournamentId);
+      await this.startReadyMatches(started.id);
+      await this.broadcastTournament(started.id);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+    } finally {
+      this.sealingTournaments.delete(tournamentId);
+    }
+  }
+
+  private async releaseTournamentEntry(tournament: { id: string; rail?: string; entryFee: number }, playerId: string): Promise<void> {
+    if (tournament.rail === 'sol_chain' || tournament.entryFee <= 0) return;
+    await this.economics.release(`tournament:${tournament.id}:${playerId}`);
+  }
+
   private async serializeTournament(tournamentId: TournamentId, viewerId: string): Promise<unknown> {
     const tournament = await this.tournaments.getTournament(tournamentId);
     const playerCount = tournament.players.filter(player => player.status === 'registered').length;
+    const ruleset = getRuleset(tournament.ruleset);
+    const preset = ruleset.presetId ? getGenerationPreset(ruleset.presetId) : undefined;
     return {
       ...publicTournamentForViewer(tournament, viewerId),
+      ruleset: ruleset.id,
+      ...(preset ? {
+        preset: {
+          id: preset.id,
+          name: preset.name,
+          pokemon: preset.pokemon.map(mon => ({
+            ...mon,
+            moves: [...mon.moves],
+            types: [...mon.types],
+          })),
+        },
+      } : {}),
       hostId: tournament.hostId,
       bracket: await this.tournaments.getBracket(tournamentId),
       entryFee: tournament.entryFee,
@@ -1251,6 +1554,21 @@ export class ApiServer {
       payout: this.tournamentPayouts.get(tournamentId)
         ?? await this.economics.getSettlement(`tournament:${tournamentId}`),
     };
+  }
+
+  private customTeamForJoin(playerId: string, team: string | undefined, rulesetId: string): string {
+    if (rulesetId !== 'gen9ou' && !team?.trim()) {
+      throw new Error('Bring a team built for this format.');
+    }
+    return this.teamForTournamentJoin(playerId, team);
+  }
+
+  private presetTeamForJoin(presetId: string | undefined, slots: number[] | undefined): string {
+    if (!presetId) throw new Error('This tournament has no shared preset.');
+    if (!slots || slots.length !== 3 || new Set(slots).size !== 3) {
+      throw new Error('Choose exactly three different Pokémon from the shared six.');
+    }
+    return sliceTeamText(getGenerationPreset(presetId).paste, slots);
   }
 
   private teamForTournamentJoin(playerId: string, team: string | undefined): string {
@@ -1522,6 +1840,41 @@ export class ApiServer {
     }
   }
 
+  /**
+   * Charge the match fee only when `chargeFee` is set, then start.
+   * A failure after that fee returns the vault. A failure before the fee
+   * leaves the wager refundable.
+   */
+  private async startChargedCasualBattle(
+    roomId: string,
+    playerId: string,
+    chargeFee: boolean,
+    team?: string,
+  ) {
+    if (chargeFee) await this.chainEconomy.prepareCasualStart(roomId);
+    try {
+      return await this.casual.startBattle(roomId, playerId, team);
+    } catch (error) {
+      if (chargeFee) {
+        const latest = this.casual.getRoom(roomId);
+        if (
+          latest.rail === 'sol_chain'
+          && latest.status !== 'battling'
+          && latest.status !== 'completed'
+        ) {
+          try {
+            await this.casual.releaseUnstartedSolRoom(roomId, playerId);
+          } catch (releaseError) {
+            const releaseMessage = releaseError instanceof Error ? releaseError.message : String(releaseError);
+            const startMessage = error instanceof Error ? error.message : String(error);
+            throw new Error(`SOL stake release failed after battle start failed: ${releaseMessage}. Start error: ${startMessage}`);
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
   private async startCasualBattle(
     connection: ClientConnection,
     roomId: string,
@@ -1536,10 +1889,12 @@ export class ApiServer {
         before.teamPreview?.length === 2
         && before.teamPreview.every(preview => preview.confirmed),
       ));
-    if (this.chainEconomy.enabled && launchingFight) {
-      await this.chainEconomy.prepareCasualStart(roomId);
-    }
-    const room = await this.casual.startBattle(roomId, playerId, team);
+    const room = await this.startChargedCasualBattle(
+      roomId,
+      playerId,
+      launchingFight && before.rail === 'sol_chain',
+      team,
+    );
     if (room.status === 'battling') {
       connection.matchIds.add(room.matchId);
     }
@@ -1633,6 +1988,10 @@ export class ApiServer {
       if (room.status === 'cancelled' || room.status === 'completed') continue;
       connection.casualRoomIds.add(room.id);
       this.ensureCasualSubscription(room.id);
+      this.send(connection, {
+        type: 'casual.state',
+        room: this.casual.getRoom(room.id, playerId),
+      });
       if (room.status === 'battling' || room.status === 'starting') {
         connection.matchIds.add(room.matchId);
       }
@@ -1731,18 +2090,18 @@ export class ApiServer {
   }
 
   private async onPlayerDisconnected(playerId: string): Promise<void> {
-    let liveFight = false;
+    let needsGrace = false;
     for (const room of this.casual.listRoomsForPlayer(playerId)) {
-      if (room.status === 'open' || room.status === 'full' || room.status === 'ready' || room.status === 'drafting') {
-        try {
-          await this.casual.cancelRoom(room.id, playerId);
-          this.broadcastCasual(room.id);
-          await this.broadcastArenaSnapshots();
-        } catch {
-          // Duplicate close must not refund twice or throw.
-        }
-      } else if (room.status === 'battling' || room.status === 'starting') {
-        liveFight = true;
+      if (
+        room.status === 'pending_deposit'
+        || room.status === 'open'
+        || room.status === 'full'
+        || room.status === 'ready'
+        || room.status === 'drafting'
+        || room.status === 'battling'
+        || room.status === 'starting'
+      ) {
+        needsGrace = true;
       }
     }
     for (const tournament of await this.tournaments.listTournaments()) {
@@ -1750,11 +2109,11 @@ export class ApiServer {
       for (const match of await this.tournaments.getBracket(tournament.id)) {
         if (match.player1 !== playerId && match.player2 !== playerId) continue;
         if (match.status === 'active' || match.status === 'battle-created') {
-          liveFight = true;
+          needsGrace = true;
         }
       }
     }
-    if (liveFight) this.scheduleDisconnectForfeit(playerId);
+    if (needsGrace) this.scheduleDisconnectForfeit(playerId);
   }
 
   private scheduleDisconnectForfeit(playerId: string): void {
@@ -1777,6 +2136,22 @@ export class ApiServer {
   private async settleDisconnectForfeit(playerId: string): Promise<void> {
     if (this.sessionsByPlayer.has(playerId) || this.shuttingDown) return;
     for (const room of this.casual.listRoomsForPlayer(playerId)) {
+      if (
+        room.status === 'pending_deposit'
+        || room.status === 'open'
+        || room.status === 'full'
+        || room.status === 'ready'
+        || room.status === 'drafting'
+      ) {
+        try {
+          const cancelled = await this.casual.cancelRoom(room.id, playerId);
+          this.broadcastCasual(cancelled.id);
+          await this.broadcastArenaSnapshots();
+        } catch {
+          // Duplicate close must not refund twice or throw.
+        }
+        continue;
+      }
       let current = room;
       if (current.status === 'starting') {
         for (let attempt = 0; attempt < 20 && current.status === 'starting'; attempt += 1) {

@@ -15,6 +15,7 @@ export function publicTournamentPlayer(
     eligible: player.eligible,
     status: player.status,
     registrationOrder: player.registrationOrder,
+    ...(player.teamLocked ? { teamLocked: true } : {}),
   };
   if (player.id === viewerId) return { ...visible, team: player.team };
   return visible;

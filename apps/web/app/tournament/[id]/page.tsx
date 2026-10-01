@@ -4,17 +4,20 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
+import { CasualSelectBoard } from '@/components/casual-select';
 import { ErrorToast } from '@/components/error-toast';
-import { Gen1CupArt } from '@/components/gen1-cup-art';
+import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { MatchDetailDialog, TournamentBracket } from '@/components/tournament-bracket';
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
+import { formatById } from '@/lib/tournament-formats';
 import {
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
+  formatCountdown,
   previewTreasuryPrize,
 } from '@/lib/tournament-schedule';
 import {
@@ -128,12 +131,25 @@ export default function TournamentDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<SavedTeam | null>(null);
+  const [pickedSlots, setPickedSlots] = useState<number[]>([]);
   const [selected, setSelected] = useState<BracketMatch | null>(null);
   const [boardPreview, setBoardPreview] = useState<'live' | 1 | 2 | 3 | 4 | 'champion'>('live');
+  const [now, setNow] = useState<number | null>(null);
+
+  const rulesetId = tournament?.ruleset || tournament?.format || 'gen9ou';
+  const formatCard = formatById(rulesetId);
+  const isCasualPreset = formatCard?.teamMode === 'preset-6-choose-3';
 
   useEffect(() => {
-    setSaved(playerId ? readSavedTeam(playerId) : null);
-  }, [playerId]);
+    setSaved(playerId ? readSavedTeam(playerId, rulesetId) : null);
+  }, [playerId, rulesetId]);
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!connected) return;
@@ -203,26 +219,53 @@ export default function TournamentDetailPage() {
     : formatPoke(prizePool);
   const myAction = myMatch ? matchActionLabel(myMatch, playerId) : null;
   const description = tournament
-    ? `Single elimination ${formatName(tournament.format)} cup. ${maxPlayers} trainers. Best of 1. Treasury-funded prize.`
+    ? `${formatCard?.title ?? formatName(rulesetId)} · ${formatCard?.region ?? 'Format'} · ${formatCard?.restriction ?? 'Legal'}. ${formatCard?.teamModeLabel ?? 'Custom team'}. ${maxPlayers} trainers. Best of 1.`
     : 'Single elimination cup with a live bracket, compact rules, and a treasury-funded prize.';
-  const isCustomTeamTournament = tournament?.format === 'gen9ou';
+  const isCustomTeamTournament = !isCasualPreset;
   const hasLegalSavedTeam = Boolean(saved?.validated && saved.paste.trim());
-  const canJoinTournament = !isCustomTeamTournament || hasLegalSavedTeam;
+  const casualReady = pickedSlots.length === 3;
+  const canJoinTournament = isCasualPreset ? casualReady : (!isCustomTeamTournament || hasLegalSavedTeam);
 
   const joinCup = () => void act(async () => {
     if (!playerId) throw new Error('Connect a wallet before joining.');
-    if (isCustomTeamTournament && !hasLegalSavedTeam) {
-      throw new Error('No legal saved team.');
+    if (isCasualPreset && !casualReady) {
+      throw new Error('Choose exactly three Pokémon from the shared six.');
     }
-    const paste = battlePaste(playerId);
+    if (isCustomTeamTournament && !hasLegalSavedTeam) {
+      throw new Error('No legal saved team for this format.');
+    }
+    const paste = isCasualPreset ? undefined : battlePaste(playerId, rulesetId);
     const response = await client.request({
       type: 'tournament.join',
       tournamentId,
       ...(paste ? { team: paste } : {}),
+      ...(isCasualPreset ? { slots: pickedSlots } : {}),
     });
     if (response.type === 'tournament.state') {
       setTournament(response.tournament as TournamentDetail);
     }
+  });
+
+  const pushTeam = () => void act(async () => {
+    if (!saved?.validated || !saved.paste.trim()) {
+      throw new Error('Save a legal team for this format before updating your entry.');
+    }
+    const response = await client.request({
+      type: 'tournament.updateTeam',
+      tournamentId,
+      team: saved.paste,
+    });
+    if (response.type === 'tournament.state') setTournament(response.tournament as TournamentDetail);
+  });
+
+  const lockTeam = () => void act(async () => {
+    const response = await client.request({ type: 'tournament.lockTeam', tournamentId });
+    if (response.type === 'tournament.state') setTournament(response.tournament as TournamentDetail);
+  });
+
+  const leaveCup = () => void act(async () => {
+    const response = await client.request({ type: 'tournament.leave', tournamentId });
+    if (response.type === 'tournament.state') setTournament(response.tournament as TournamentDetail);
   });
 
   const startCup = () => void act(async () => {
@@ -237,14 +280,20 @@ export default function TournamentDetailPage() {
       entryFee,
       tournament.economics?.playerCount ?? Math.max(players.length, 1),
     );
-    const statusLabel = tournament.status.toUpperCase();
+    const finalizing = tournament.finalizesAt != null && (now == null || now < tournament.finalizesAt);
+    const me = players.find(player => player.id === playerId);
+    const teamLocked = Boolean(me?.teamLocked);
+    const statusLabel = finalizing ? 'FINALIZING' : tournament.status.toUpperCase();
+    const lockLabel = tournament.finalizesAt == null || now == null
+      ? '--:--'
+      : formatCountdown(tournament.finalizesAt, now);
     return (
       <div className="pa-page">
         <ErrorToast error={error} onDismiss={() => setError(null)} />
         <section className="pa-signup">
           <div className="pa-signup-rail">
             <div className="pa-signup-rail-identity">
-              <span>{formatName(tournament.format)}</span>
+              <span>{formatCard?.title ?? formatName(rulesetId)}</span>
               <i aria-hidden />
               <span>{maxPlayers} PLAYER</span>
               <i aria-hidden />
@@ -314,12 +363,49 @@ export default function TournamentDetailPage() {
                   >
                     Join tournament · {formatPoke(entryFee)}
                   </button>
+                ) : !registered && !isCasualPreset ? (
+                  <Link className="pa-btn pa-btn-primary" href={`/teams/builder?ruleset=${rulesetId}`}>
+                    {rulesetId === 'gen9ou' ? 'Build Gen 9 OU Team' : `Build Gen ${formatCard?.generation ?? ''} Team`}
+                  </Link>
                 ) : !registered ? (
                   <button type="button" className="pa-btn pa-btn-primary" disabled>
-                    No legal saved team
+                    Choose 3 from the shared six
                   </button>
                 ) : null}
-                {playerId && tournament.hostId === playerId ? (
+                {registered && finalizing && !isCasualPreset ? (
+                  <>
+                    <p className="pa-cup-note">
+                      Team finalization · locks in {lockLabel}. Everyone has the same deadline.
+                      {teamLocked ? ' Your team is locked.' : ' You can still edit.'}
+                    </p>
+                    {!teamLocked ? (
+                      <>
+                        <Link className="pa-btn pa-btn-surface" href={`/teams/builder?ruleset=${rulesetId}&tournament=${tournamentId}`}>
+                          Edit team
+                        </Link>
+                        <button type="button" className="pa-btn pa-btn-surface" disabled={busy || !hasLegalSavedTeam} onClick={pushTeam}>
+                          Update entry
+                        </button>
+                        <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={lockTeam}>
+                          Lock team
+                        </button>
+                      </>
+                    ) : (
+                      <p className="pa-cup-note">Locked early. The bracket waits for the shared timer.</p>
+                    )}
+                  </>
+                ) : null}
+                {registered && !finalizing && tournament.status === 'registration' ? (
+                  <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
+                    Leave tournament
+                  </button>
+                ) : null}
+                {registered && finalizing ? (
+                  <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
+                    Leave before lock
+                  </button>
+                ) : null}
+                {playerId && tournament.hostId === playerId && !finalizing ? (
                   <button
                     type="button"
                     className="pa-btn pa-btn-gold"
@@ -330,9 +416,17 @@ export default function TournamentDetailPage() {
                     Start tournament
                   </button>
                 ) : null}
-                {!registered && walletConnected && hasLegalSavedTeam ? (
+                {!registered && walletConnected && isCasualPreset ? (
+                  <p className="pa-cup-note">Same 6 for both players • Choose 3</p>
+                ) : null}
+                {!registered && walletConnected && !isCasualPreset && hasLegalSavedTeam ? (
                   <p className="pa-cup-note">
                     Bringing {saved?.name ?? 'your saved team'}.
+                  </p>
+                ) : null}
+                {!registered && walletConnected && !isCasualPreset && !hasLegalSavedTeam ? (
+                  <p className="pa-cup-note">
+                    <Link href={`/teams/builder?ruleset=${rulesetId}`}>Build a {formatCard?.title ?? 'format'} team</Link>
                   </p>
                 ) : null}
               </div>
@@ -347,7 +441,13 @@ export default function TournamentDetailPage() {
                   <ul className="pa-signup-rules">
                     <li>
                       <strong><SignupIcon name="users" /> Teams</strong>
-                      <span>Each match is one {formatName(tournament.format)} singles battle. Bring six legal Pokémon. Species stay hidden until team preview.</span>
+                      <span>
+                        {isCasualPreset
+                          ? 'Same 6 for both players • Choose 3. Your three stay hidden until the match starts.'
+                          : finalizing
+                            ? 'The field is full. Five minutes to edit a legal team. Opponent teams stay hidden. The bracket starts when the timer ends.'
+                            : `Each match is one ${formatCard?.title ?? formatName(rulesetId)} singles battle. A legal team is required before you can join.`}
+                      </span>
                     </li>
                     <li>
                       <strong><SignupIcon name="clock" /> Timeouts</strong>
@@ -361,10 +461,37 @@ export default function TournamentDetailPage() {
                 </div>
               </div>
               <div className="pa-signup-art">
-                <Gen1CupArt />
+                {formatCard?.id === 'gen1cup' || !formatCard ? (
+                  <Gen1CupArt />
+                ) : (
+                  <FormatStage trainer={formatCard.trainer} pokemon={formatCard.pokemon} />
+                )}
               </div>
             </div>
           </div>
+          {isCasualPreset && tournament.preset ? (
+            <CasualSelectBoard
+              yours={{
+                playerId: playerId ?? 'you',
+                presetId: tournament.preset.id,
+                presetName: tournament.preset.name,
+                pokemon: tournament.preset.pokemon,
+                confirmed: false,
+              }}
+              selected={pickedSlots}
+              confirmed={false}
+              rivalConfirmed={false}
+              revealed={false}
+              disabled={!walletConnected || registered || busy}
+              onToggle={slot => {
+                setPickedSlots(current => (
+                  current.includes(slot)
+                    ? current.filter(item => item !== slot)
+                    : current.length >= 3 ? current : [...current, slot]
+                ));
+              }}
+            />
+          ) : null}
           <div className="pa-signup-field">
             <header>
               <h2><SignupIcon name="users" /> Field · {players.length} / {maxPlayers}</h2>
@@ -398,7 +525,6 @@ export default function TournamentDetailPage() {
     <div className="pa-page is-cup-hub">
       <header className="pa-cup-head">
         <div className="pa-cup-head-copy">
-          <p className="pa-kicker"><i /> — {formatName(tournament?.format)} · single elimination —</p>
           <div className="pa-cup-title-row">
             <h1>{tournament?.title ?? 'PokeArena Cup'}</h1>
             <span className={`pa-cup-badge is-${badge.toLowerCase()}`}>{badge}</span>
@@ -475,13 +601,15 @@ export default function TournamentDetailPage() {
       ) : null}
       {!registered && canRegister && walletConnected ? (
         <p className="pa-cup-note">
-          {saved?.validated
-            ? `Bringing ${saved.name}`
-            : isDemoAuthEnabled()
-              ? (saved
-                ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
-                : 'No saved protocol. The demo team will be brought.')
-              : 'A legal Gen 9 OU team is required to register.'}
+              {isCasualPreset
+                ? 'Same 6 for both players • Choose 3. Selections stay private until the match.'
+                : saved?.validated
+                  ? `Bringing ${saved.name}`
+                  : rulesetId === 'gen9ou' && isDemoAuthEnabled()
+                    ? (saved
+                      ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
+                      : 'No saved protocol. The demo team will be brought.')
+                    : `A legal ${formatCard?.title ?? 'format'} team is required to register.`}
         </p>
       ) : null}
 
@@ -539,7 +667,9 @@ export default function TournamentDetailPage() {
             <section className="pa-cup-info">
               <header>Format</header>
               <dl className="pa-cup-facts">
-                <div><dt>Format</dt><dd>{formatName(tournament.format)}</dd></div>
+                <div><dt>Format</dt><dd>{formatCard?.title ?? formatName(rulesetId)}</dd></div>
+                <div><dt>Pool</dt><dd>{formatCard?.restriction ?? 'OU legal'}</dd></div>
+                <div><dt>Teams</dt><dd>{formatCard?.teamModeLabel ?? 'Custom team'}</dd></div>
                 <div><dt>Battle</dt><dd>Singles</dd></div>
                 <div><dt>Players</dt><dd>{maxPlayers}</dd></div>
                 <div><dt>Bracket</dt><dd>Single elimination</dd></div>
@@ -554,8 +684,12 @@ export default function TournamentDetailPage() {
               <header>Rules</header>
               <ul className="pa-cup-rules">
                 <li>Single elimination. Lose once and you are out.</li>
-                <li>Each match is one Gen 9 OU singles battle.</li>
-                <li>Bring a six-Pokémon legal team. Species stay hidden until team preview.</li>
+                <li>Each match uses the {formatCard?.title ?? 'format'} ruleset on the current battle engine.</li>
+                <li>
+                  {isCasualPreset
+                    ? 'Same 6 for both players • Choose 3. Both trainers see the same six and pick privately.'
+                    : `Bring six Pokémon from the ${formatCard?.restriction ?? 'format'} pool. Species stay hidden until team preview.`}
+                </li>
                 <li>Matches time out after {formatTimeout(tournament.matchTimeoutMs)}. The opponent advances.</li>
                 <li>Disconnecting a live fight grants a 10s reconnect window, then a forfeit.</li>
                 <li>Winners are seeded into the next round until a champion is crowned.</li>

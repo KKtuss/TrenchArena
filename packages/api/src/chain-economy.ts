@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+import { Keypair, PublicKey, SystemProgram, type TransactionInstruction } from '@solana/web3.js';
 import {
   ArenaChainClient,
   assertPassportEligible,
@@ -12,9 +12,11 @@ import {
   refundPokeEntryIx,
   refundSolWagerIx,
   reservePrizeIx,
+  seatMatchOpponentIx,
   setPrizeWinnerIx,
   settleMatchTieIx,
   settleMatchWinIx,
+  type SentTransaction,
   evaluatePassport,
   loadChainConfig,
   passportAtoms,
@@ -30,7 +32,7 @@ import {
   type SolCasualPreview,
   uuidToBytes,
 } from '@pokearena/solana-client';
-import type { ChainIntentRow, PostgresChainStore } from '@pokearena/db';
+import type { ChainIntentRow, DurableCasualRoom, EconomicsStore, PostgresChainStore } from '@pokearena/db';
 
 export class ChainEconomyDisabledError extends Error {
   constructor() {
@@ -43,16 +45,27 @@ export class ChainEconomyService {
   readonly config: ArenaChainConfig;
   readonly client: ArenaChainClient | null;
   private readonly chainStore: PostgresChainStore | null;
+  private readonly injectedKeeper?: Keypair;
+  private readonly submitKeeperOverride?: (
+    instructions: TransactionInstruction[],
+  ) => Promise<SentTransaction>;
 
   constructor(options: {
     env?: NodeJS.ProcessEnv;
     chainStore?: PostgresChainStore | null;
+    client?: ArenaChainClient | null;
+    keeper?: Keypair;
+    submitKeeper?: (
+      instructions: TransactionInstruction[],
+    ) => Promise<SentTransaction>;
   } = {}) {
     this.config = loadChainConfig(options.env ?? process.env);
-    this.client = this.config.chainEconomyEnabled
-      ? new ArenaChainClient(this.config)
-      : null;
+    this.client = options.client !== undefined
+      ? options.client
+      : (this.config.chainEconomyEnabled ? new ArenaChainClient(this.config) : null);
     this.chainStore = options.chainStore ?? null;
+    this.injectedKeeper = options.keeper;
+    this.submitKeeperOverride = options.submitKeeper;
   }
 
   get enabled(): boolean {
@@ -130,6 +143,9 @@ export class ChainEconomyService {
   }> {
     this.requireEnabled();
     if (!this.chainStore) throw new Error('Chain store is required for SOL wagers.');
+    if (input.side === 1) {
+      await this.seatMatchOpponent({ roomId: input.roomId, opponentId: input.playerId });
+    }
     const scopeId = `${input.roomId}:${input.side === 0 ? 'creator' : 'opponent'}`;
     const roomBytes = uuidToBytes(input.roomId);
     const player = new PublicKey(input.playerId);
@@ -627,10 +643,41 @@ export class ChainEconomyService {
   async submitKeeperTransaction(
     authority: Keypair,
     instructions: Parameters<ArenaChainClient['buildTransaction']>[1],
-  ) {
+  ): Promise<SentTransaction> {
     this.requireEnabled();
+    if (this.submitKeeperOverride) return this.submitKeeperOverride(instructions);
     const tx = await this.client!.buildTransaction(authority.publicKey, instructions);
     return this.client!.sendAndConfirm(tx, [authority]);
+  }
+
+  private async syncSettledCasualRoom(room: DurableCasualRoom, economics: EconomicsStore): Promise<void> {
+    if (!this.chainStore) throw new Error('Chain store is required for SOL wagers.');
+    const win = await this.chainStore.getIntentByScope('sol_match_win', room.id);
+    if (win?.playerId && usableSettlementIntent(win.status)) {
+      const loserId = win.playerId === room.creatorId ? room.opponentId : room.creatorId;
+      if (!loserId || loserId === win.playerId) {
+        throw new Error('Settled win is missing the opposing player.');
+      }
+      await economics.completeCasualWin({
+        roomId: room.id,
+        winnerId: win.playerId,
+        loserId,
+        collateral: room.collateral,
+        reason: 'casual-win',
+      });
+      return;
+    }
+    const opponentId = room.opponentId;
+    if (!opponentId) {
+      await releaseSolRoomRecord(economics, room);
+      return;
+    }
+    await economics.completeCasualTie({
+      roomId: room.id,
+      player1Id: room.creatorId,
+      player2Id: opponentId,
+      collateral: room.collateral,
+    });
   }
 
   async prepareCasualStart(roomId: string): Promise<void> {
@@ -705,8 +752,21 @@ export class ChainEconomyService {
     });
     const roomBytes = uuidToBytes(input.roomId);
     const state = await this.client!.getMatchEscrowState(roomBytes);
-    if (state.status === 4 && intent.status !== 'confirmed') {
-      await this.chainStore.setIntentStatus(intent.id, 'confirmed');
+    if (state.status === 4) {
+      if (!isTie) {
+        const tie = await this.chainStore.getIntentByScope('sol_match_tie', input.roomId);
+        if (tie?.status === 'confirmed') {
+          throw new Error('Match was already settled as a tie.');
+        }
+      } else {
+        const win = await this.chainStore.getIntentByScope('sol_match_win', input.roomId);
+        if (win?.status === 'confirmed') {
+          throw new Error('Match was already settled as a win.');
+        }
+      }
+      if (intent.status !== 'confirmed') {
+        await this.chainStore.setIntentStatus(intent.id, 'confirmed');
+      }
     }
     if (state.status !== 4) {
       const settlementKey = sha256Key([kind, input.roomId]);
@@ -745,7 +805,7 @@ export class ChainEconomyService {
     const after = await this.client!.getMatchEscrowState(roomBytes);
     if (after.status !== 4) throw new Error('SOL match settlement was not reflected on-chain.');
     const gross = after.collateralLamports * 2n;
-    const fee = (gross * 200n) / 10_000n;
+    const fee = after.feeCharged ? (gross * 200n) / 10_000n : 0n;
     const payout = isTie ? (gross - fee) / 2n : gross - fee;
     return {
       symbol: 'SOL',
@@ -757,13 +817,41 @@ export class ChainEconomyService {
     };
   }
 
+  /**
+   * Return a SOL wager that has no authoritative battle result.
+   * Open/Funding uses `refund_sol_wager`. Funded or Active (fee taken, no
+   * result) uses `settle_match_tie`, which returns both stakes or the
+   * post-fee remainder. Settled is a no-op.
+   */
   async refundCasual(roomId: string, creatorId: string, opponentId?: string): Promise<void> {
     this.requireEnabled();
     if (!this.chainStore) throw new Error('Chain store is required for SOL wagers.');
     const roomBytes = uuidToBytes(roomId);
-    const state = await this.client!.getMatchEscrowState(roomBytes);
-    if (state.status === 4 || state.status === 3) {
-      throw new Error('An active or settled match cannot be refunded.');
+    let state: Awaited<ReturnType<ArenaChainClient['getMatchEscrowState']>>;
+    try {
+      state = await this.client!.getMatchEscrowState(roomBytes);
+    } catch (error) {
+      if (error instanceof Error && /not found/i.test(error.message)) return;
+      throw error;
+    }
+    if (state.creator.toBase58() !== creatorId) {
+      throw new Error('On-chain match creator does not match this room.');
+    }
+    if (state.status === 4) return;
+    if (state.status === 2 || state.status === 3) {
+      const chainOpponent = state.opponent.toBase58();
+      if (opponentId && chainOpponent !== opponentId) {
+        throw new Error('On-chain opponent does not match the seated player.');
+      }
+      if (state.opponent.equals(PublicKey.default)) {
+        throw new Error('Funded match is missing an on-chain opponent.');
+      }
+      await this.settleCasual({
+        roomId,
+        creatorId,
+        opponentId: chainOpponent,
+      });
+      return;
     }
     const sides: Array<{ side: 0 | 1; playerId: string; deposited: boolean }> = [
       { side: 0, playerId: creatorId, deposited: state.creatorDeposited },
@@ -771,6 +859,9 @@ export class ChainEconomyService {
     ];
     for (const side of sides) {
       if (!side.deposited) continue;
+      if (side.side === 1 && side.playerId !== state.opponent.toBase58()) {
+        throw new Error('On-chain opponent does not match the seated player.');
+      }
       const intent = await this.chainStore.createIntent({
         kind: 'sol_wager_refund',
         scopeId: `${roomId}:${side.side}`,
@@ -785,24 +876,115 @@ export class ChainEconomyService {
         refundSolWagerIx({
           programId: this.config.programId,
           authority: this.config.authority,
+          config: this.client!.configAddress,
           recipient: new PublicKey(side.playerId),
           roomId: roomBytes,
           side: side.side,
         }),
       ]);
       if (result.status !== 'confirmed') {
-        await this.chainStore.setIntentStatus(intent.id, result.status, {
+        await this.chainStore.setIntentStatus(intent.id, 'failed', {
           signature: result.signature || undefined,
           slot: result.slot,
           error: result.error,
         });
         throw new Error(result.error ?? 'SOL refund failed.');
       }
+      const after = await this.client!.getMatchEscrowState(roomBytes);
+      const stillDeposited = side.side === 0 ? after.creatorDeposited : after.opponentDeposited;
+      if (stillDeposited) throw new Error('SOL refund was not reflected on-chain.');
       await this.chainStore.setIntentStatus(intent.id, 'confirmed', {
         signature: result.signature,
         slot: result.slot,
       });
     }
+  }
+
+  async seatMatchOpponent(input: { roomId: string; opponentId: string }): Promise<void> {
+    this.requireEnabled();
+    const roomBytes = uuidToBytes(input.roomId);
+    const opponent = new PublicKey(input.opponentId);
+    let state: Awaited<ReturnType<ArenaChainClient['getMatchEscrowState']>>;
+    try {
+      state = await this.client!.getMatchEscrowState(roomBytes);
+    } catch (error) {
+      if (error instanceof Error && /not found/i.test(error.message)) {
+        throw new Error('Creator SOL deposit is not on-chain yet.');
+      }
+      throw error;
+    }
+    if (state.opponent.equals(opponent)) return;
+    if (state.opponentDeposited || (!state.opponent.equals(PublicKey.default) && !state.opponent.equals(opponent))) {
+      throw new Error('A different opponent is already seated on-chain.');
+    }
+    const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
+      seatMatchOpponentIx({
+        programId: this.config.programId,
+        authority: this.config.authority,
+        config: this.client!.configAddress,
+        opponent,
+        roomId: roomBytes,
+      }),
+    ]);
+    if (result.status !== 'confirmed') {
+      throw new Error(result.error ?? 'Seating the match opponent failed.');
+    }
+    const after = await this.client!.getMatchEscrowState(roomBytes);
+    if (!after.opponent.equals(opponent)) {
+      throw new Error('Opponent seat was not reflected on-chain.');
+    }
+  }
+
+  /**
+   * Boot recovery for one SOL room. A Funded or Active escrow is settled only
+   * when a win or tie intent was already persisted. Otherwise the escrow is
+   * left untouched: a missing in-memory battle is not a result. Open/Funding
+   * deposits are still refunded. An already-settled escrow is reconciled
+   * from the persisted intent.
+   */
+  async recoverCasualRoom(room: DurableCasualRoom, economics: EconomicsStore): Promise<void> {
+    this.requireEnabled();
+    if (room.status === 'completed' || room.status === 'cancelled') return;
+    const roomBytes = uuidToBytes(room.id);
+    let state: Awaited<ReturnType<ArenaChainClient['getMatchEscrowState']>> | undefined;
+    try {
+      state = await this.client!.getMatchEscrowState(roomBytes);
+    } catch (error) {
+      if (!(error instanceof Error) || !/not found/i.test(error.message)) throw error;
+    }
+    if (!state) {
+      await releaseSolRoomRecord(economics, room);
+      return;
+    }
+    if (state.status === 4) {
+      await this.syncSettledCasualRoom(room, economics);
+      return;
+    }
+    const persisted = await this.persistedMatchSettlement(room.id);
+    if (persisted && (state.status === 2 || state.status === 3)) {
+      const opponentId = room.opponentId ?? state.opponent.toBase58();
+      await this.settleCasual({
+        roomId: room.id,
+        creatorId: room.creatorId,
+        opponentId,
+        ...(persisted.winnerId ? { winnerId: persisted.winnerId } : {}),
+      });
+      await this.syncSettledCasualRoom(room, economics);
+      return;
+    }
+    if (state.status === 2 || state.status === 3) return;
+    await this.refundCasual(room.id, room.creatorId, room.opponentId);
+    await releaseSolRoomRecord(economics, room);
+  }
+
+  /** A settlement that was already requested. Not inferred from escrow status. */
+  private async persistedMatchSettlement(roomId: string): Promise<{ winnerId?: string } | undefined> {
+    if (!this.chainStore) return undefined;
+    const win = await this.chainStore.getIntentByScope('sol_match_win', roomId);
+    if (win?.playerId && usableSettlementIntent(win.status)) return { winnerId: win.playerId };
+    const tie = await this.chainStore.getIntentByScope('sol_match_tie', roomId);
+    if (tie && usableSettlementIntent(tie.status)) return {};
+    return undefined;
   }
 
   buildChargeMatchFeeIx(roomId: string) {
@@ -890,6 +1072,7 @@ export class ChainEconomyService {
   }
 
   private keeperKeypair(): Keypair {
+    if (this.injectedKeeper) return this.injectedKeeper;
     const path = process.env.POKEARENA_KEEPER_KEYPAIR ?? process.env.POKEARENA_AUTHORITY_KEYPAIR;
     if (!path) throw new Error('POKEARENA_KEEPER_KEYPAIR is required for chain settlement.');
     return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, 'utf8'))));
@@ -934,6 +1117,18 @@ export class ChainEconomyService {
         : {}),
     };
   }
+}
+
+function usableSettlementIntent(status: string): boolean {
+  return status === 'created' || status === 'pending' || status === 'confirmed';
+}
+
+async function releaseSolRoomRecord(economics: EconomicsStore, room: DurableCasualRoom): Promise<void> {
+  if (room.status === 'starting' || room.status === 'battling') {
+    await economics.abortCasualRoom(room.id);
+    return;
+  }
+  await economics.cancelCasualRoom(room.id);
 }
 
 function matchEscrowAddress(programId: PublicKey, roomId: string): PublicKey {

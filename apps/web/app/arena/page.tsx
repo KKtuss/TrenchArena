@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 import { TeamStrip } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { formatRoomAmount } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
 
@@ -48,10 +48,11 @@ export default function ArenaPage() {
     <div className="pa-page">
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <p className="pa-kicker"><i /> — Player-funded fights • Casual or Competitive —</p>
           <h1>Find your fight.</h1>
           <p className="pa-lead">
-            Hold at least $20 of POKE to play. Casual deals a random six after both trainers ready up. Competitive uses your own Gen 9 OU team.
+            {snapshot?.chainEconomyEnabled
+              ? 'Real challenges lock the same SOL stake from both trainers. A 2% fee comes off the pool when the match starts, and the winner is paid from escrow. Mock POKE fights stay available when you create a challenge.'
+              : 'Mock fights use the development POKE ledger. Casual deals a random six after both trainers ready up. Competitive uses your own Gen 9 OU team.'}
           </p>
         </div>
         <Link className="pa-btn pa-btn-primary" href="/casual/create">Create challenge</Link>
@@ -100,7 +101,7 @@ export default function ArenaPage() {
               <div className="pa-fight-team">
                 <span>
                   {preview?.length
-                    ? (yours?.presetName ?? 'Your six')
+                    ? (yours?.presetName ?? 'Shared six')
                     : room.ruleset === 'competitive'
                       ? 'Bring your own six'
                       : 'Teams drop after ready'}
@@ -110,15 +111,16 @@ export default function ArenaPage() {
 
               <div className="pa-fight-meta">
                 <span>{formatLabel(room)}</span>
+                <span>{room.rail === 'sol_chain' ? 'Real SOL' : 'Mock POKE'}</span>
                 <span>{room.battleSize}</span>
                 <span className={`pa-fight-status status-${room.status}`}>{room.status}</span>
               </div>
 
               <div className="pa-fight-foot">
                 <div>
-                  <strong>{formatPoke(room.collateral)}</strong>
+                  <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
                   <small>
-                    Collateral each · gross {formatPoke(room.economics.totalPot)} · winner {formatPoke(room.economics.winnerPayout)}
+                    Stake each · pool {formatRoomAmount(room.economics.totalPot, room.rail)} · winner {formatRoomAmount(room.economics.winnerPayout, room.rail)} · 2% fee
                   </small>
                 </div>
                 <Link className="pa-btn pa-btn-primary pa-btn-sm" href={roomHref(room)}>

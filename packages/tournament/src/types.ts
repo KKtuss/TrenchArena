@@ -38,6 +38,9 @@ export type TournamentMatchStatus =
 
 export type RegisteredPlayerStatus = 'registered' | 'withdrawn';
 
+/** Shared window after a custom field fills, before the bracket is built. */
+export const TEAM_FINALIZATION_MS = 5 * 60 * 1000;
+
 export interface TournamentPlayer {
   id: TournamentPlayerId;
   displayName: string;
@@ -45,6 +48,8 @@ export interface TournamentPlayer {
   eligible: true;
   status: RegisteredPlayerStatus;
   registrationOrder: number;
+  /** Set when the player locks early, or when the shared deadline locks everyone. */
+  teamLocked?: boolean;
 }
 
 export interface BattleMatchResult {
@@ -80,6 +85,8 @@ export interface Tournament {
   id: TournamentId;
   title: string;
   format: SupportedFormat;
+  /** Legality and team mode. Battle simulation stays on `format` (Gen 9 OU). */
+  ruleset?: string;
   maxPlayers: 4 | 8 | 16 | 32;
   bracketSeed: string;
   matchTimeoutMs: number;
@@ -97,11 +104,17 @@ export interface Tournament {
   updatedAt: number;
   startedAt?: number;
   completedAt?: number;
+  /**
+   * Custom tournaments only. Set once, when registration hits maxPlayers.
+   * The bracket is built when this instant is reached, not when the lobby fills.
+   */
+  finalizesAt?: number;
 }
 
 export interface CreateTournamentInput {
   title: string;
   format: SupportedFormat;
+  ruleset?: string;
   maxPlayers: 4 | 8 | 16 | 32;
   bracketSeed?: string;
   matchTimeoutMs?: number;

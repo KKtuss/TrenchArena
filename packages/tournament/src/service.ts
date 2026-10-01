@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   BattleEngine,
+  getRuleset,
   type BattleResult,
   type BattleSession,
   type BattleState,
@@ -28,21 +29,22 @@ import {
   InMemoryAsyncTournamentRepository,
   type AsyncTournamentRepository,
 } from './tournament-store';
-import type {
-  BattleInstanceId,
-  CreateTournamentInput,
-  RegisterPlayerInput,
-  Tournament,
-  TournamentChoiceSubmission,
-  TournamentId,
-  TournamentMatch,
-  TournamentMatchEvents,
-  TournamentMatchId,
-  TournamentMatchView,
-  TournamentPlayer,
-  TournamentPlayerId,
-  TournamentResult,
-  TournamentStatus,
+import {
+  TEAM_FINALIZATION_MS,
+  type BattleInstanceId,
+  type CreateTournamentInput,
+  type RegisterPlayerInput,
+  type Tournament,
+  type TournamentChoiceSubmission,
+  type TournamentId,
+  type TournamentMatch,
+  type TournamentMatchEvents,
+  type TournamentMatchId,
+  type TournamentMatchView,
+  type TournamentPlayer,
+  type TournamentPlayerId,
+  type TournamentResult,
+  type TournamentStatus,
 } from './types';
 
 interface ActiveBattle {
@@ -103,6 +105,7 @@ export class TournamentService {
       id: randomUUID() as TournamentId,
       title: input.title,
       format: input.format,
+      ...(input.ruleset ? { ruleset: input.ruleset } : {}),
       maxPlayers: input.maxPlayers,
       bracketSeed: input.bracketSeed ?? 'default',
       matchTimeoutMs: input.matchTimeoutMs ?? DEFAULT_MATCH_TIMEOUT_MS,
@@ -146,6 +149,7 @@ export class TournamentService {
   async withdrawPlayer(
     tournamentId: TournamentId,
     playerId: TournamentPlayerId,
+    options?: { keepFinalization?: boolean },
   ): Promise<Tournament> {
     const tournament = await this.requireTournament(tournamentId);
     if (tournament.status !== 'registration') {
@@ -156,9 +160,69 @@ export class TournamentService {
       throw new TournamentError(`Player is not registered: ${playerId}`);
     }
     player.status = 'withdrawn';
+    player.teamLocked = false;
+    const stillRegistered = tournament.players.filter(candidate => candidate.status === 'registered').length;
+    if (!options?.keepFinalization && stillRegistered < tournament.maxPlayers) {
+      delete tournament.finalizesAt;
+    }
     tournament.updatedAt = this.now();
     await this.repository.saveTournament(tournament);
     return tournament;
+  }
+
+  /**
+   * Opens the one shared finalization deadline when a custom field is full.
+   * A second call keeps the original deadline.
+   */
+  async beginTeamFinalization(tournamentId: TournamentId): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
+    if (tournament.finalizesAt !== undefined) return tournament;
+    if (tournament.status !== 'registration') {
+      throw new InvalidTournamentStateTransitionError(tournament.status, 'begin team finalization');
+    }
+    const registered = tournament.players.filter(player => player.status === 'registered');
+    if (registered.length !== tournament.maxPlayers) {
+      throw new TournamentError('Team finalization starts when the field is full.');
+    }
+    const timestamp = this.now();
+    tournament.finalizesAt = timestamp + TEAM_FINALIZATION_MS;
+    tournament.updatedAt = timestamp;
+    await this.repository.saveTournament(tournament);
+    return this.requireTournament(tournamentId);
+  }
+
+  async updateRegisteredTeam(
+    tournamentId: TournamentId,
+    playerId: TournamentPlayerId,
+    team: string,
+  ): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
+    this.requireOpenFinalization(tournament);
+    const player = this.requireRegisteredPlayer(tournament, playerId);
+    if (player.teamLocked) {
+      throw new TournamentError('Your team is already locked.');
+    }
+    if (!team.trim()) throw new TournamentError('A tournament team cannot be empty.');
+    player.team = team;
+    tournament.updatedAt = this.now();
+    await this.repository.saveTournament(tournament);
+    return this.requireTournament(tournamentId);
+  }
+
+  async lockRegisteredTeam(
+    tournamentId: TournamentId,
+    playerId: TournamentPlayerId,
+  ): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
+    if (tournament.status !== 'registration') throw new RegistrationClosedError();
+    if (tournament.finalizesAt === undefined) {
+      throw new TournamentError('Team lock opens when the field is full.');
+    }
+    const player = this.requireRegisteredPlayer(tournament, playerId);
+    player.teamLocked = true;
+    tournament.updatedAt = this.now();
+    await this.repository.saveTournament(tournament);
+    return this.requireTournament(tournamentId);
   }
 
   async prepareTournament(tournamentId: TournamentId): Promise<Tournament> {
@@ -193,6 +257,9 @@ export class TournamentService {
   async startTournament(tournamentId: TournamentId): Promise<Tournament> {
     let tournament = await this.requireTournament(tournamentId);
     if (tournament.status === 'in-progress') return tournament;
+    if (tournament.finalizesAt !== undefined && this.now() < tournament.finalizesAt) {
+      throw new TournamentError('Team finalization is still open.');
+    }
     if (tournament.status === 'registration') {
       try {
         tournament = await this.prepareTournament(tournamentId);
@@ -254,6 +321,7 @@ export class TournamentService {
 
     const player1 = this.requireRegisteredPlayer(tournament, match.player1);
     const player2 = this.requireRegisteredPlayer(tournament, match.player2);
+    const ruleset = getRuleset(tournament.ruleset);
     const session = await this.battleEngine.createBattle({
       format: tournament.format,
       players: [
@@ -263,6 +331,8 @@ export class TournamentService {
       teams: [player1.team, player2.team],
       seed: matchSeed(tournament.bracketSeed, match.round, match.bracketPosition),
       timeoutMs: tournament.matchTimeoutMs,
+      showdownFormatId: ruleset.showdownFormatId,
+      teamSize: ruleset.battleTeamSize,
     });
 
     const battleInstanceId = randomUUID() as BattleInstanceId;
@@ -509,9 +579,13 @@ export class TournamentService {
   ): Promise<void> {
     const match = await this.requireMatch(matchId);
     if (match.battleInstanceId && match.battleInstanceId !== battleInstanceId) return;
-    if (terminal.type === 'completed') {
-      await this.completeWithBattleResult(match, terminal.result);
-    }
+    if (terminal.type !== 'completed') return;
+    const activeBattle = this.activeBattles.get(battleInstanceId);
+    if (!activeBattle) return;
+    const authoritative = activeBattle.session.getResult();
+    if (activeBattle.session.getState().lifecycle !== 'ended' || !authoritative) return;
+    if (!sameResult(authoritative, terminal.result)) return;
+    await this.completeWithBattleResult(match, authoritative);
   }
 
   private async completeWithBattleResult(match: TournamentMatch, result: BattleResult): Promise<void> {
@@ -635,6 +709,15 @@ export class TournamentService {
     const match = await this.repository.getMatch(id);
     if (!match) throw new UnknownMatchError(id);
     return match;
+  }
+
+  private requireOpenFinalization(tournament: Tournament): void {
+    if (tournament.status !== 'registration' || tournament.finalizesAt === undefined) {
+      throw new RegistrationClosedError();
+    }
+    if (this.now() >= tournament.finalizesAt) {
+      throw new TournamentError('Team finalization has closed.');
+    }
   }
 
   private requireRegisteredPlayer(

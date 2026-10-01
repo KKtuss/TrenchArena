@@ -466,3 +466,66 @@ test('a tie does not award player1 or advance the bracket', async () => {
   assert.equal(again.status, 'tied');
   assert.equal(again.winner, undefined);
 });
+
+test('an active tournament battle ignores a premature or mismatched terminal', async () => {
+  const premature = {
+    status: 'win' as const,
+    winner: PLAYER_IDS[0],
+    score: [1, 0],
+    turns: 3,
+  };
+  const authoritative = {
+    status: 'win' as const,
+    winner: PLAYER_IDS[1],
+    score: [0, 1],
+    turns: 9,
+  };
+  const service = new TournamentService({
+    battleEngine: {
+      async createBattle() {
+        return {
+          id: 'live-session',
+          async start() {},
+          getResult: () => undefined,
+          getState: () => ({
+            id: 'live-session',
+            lifecycle: 'awaiting-choice',
+            format: 'gen9ou',
+            players: [
+              { id: PLAYER_IDS[0], name: 'Player 1' },
+              { id: PLAYER_IDS[1], name: 'Player 2' },
+            ],
+          }),
+          subscribe(listener: (terminal: { type: 'completed'; result: typeof premature }) => void) {
+            queueMicrotask(() => listener({ type: 'completed', result: premature }));
+            queueMicrotask(() => listener({ type: 'completed', result: authoritative }));
+            return () => undefined;
+          },
+          subscribeEvents: () => () => undefined,
+        };
+      },
+    } as any,
+  });
+  const tournament = await service.createTournament({
+    title: 'Live Cup',
+    format: 'gen9ou',
+    maxPlayers: 4,
+    bracketSeed: 'live-seed',
+  });
+  await service.openRegistration(tournament.id);
+  for (const [index, playerId] of PLAYER_IDS.entries()) {
+    await service.registerPlayer(tournament.id, {
+      playerId,
+      displayName: `Player ${index + 1}`,
+      team: index % 2 === 0 ? TEAM_ONE : TEAM_TWO,
+    });
+  }
+  await service.startTournament(tournament.id);
+  const match = (await service.getBracket(tournament.id)).find(candidate => candidate.round === 1)!;
+  const started = await service.startMatch(match.id);
+  assert.equal(started.status, 'active');
+  assert.equal(started.winner, undefined);
+  const current = (await service.getMatch(match.id)).match;
+  assert.equal(current.status, 'active');
+  assert.equal(current.winner, undefined);
+});

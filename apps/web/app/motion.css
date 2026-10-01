@@ -1,0 +1,502 @@
+/* Motion vocabulary
+   micro  — press, hover, focus
+   short  — tabs, cards, route changes
+   medium — panels, reveals, HP, faint
+   impact — countdown, lock, result, payout
+   Durations live on :root in globals.css. */
+
+.pa-route {
+  animation: pa-enter var(--motion-short) var(--ease-out);
+}
+
+.pa-btn,
+.fight-move,
+.fight-switch,
+.fight-tera,
+.fight-confirm,
+.trainer-pick,
+.pa-tree-match-btn,
+.pa-match-close {
+  cursor: pointer;
+  transition:
+    transform var(--motion-micro) var(--ease-out),
+    background-color var(--motion-micro) var(--ease-out),
+    border-color var(--motion-micro) var(--ease-out),
+    box-shadow var(--motion-micro) var(--ease-out),
+    color var(--motion-micro) var(--ease-out),
+    opacity var(--motion-short) var(--ease-out);
+}
+
+.pa-btn:active:not(:disabled),
+.btn:active:not(:disabled),
+.fight-move:active:not(:disabled),
+.fight-switch:active:not(:disabled),
+.pa-casual-mon:active:not(:disabled),
+.trainer-pick:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.nav-links a.active {
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    background-color var(--motion-short) var(--ease-out),
+    color var(--motion-short) var(--ease-out);
+}
+
+.panel,
+.pa-vault,
+.pa-lobby,
+.pa-result-card,
+.matchup-row,
+.matchup-stage,
+.tournament-rail,
+.pa-history-row {
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    box-shadow var(--motion-short) var(--ease-out),
+    background-color var(--motion-medium) var(--ease-out);
+}
+
+.pa-async {
+  animation: pa-async 1.1s var(--ease-in-out) infinite;
+}
+
+.pa-toast {
+  animation: pa-toast-in var(--motion-short) var(--ease-out);
+}
+
+.pa-match-overlay {
+  animation: pa-fade var(--motion-short) var(--ease-out);
+}
+
+.pa-match-dialog {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+}
+
+.trainer-pick.is-selected {
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    box-shadow var(--motion-short) var(--ease-out),
+    transform var(--motion-micro) var(--ease-out);
+}
+
+/* Matchmaking */
+
+.pa-lobby-side,
+.pa-lobby-ready,
+.pa-lobby-mid {
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    color var(--motion-short) var(--ease-out),
+    background-color var(--motion-short) var(--ease-out);
+}
+
+.pa-lobby-side.is-present {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+}
+
+.pa-lobby-side.is-open .pa-fight-open {
+  animation: pa-search 1.4s var(--ease-in-out) infinite;
+}
+
+.pa-countdown b {
+  display: block;
+  animation: pa-count-pulse var(--motion-impact) var(--ease-out);
+}
+
+.pa-vault.is-funded > header span.ok {
+  animation: pa-lock var(--motion-medium) var(--ease-out);
+}
+
+.pa-vault.rail-sol {
+  box-shadow: inset 0 0 0 1px rgba(0, 240, 255, 0.4);
+}
+
+.pa-vault.rail-poke {
+  box-shadow: inset 0 0 0 1px rgba(142, 160, 192, 0.18);
+}
+
+.pa-settle {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+}
+
+.pa-room-code .is-copied {
+  color: var(--green-bright);
+}
+
+/* Shared-six draft */
+
+.pa-casual-slots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.pa-casual-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 2.5rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-family: var(--font-jetbrains), ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    background-color var(--motion-short) var(--ease-out);
+}
+
+.pa-casual-slot.is-filled {
+  border-style: solid;
+  border-color: var(--blue);
+  background: rgba(53, 167, 255, 0.08);
+  color: var(--text);
+}
+
+.pa-casual-slot.is-filled > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  animation: pa-select var(--motion-short) var(--ease-out);
+}
+
+.pa-casual-slot em {
+  font-style: normal;
+}
+
+.pa-casual-select.is-dealing .pa-casual-mon {
+  animation: pa-enter var(--motion-short) var(--ease-out) both;
+}
+
+.pa-casual-select.is-dealing .pa-casual-mon:nth-child(2) { animation-delay: 30ms; }
+.pa-casual-select.is-dealing .pa-casual-mon:nth-child(3) { animation-delay: 60ms; }
+.pa-casual-select.is-dealing .pa-casual-mon:nth-child(4) { animation-delay: 90ms; }
+.pa-casual-select.is-dealing .pa-casual-mon:nth-child(5) { animation-delay: 120ms; }
+.pa-casual-select.is-dealing .pa-casual-mon:nth-child(6) { animation-delay: 150ms; }
+
+.pa-casual-mon {
+  transition:
+    transform var(--motion-micro) var(--ease-out),
+    border-color var(--motion-short) var(--ease-out),
+    box-shadow var(--motion-short) var(--ease-out),
+    opacity var(--motion-short) var(--ease-out);
+}
+
+.pa-casual-mon:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.pa-casual-mon.on .pa-casual-marks i {
+  animation: pa-select var(--motion-short) var(--ease-out);
+}
+
+.pa-casual-select.is-locked .pa-casual-mon.on {
+  animation: pa-lock var(--motion-medium) var(--ease-out);
+}
+
+.pa-casual-select.is-revealed .pa-casual-mon.rival {
+  animation: pa-reveal var(--motion-impact) var(--ease-out);
+}
+
+.pa-casual-select.is-revealed .pa-casual-mon.rival .pa-casual-marks i:last-child {
+  animation: pa-select var(--motion-short) var(--ease-out);
+}
+
+/* Battle */
+
+.fight-rail-active i em,
+.fight-switch-hp em {
+  transition: transform var(--motion-medium) var(--ease-out), background-color var(--motion-short) var(--ease-out);
+}
+
+.fight-rail-mon {
+  transition: opacity var(--motion-medium) var(--ease-out), filter var(--motion-medium) var(--ease-out);
+}
+
+.fight-rail-active {
+  transition: opacity var(--motion-medium) var(--ease-out), filter var(--motion-medium) var(--ease-out);
+}
+
+.fight-rail-active.is-hit b {
+  color: var(--coral-bright);
+}
+
+.fight-rail-active.is-heal b {
+  color: var(--green-bright);
+}
+
+.fight-rail-active.is-down {
+  opacity: 0.55;
+  filter: grayscale(0.85);
+}
+
+.fight-rail-active-name,
+.fight-rail-status {
+  animation: pa-select var(--motion-short) var(--ease-out);
+}
+
+.fight-rail-status {
+  color: #f0c14b;
+  font-family: var(--font-jetbrains), ui-monospace, monospace;
+  font-size: 0.52rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.showdown-battle-root {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+}
+
+.showdown-battle-controls {
+  transition: border-color var(--motion-short) var(--ease-out), opacity var(--motion-short) var(--ease-out);
+}
+
+.showdown-phase {
+  transition: color var(--motion-short) var(--ease-out);
+}
+
+.showdown-battle-controls.is-turn .showdown-phase {
+  color: #00f0ff;
+}
+
+.showdown-battle-controls.is-sending .showdown-phase,
+.showdown-battle-controls.is-wait .showdown-phase,
+.showdown-battle-controls.is-loading .showdown-phase {
+  color: #8ea0c0;
+}
+
+.showdown-battle-controls.is-complete .showdown-phase {
+  color: var(--green-bright);
+}
+
+.fight-dock {
+  animation: pa-enter var(--motion-short) var(--ease-out);
+}
+
+.pa-battle-intro {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  margin-bottom: 0.75rem;
+  padding: 0.7rem 1rem;
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  background: rgba(0, 240, 255, 0.06);
+  color: #f2ede4;
+  font-family: var(--font-jetbrains), ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+  animation: pa-enter var(--motion-short) var(--ease-out);
+  transition: opacity var(--motion-short) var(--ease-out), transform var(--motion-short) var(--ease-out);
+}
+
+.pa-battle-intro b {
+  color: #ff717d;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1.35rem;
+  letter-spacing: 0.06em;
+}
+
+.pa-battle-intro.is-restore {
+  border-color: rgba(142, 160, 192, 0.35);
+  background: rgba(11, 18, 34, 0.9);
+}
+
+.pa-battle-intro.is-leave {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.pa-restore {
+  animation: pa-enter var(--motion-short) var(--ease-out);
+}
+
+.showdown-battle-root.is-settled {
+  animation: pa-lock var(--motion-medium) var(--ease-out);
+}
+
+/* Results and economy */
+
+.pa-result-card.outcome-win {
+  animation: pa-result-win var(--motion-impact) var(--ease-out);
+}
+
+.pa-result-card.outcome-loss,
+.pa-result-card.outcome-watch {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+}
+
+.pa-result-card.outcome-tie {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+  border-color: rgba(234, 179, 8, 0.45);
+}
+
+.pa-result-card.rail-sol {
+  box-shadow: inset 0 0 0 1px rgba(0, 240, 255, 0.4);
+}
+
+.pa-result-card.rail-poke {
+  box-shadow: inset 0 0 0 1px rgba(142, 160, 192, 0.18);
+}
+
+.pa-result-banner,
+.pa-result-ledger,
+.pa-result-summary {
+  animation: pa-enter var(--motion-medium) var(--ease-out) 60ms both;
+}
+
+.pa-history-row {
+  animation: pa-enter var(--motion-short) var(--ease-out) both;
+}
+
+.pa-history-row:nth-child(2) { animation-delay: 20ms; }
+.pa-history-row:nth-child(3) { animation-delay: 40ms; }
+.pa-history-row:nth-child(4) { animation-delay: 60ms; }
+.pa-history-row:nth-child(5) { animation-delay: 80ms; }
+.pa-history-row:nth-child(6) { animation-delay: 100ms; }
+.pa-history-row:nth-child(7) { animation-delay: 120ms; }
+.pa-history-row:nth-child(8) { animation-delay: 140ms; }
+.pa-history-row:nth-child(n + 9) { animation-delay: 160ms; }
+
+/* Bracket advancement. Transitions only — completed matches do not replay on load. */
+
+.pa-tree-match,
+.pa-tree-row,
+.pa-tree-champion,
+.pa-stage-crown,
+.pa-tree-name {
+  transition:
+    border-color var(--motion-medium) var(--ease-out),
+    background-color var(--motion-medium) var(--ease-out),
+    color var(--motion-short) var(--ease-out),
+    opacity var(--motion-short) var(--ease-out),
+    box-shadow var(--motion-medium) var(--ease-out);
+}
+
+.pa-tree-row.is-won .pa-tree-name {
+  color: #00f0ff;
+}
+
+@keyframes pa-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pa-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pa-select {
+  from { transform: scale(0.96); }
+  to { transform: none; }
+}
+
+@keyframes pa-lock {
+  0% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0); }
+}
+
+@keyframes pa-reveal {
+  from {
+    opacity: 0.35;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pa-count-pulse {
+  from {
+    opacity: 0.45;
+    transform: scale(1.06);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pa-search {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+
+@keyframes pa-async {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes pa-result-win {
+  from {
+    opacity: 0.4;
+    box-shadow: inset 0 0 0 1px rgba(0, 240, 255, 0.8);
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pa-route,
+  .pa-btn,
+  .btn,
+  .badge,
+  .nav-links a,
+  .panel,
+  .pa-vault,
+  .pa-lobby,
+  .pa-lobby-side,
+  .pa-lobby-ready,
+  .pa-result-card,
+  .pa-settle,
+  .pa-restore,
+  .matchup-row,
+  .matchup-stage,
+  .tournament-rail,
+  .pa-history-row,
+  .pa-async,
+  .pa-toast,
+  .pa-match-overlay,
+  .pa-match-dialog,
+  .pa-countdown b,
+  .pa-casual-mon,
+  .pa-casual-slot.is-filled > span,
+  .pa-casual-select.is-dealing .pa-casual-mon,
+  .pa-casual-select.is-locked .pa-casual-mon.on,
+  .pa-casual-select.is-revealed .pa-casual-mon.rival,
+  .fight-rail-active,
+  .fight-rail-active-name,
+  .fight-rail-status,
+  .fight-rail-active i em,
+  .fight-rail-mon,
+  .fight-switch-hp em,
+  .fight-dock,
+  .showdown-battle-root,
+  .pa-battle-intro,
+  .pa-tree-match,
+  .pa-tree-row,
+  .pa-tree-champion,
+  .pa-stage-crown,
+  .brand-pulse,
+  .home-live-dot,
+  .battle,
+  .battle * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

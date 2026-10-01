@@ -5,6 +5,17 @@ import {
   type SupportedFormat,
 } from './types';
 import { TeamValidationError, UnsupportedFormatError } from './errors';
+import {
+  CASUAL_BATTLE_FORMAT_ID,
+  abilityWithinGeneration,
+  getRuleset,
+  isGen9OuSpecies,
+  itemWithinGeneration,
+  moveWithinGeneration,
+  speciesAllowed,
+  speciesCatalogEntry,
+  type RulesetDefinition,
+} from './rulesets';
 
 export const SHOWDOWN_VERSION = '0.11.11';
 export const SHOWDOWN_GIT_HEAD = '739a5e1fee432ad80ff7136d70cca993be358b59';
@@ -15,8 +26,7 @@ const FORMAT_RULES: Record<SupportedFormat, readonly string[]> = {
 };
 
 export const CASUAL_TEAM_SIZE = 3;
-export const CASUAL_SHOWDOWN_FORMAT_ID =
-  'gen9ou@@@Min Team Size = 3,Max Team Size = 3,!Team Preview,Terastal Clause';
+export const CASUAL_SHOWDOWN_FORMAT_ID = CASUAL_BATTLE_FORMAT_ID;
 
 export interface PackTeamOptions {
   size?: number;
@@ -257,14 +267,21 @@ type ImportedSet = {
   ivs?: Partial<Record<StatId, number>>;
 };
 
-export function inspectTeam(teamText: string, format: SupportedFormat): TeamInspection {
+export function inspectTeam(
+  teamText: string,
+  format: SupportedFormat,
+  rulesetId?: string,
+): TeamInspection {
   assertSupportedFormat(format);
+  const ruleset = rulesetId ? getRuleset(rulesetId) : undefined;
   const imported = Teams.import(teamText) as ImportedSet[] | null;
-  const sets = (imported ?? []).slice(0, 6).map(inspectSet);
-  const problems = collectProblems(imported, format);
+  const sets = (imported ?? []).slice(0, 6).map(set => inspectSet(set, ruleset));
+  const problems = collectProblems(imported, format, ruleset);
   let packed: string | undefined;
   try {
-    packed = validateAndPackTeam(teamText, format);
+    packed = ruleset && ruleset.id !== 'gen9ou'
+      ? validateRulesetTeam(teamText, ruleset.id)
+      : validateAndPackTeam(teamText, format);
   } catch {
     packed = undefined;
   }
@@ -293,22 +310,35 @@ export function searchTeamOptions(
   kind: TeamSearchKind,
   query: string,
   speciesName?: string,
+  rulesetId?: string,
 ): string[] {
-  return searchTeamHits(kind, query, speciesName).hits.map(hit => hit.name);
+  return searchTeamHits(kind, query, speciesName, rulesetId).hits.map(hit => hit.name);
 }
 
-const OU_BANNED_TIERS = new Set(['Uber', 'AG', 'Illegal', 'Unreleased']);
-
-function isGen9OuSpecies(species: {
-  exists: boolean;
-  num: number;
-  isNonstandard?: string | null;
-  battleOnly?: string | string[] | boolean;
-  tier?: string;
-}): boolean {
-  if (!species.exists || species.num <= 0 || species.isNonstandard || species.battleOnly) return false;
-  const tier = species.tier ?? '';
-  return !OU_BANNED_TIERS.has(tier) && !/^CAP/i.test(tier);
+export function validateRulesetTeam(
+  teamText: string,
+  rulesetId: string,
+  options: PackTeamOptions = {},
+): string {
+  const ruleset = getRuleset(rulesetId);
+  const size = options.size ?? ruleset.registerTeamSize;
+  const showdownFormatId = options.showdownFormatId ?? ruleset.showdownFormatId;
+  const team = Teams.import(teamText) as ImportedSet[] | null;
+  if (!team || team.length !== size) {
+    throw new TeamValidationError(
+      size === 6
+        ? `A ${ruleset.id} team must contain exactly six valid Pokémon sets.`
+        : `A ${ruleset.id} team must contain exactly ${size} valid Pokémon sets.`,
+    );
+  }
+  if (ruleset.introducedIn != null) {
+    const problems = team.flatMap(set => generationSetProblems(set, ruleset));
+    if (problems.length) {
+      throw new TeamValidationError(`Team is invalid for ${ruleset.id}:\n- ${problems.join('\n- ')}`);
+    }
+  }
+  // Packing always uses the Gen 9 engine family; cups override via showdownFormatId (National Dex).
+  return validateAndPackTeam(teamText, 'gen9ou', { size, showdownFormatId });
 }
 
 function ouSpeciesHits(needle: string): TeamSearchHit[] {
@@ -322,17 +352,30 @@ function ouSpeciesHits(needle: string): TeamSearchHit[] {
   return needle ? hits.slice(0, 48) : hits;
 }
 
+function generationSpeciesHits(needle: string, generation: number): TeamSearchHit[] {
+  const ruleset = getRuleset(`gen${generation}cup`);
+  const hits = Dex.species.all()
+    .filter(species => speciesCatalogEntry(ruleset, species))
+    .filter(species => !needle || species.name.toLowerCase().includes(needle))
+    .sort((left, right) => left.num - right.num || left.name.localeCompare(right.name))
+    .map(species => ({ name: species.name, types: [...species.types] }));
+  return needle ? hits.slice(0, 48) : hits;
+}
+
 export function searchTeamHits(
   kind: TeamSearchKind,
   query: string,
   speciesName?: string,
+  rulesetId?: string,
 ): { hits: TeamSearchHit[]; scoped: boolean } {
+  const ruleset = getRuleset(rulesetId);
   const needle = query.trim().toLowerCase();
   if (kind === 'ability' && speciesName) {
     const species = Dex.species.get(speciesName);
     if (species?.exists) {
       const abilities = Object.values(species.abilities)
-        .filter((name): name is string => typeof name === 'string' && name.length > 0);
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+        .filter(name => abilityWithinGeneration(species.name, name, ruleset));
       const filtered = needle
         ? abilities.filter(name => name.toLowerCase().includes(needle))
         : abilities;
@@ -340,7 +383,7 @@ export function searchTeamHits(
     }
   }
   if (kind === 'move' && speciesName && Dex.species.get(speciesName)?.exists) {
-    const legal = legalMoveHits(speciesName);
+    const legal = legalMoveHits(speciesName, ruleset.assetGenerationCap);
     const filtered = needle
       ? legal.filter(hit => (
         hit.name.toLowerCase().includes(needle)
@@ -352,11 +395,14 @@ export function searchTeamHits(
     return { scoped: true, hits: filtered };
   }
   if (kind === 'species') {
-    return { scoped: false, hits: ouSpeciesHits(needle) };
+    const hits = ruleset.introducedIn == null
+      ? ouSpeciesHits(needle)
+      : generationSpeciesHits(needle, ruleset.introducedIn);
+    return { scoped: false, hits };
   }
   if (kind === 'item') {
     if (speciesName && Dex.species.get(speciesName)?.exists) {
-      const legal = legalItemHits(speciesName);
+      const legal = legalItemHits(speciesName, ruleset.assetGenerationCap);
       const filtered = needle
         ? legal.filter(hit => (
           hit.name.toLowerCase().includes(needle)
@@ -365,7 +411,7 @@ export function searchTeamHits(
         : legal;
       return { scoped: true, hits: needle ? filtered.slice(0, 48) : filtered };
     }
-    const hits = genericOuItemHits();
+    const hits = genericOuItemHits().filter(hit => itemWithinGeneration(hit.name, ruleset));
     const filtered = needle
       ? hits.filter(hit => (
         hit.name.toLowerCase().includes(needle)
@@ -384,6 +430,7 @@ export function searchTeamHits(
           && !move.isNonstandard
           && !move.isZ
           && !move.isMax
+          && moveWithinGeneration(move.name, ruleset)
           && (
             move.name.toLowerCase().includes(needle)
             || move.type.toLowerCase().includes(needle)
@@ -398,13 +445,18 @@ export function searchTeamHits(
   return {
     scoped: false,
     hits: Dex.abilities.all()
-      .filter(ability => ability.exists && !ability.isNonstandard && ability.name.toLowerCase().includes(needle))
+      .filter(ability => (
+      ability.exists
+      && !ability.isNonstandard
+      && (ruleset.assetGenerationCap == null || ability.gen <= Math.max(ruleset.assetGenerationCap, 3))
+      && ability.name.toLowerCase().includes(needle)
+    ))
       .slice(0, 24)
       .map(ability => describeAbility(ability.name)),
   };
 }
 
-function inspectSet(set: ImportedSet): InspectedSet {
+function inspectSet(set: ImportedSet, ruleset?: RulesetDefinition): InspectedSet {
   const species = Dex.species.get(set.species);
   const exists = Boolean(species?.exists);
   const evs = emptyEvs();
@@ -450,7 +502,9 @@ function inspectSet(set: ImportedSet): InspectedSet {
     heightM: exists ? species.heightm : null,
     weightKg: exists ? species.weightkg : null,
     abilities: exists
-      ? Object.values(species.abilities).filter((name): name is string => typeof name === 'string' && name.length > 0)
+      ? Object.values(species.abilities)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+        .filter(name => !ruleset || abilityWithinGeneration(species.name, name, ruleset))
       : [],
     stats,
     moveDetails: moves.map(inspectMove).filter((move): move is InspectedMove => move !== null),
@@ -474,8 +528,8 @@ function inspectMove(name: string): InspectedMove | null {
   };
 }
 
-function legalMoveHits(speciesName: string): TeamSearchHit[] {
-  return legalMoveNames(speciesName)
+function legalMoveHits(speciesName: string, maxGeneration?: number): TeamSearchHit[] {
+  return legalMoveNames(speciesName, maxGeneration)
     .map(describeMove)
     .filter((hit): hit is TeamSearchHit => hit !== null)
     .sort((left, right) => (
@@ -511,17 +565,65 @@ function readShortDesc(entry: object): string {
 
 const DRAFT_MOVE_NAG = /has no moves \(it must have at least one to be usable\)/i;
 
-function collectProblems(imported: ImportedSet[] | null, format: SupportedFormat): string[] {
+function collectProblems(
+  imported: ImportedSet[] | null,
+  format: SupportedFormat,
+  ruleset?: RulesetDefinition,
+): string[] {
   if (!imported?.length) return ['Paste at least one Pokémon set.'];
   let problems: string[] = [];
-  try {
-    problems = new TeamValidator(format).validateTeam(imported as never) ?? [];
-  } catch (error) {
-    problems = [error instanceof Error ? error.message : 'Team could not be validated.'];
+  if (ruleset && ruleset.introducedIn != null) {
+    problems = imported.flatMap(set => generationSetProblems(set, ruleset));
+    try {
+      const structural = new TeamValidator(ruleset.showdownFormatId).validateTeam(imported as never) ?? [];
+      problems = [
+        ...problems,
+        ...structural.filter(problem => !DRAFT_MOVE_NAG.test(problem)),
+      ];
+    } catch (error) {
+      problems = [
+        ...problems,
+        error instanceof Error ? error.message : 'Team could not be validated.',
+      ];
+    }
+  } else {
+    try {
+      problems = new TeamValidator(format).validateTeam(imported as never) ?? [];
+    } catch (error) {
+      problems = [error instanceof Error ? error.message : 'Team could not be validated.'];
+    }
+    problems = problems.filter(problem => !DRAFT_MOVE_NAG.test(problem));
   }
-  problems = problems.filter(problem => !DRAFT_MOVE_NAG.test(problem));
   if (imported.length !== 6) {
-    return [`A ${format} team must contain exactly six valid Pokémon sets.`, ...problems];
+    const label = ruleset?.id ?? format;
+    return [`A ${label} team must contain exactly six valid Pokémon sets.`, ...problems];
+  }
+  return problems;
+}
+
+function generationSetProblems(set: ImportedSet, ruleset: RulesetDefinition): string[] {
+  if (!set.species?.trim()) return [];
+  if (!speciesAllowed(ruleset, set.species)) {
+    const generation = ruleset.introducedIn;
+    return generation == null
+      ? [`${set.species} is not legal in ${ruleset.id}.`]
+      : [`${set.species} is not a Gen ${generation}-introduced Pokémon.`];
+  }
+  const problems: string[] = [];
+  if (set.ability && !abilityWithinGeneration(set.species, set.ability, ruleset)) {
+    problems.push(`${set.ability} is not legal for ${set.species} in ${ruleset.id}.`);
+  }
+  if (set.item && !itemWithinGeneration(set.item, ruleset)) {
+    problems.push(`${set.item} is not legal in ${ruleset.id}.`);
+  }
+  const learnset = new Set(legalMoveNames(set.species, ruleset.assetGenerationCap));
+  for (const move of set.moves ?? []) {
+    if (!move) continue;
+    if (!moveWithinGeneration(move, ruleset)) {
+      problems.push(`${move} is not legal in ${ruleset.id}.`);
+    } else if (!learnset.has(move)) {
+      problems.push(`${set.species} cannot learn ${move} in ${ruleset.id}.`);
+    }
   }
   return problems;
 }
@@ -641,17 +743,23 @@ function describeItem(item: DexItemLike): TeamSearchHit {
   return { name: item.name, description: readShortDesc(item) };
 }
 
-function legalItemHits(speciesName: string): TeamSearchHit[] {
+function legalItemHits(speciesName: string, maxGeneration?: number): TeamSearchHit[] {
   const species = Dex.species.get(speciesName);
   if (!species?.exists) return [];
-  const cached = legalItemCache.get(species.id);
+  const cacheKey = maxGeneration == null ? species.id : `${species.id}:gen${maxGeneration}`;
+  const cached = legalItemCache.get(cacheKey);
   if (cached) return cached;
-  const move = legalMoveNames(species.name)[0];
+  const move = legalMoveNames(species.name, maxGeneration)[0];
   const hits = Dex.items.all()
-    .filter(item => speciesCanHoldItem(species, item) && !itemFailsOuClause(item, species, move))
+    .filter(item => {
+      if (!speciesCanHoldItem(species, item)) return false;
+      if (maxGeneration == null) return !itemFailsOuClause(item, species, move);
+      return item.gen <= maxGeneration
+        && (!item.isNonstandard || item.isNonstandard === 'Past');
+    })
     .sort((left, right) => left.name.localeCompare(right.name))
     .map(describeItem);
-  legalItemCache.set(species.id, hits);
+  legalItemCache.set(cacheKey, hits);
   return hits;
 }
 
@@ -672,7 +780,7 @@ function genericOuItemHits(): TeamSearchHit[] {
   return genericOuItems;
 }
 
-function legalMoveNames(speciesName: string): string[] {
+function legalMoveNames(speciesName: string, maxGeneration?: number): string[] {
   const species = Dex.species.get(speciesName);
   if (!species?.exists) return [];
   const full = Dex.species.getFullLearnset(species.id) as
@@ -682,9 +790,21 @@ function legalMoveNames(speciesName: string): string[] {
   if (!learnset) return [];
   const names: string[] = [];
   for (const [id, sources] of Object.entries(learnset)) {
-    if (!sources.some(source => source.startsWith('9'))) continue;
+    // OU: only current Gen 9 learn sources.
+    // Generation cups: any learn source is fine; move.gen enforces the era cap.
+    const inScope = maxGeneration == null
+      ? sources.some(source => source.startsWith('9'))
+      : sources.length > 0;
+    if (!inScope) continue;
     const move = Dex.moves.get(id);
-    if (move?.exists && !move.isNonstandard && !move.isZ && !move.isMax) names.push(move.name);
+    if (!move?.exists || move.isZ || move.isMax) continue;
+    if (maxGeneration == null) {
+      if (move.isNonstandard) continue;
+    } else {
+      if (move.isNonstandard && move.isNonstandard !== 'Past') continue;
+      if (move.gen > maxGeneration) continue;
+    }
+    names.push(move.name);
   }
   names.sort((left, right) => left.localeCompare(right));
   return names;

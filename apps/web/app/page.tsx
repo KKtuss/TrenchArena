@@ -8,7 +8,7 @@ import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatRoomAmount } from '@/lib/api-client';
 import type { BattleView, CasualRoom, LiveFight, TournamentSummary } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
@@ -120,7 +120,6 @@ export default function LandingPage() {
         </span>
       </div>
       <section className="pa-hero">
-        <p className="pa-kicker"><i /> — Battle Stadium • Gen 9 OU tier —</p>
         <h1>POKEARENA</h1>
         <p className="pa-tag">Battle. Compete. Climb.</p>
         <p className="pa-lead">
@@ -260,8 +259,8 @@ export default function LandingPage() {
                 <small>{formatRoomLabel(room)} • {room.battleSize} • {room.status}</small>
               </div>
               <div className="pa-board-side">
-                <strong>{formatPoke(room.collateral)}</strong>
-                <small style={{ display: 'block', color: '#8ea0c0' }}>each</small>
+                <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
+                <small style={{ display: 'block', color: '#8ea0c0' }}>{room.rail === 'sol_chain' ? 'SOL each' : 'mock each'}</small>
                 <Link href={roomHref(room)}>{room.status === 'open' ? 'Join' : 'Watch live'}</Link>
               </div>
             </article>

@@ -9,6 +9,7 @@ export const IX = {
   initializeConfig: anchorDiscriminator('initialize_config'),
   createMatchEscrow: anchorDiscriminator('create_match_escrow'),
   depositSolWager: anchorDiscriminator('deposit_sol_wager'),
+  seatMatchOpponent: anchorDiscriminator('seat_match_opponent'),
   refundSolWager: anchorDiscriminator('refund_sol_wager'),
   chargeMatchFee: anchorDiscriminator('charge_match_fee'),
   settleMatchWin: anchorDiscriminator('settle_match_win'),

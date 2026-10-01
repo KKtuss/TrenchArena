@@ -62,6 +62,7 @@ export {
   initializeConfigIx,
   createMatchEscrowIx,
   depositSolWagerIx,
+  seatMatchOpponentIx,
   refundSolWagerIx,
   chargeMatchFeeIx,
   settleMatchWinIx,

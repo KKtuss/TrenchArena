@@ -1,3 +1,5 @@
+import type { CasualPreviewMon } from './protocol';
+import { formatById } from './tournament-formats';
 import { roundLabel, TOURNAMENT_FIELD_SIZE } from './tournament-schedule';
 
 export type BracketMatch = {
@@ -27,18 +29,27 @@ export type TournamentPlayer = {
   id: string;
   status: string;
   displayName?: string;
+  team?: string;
+  teamLocked?: boolean;
 };
 
 export type TournamentDetail = {
   id: string;
   title: string;
   format: string;
+  ruleset?: string;
+  preset?: {
+    id: string;
+    name: string;
+    pokemon: CasualPreviewMon[];
+  };
   status: string;
   maxPlayers: number;
   players?: TournamentPlayer[];
   bracket?: BracketMatch[];
   entryFee?: number;
   hostId?: string;
+  finalizesAt?: number;
   matchTimeoutMs?: number;
   prizeLamports?: number;
   rail?: string;
@@ -80,8 +91,9 @@ export function hubStatus(status?: string): HubStatus {
 }
 
 export function formatName(format?: string): string {
-  if (!format) return 'Gen 9 OU';
-  if (format === 'gen9ou') return 'Gen 9 OU';
+  const card = formatById(format);
+  if (card && card.id !== 'gen9ou') return card.title;
+  if (!format || format === 'gen9ou') return 'Gen 9 OU';
   return format.toUpperCase();
 }
 

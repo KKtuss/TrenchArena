@@ -27,6 +27,7 @@ import {
   chargeMatchFeeIx,
   settleMatchWinIx,
   settleMatchTieIx,
+  seatMatchOpponentIx,
   depositTreasurySolIx,
   depositPokeEntryIx,
   refundPokeEntryIx,
@@ -150,6 +151,20 @@ test('program: SOL wager fee + win against local validator', async (t) => {
     const tx = new Transaction({ feePayer: player1.publicKey, blockhash, lastValidBlockHeight })
       .add(createAndDeposit, deposit1);
     await sendAndConfirmTransaction(connection, tx, [player1]);
+  }
+
+  const seat = seatMatchOpponentIx({
+    programId,
+    authority: authority.publicKey,
+    config,
+    opponent: player2.publicKey,
+    roomId,
+  });
+  {
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+    const tx = new Transaction({ feePayer: authority.publicKey, blockhash, lastValidBlockHeight })
+      .add(seat);
+    await sendAndConfirmTransaction(connection, tx, [authority]);
   }
 
   const deposit2 = depositSolWagerIx({

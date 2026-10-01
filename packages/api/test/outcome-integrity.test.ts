@@ -106,6 +106,11 @@ function fakeEngine(terminal: BattleTerminal, extra?: BattleTerminal): BattleEng
         id: 'outcome-session',
         async start() {},
         getResult: () => result,
+        getState: () => ({
+          id: 'outcome-session',
+          lifecycle: 'ended',
+          result,
+        }),
         subscribe(listener: (value: BattleTerminal) => void) {
           listener(terminal);
           if (extra) listener(extra);

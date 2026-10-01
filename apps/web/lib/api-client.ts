@@ -211,6 +211,11 @@ export function formatPoke(amount: number): string {
   return `${amount.toLocaleString('en-US')} POKE`;
 }
 
+/** SOL rooms store lamports on `collateral`. Mock rooms store POKE. */
+export function formatRoomAmount(amount: number, rail?: 'legacy_poke' | 'sol_chain' | null): string {
+  return rail === 'sol_chain' ? formatSolLamports(amount) : formatPoke(amount);
+}
+
 export function formatSolLamports(lamports: number | string): string {
   const value = typeof lamports === 'string' ? Number(lamports) : lamports;
   if (!Number.isFinite(value)) return '— SOL';

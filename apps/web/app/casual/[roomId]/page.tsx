@@ -5,11 +5,12 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 
-import { CasualSelectBoard } from '@/components/casual-select';
+import { CasualBattleReveal, CasualCountdown, CasualSelectBoard } from '@/components/casual-select';
 import { TeamStrip } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { shouldEnterLiveBattle } from '@/lib/battle-entry';
+import { formatPoke, formatSolLamports } from '@/lib/api-client';
 import type { CasualRoom } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
@@ -25,8 +26,6 @@ function lobbyNote(input: {
   countdownLeft: number;
   youReady: boolean;
   rivalReady: boolean;
-  yoursConfirmed: boolean;
-  rivalConfirmed: boolean;
 }): string {
   const {
     room,
@@ -35,8 +34,6 @@ function lobbyNote(input: {
     countdownLeft,
     youReady,
     rivalReady,
-    yoursConfirmed,
-    rivalConfirmed,
   } = input;
   if (room.battleSize === '2v2') return '2v2 rooms can be configured, but starts are not live yet.';
   if (room.status === 'cancelled') return 'This challenge was cancelled.';
@@ -51,20 +48,15 @@ function lobbyNote(input: {
     return 'Lock the active team from My Teams. The rival cannot see your paste.';
   }
   if (!room.opponentId) {
-    return 'Waiting for a rival. Ready up together — random sixes stay sealed until the countdown ends.';
-  }
-  if (room.status === 'drafting') {
-    if (yoursConfirmed && rivalConfirmed) return 'Both trainers locked three. Starting the fight.';
-    if (yoursConfirmed) return 'You locked three. Waiting for the rival to confirm.';
-    return 'Pick three Pokémon, then confirm. The rival cannot see your pick until both lock.';
+    return 'Waiting for a rival. Ready up once they join.';
   }
   if (youReady && rivalReady) {
     return countingDown && countdownLeft > 0
-      ? `Both trainers ready. Teams drop in ${countdownLeft}.`
-      : 'Countdown done. Dealing your random sixes.';
+      ? 'Both trainers ready. The match is starting.'
+      : 'Countdown done. Choose your three.';
   }
   if (youReady) return 'You are ready. Waiting for the rival to ready up.';
-  return 'Ready up. Random sixes drop after both trainers ready and the countdown ends.';
+  return 'Ready up. The match countdown starts when both trainers are ready.';
 }
 
 function sideReadyLabel(input: {
@@ -86,20 +78,30 @@ function sideReadyLabel(input: {
 export default function CasualRoomPage() {
   const params = useParams<{ roomId: string }>();
   const roomId = params.roomId;
-  const { client, playerId, connected } = useArena();
+  const { client, playerId, connected, snapshot, walletAdapter } = useArena();
   const router = useRouter();
   const [room, setRoom] = useState<CasualRoom | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [acceptArmed, setAcceptArmed] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
   const [savedTeam, setSavedTeam] = useState<SavedTeam | null>(null);
   const [starterPaste, setStarterPaste] = useState<string>();
   const [clock, setClock] = useState(() => Date.now());
+  const [copied, setCopied] = useState(false);
   const startRequested = useRef(false);
+  const cameFromSelect = useRef(false);
+  const battleHandoff = useRef(false);
 
   useEffect(() => {
     setSavedTeam(playerId ? readSavedTeam(playerId) : null);
   }, [playerId]);
+
+  useEffect(() => {
+    if (room) return;
+    const restored = snapshot?.myCasualRooms.find(item => item.id === roomId);
+    if (restored) setRoom(restored);
+  }, [room, roomId, snapshot]);
 
   useEffect(() => {
     if (!connected) return;
@@ -132,8 +134,31 @@ export default function CasualRoomPage() {
   }, [yours?.presetId, yours?.selectedSlots?.join(',')]);
 
   const isPlayer = Boolean(room && playerId && (room.creatorId === playerId || room.opponentId === playerId));
-  const canAccept = Boolean(room && playerId && room.status === 'open' && room.creatorId !== playerId
-    && (!room.invitedPlayerId || room.invitedPlayerId === playerId));
+  const real = room?.rail === 'sol_chain';
+  const canAccept = Boolean(
+    room && playerId && room.creatorId !== playerId
+    && !room.opponentId
+    && (room.status === 'open' || (real && room.status === 'pending_deposit'))
+    && (!room.invitedPlayerId || room.invitedPlayerId === playerId),
+  );
+  const money = (amount: number) => real ? formatSolLamports(amount) : formatPoke(amount);
+  const myDeposit = Boolean(playerId && room && (
+    playerId === room.creatorId ? room.deposits?.creator : room.deposits?.opponent
+  ));
+  const stakesLocked = Boolean(real && room?.deposits?.creator && room.deposits.opponent);
+  const needsStake = Boolean(real && isPlayer && !myDeposit && room && room.status !== 'completed' && room.status !== 'cancelled' && room.status !== 'battling');
+
+  const lockReturnedStake = async (response: { type: string; intent?: { intentId: string; serializedTx?: number[] } }) => {
+    if (response.type !== 'tx.intent' || !response.intent?.serializedTx?.length) return;
+    if (!walletAdapter) throw new Error('Connect the wallet that must sign this stake.');
+    const { sendSerializedTransaction } = await import('@/lib/solana-tx');
+    const signature = await sendSerializedTransaction(walletAdapter, response.intent.serializedTx);
+    await client.request({
+      type: 'tx.confirm',
+      intentId: response.intent.intentId,
+      signature,
+    });
+  };
 
   const yourId = room
     ? (youAreCreator ? room.creatorId : (room.opponentId ?? playerId ?? 'You'))
@@ -146,9 +171,6 @@ export default function CasualRoomPage() {
   const casualSelect = Boolean(room && (room.ruleset ?? 'casual') === 'casual' && room.battleSize === '1v1');
   const competitive = Boolean(room && room.ruleset === 'competitive' && room.battleSize === '1v1');
   const drafting = Boolean(casualSelect && room?.status === 'drafting');
-  const selecting = drafting;
-  const revealed = Boolean(yours?.confirmed && rivalPreview?.confirmed);
-  const canConfirm = selecting && isPlayer && !yours?.confirmed && selected.length === 3;
   const ownPaste = (playerId ? battlePaste(playerId) : undefined) ?? starterPaste;
   const canLockCompetitive = Boolean(ownPaste);
   const countdownEndsAt = room?.status === 'ready' && room.battleSize === '1v1' ? room.countdownEndsAt : undefined;
@@ -156,13 +178,25 @@ export default function CasualRoomPage() {
     ? Math.max(0, Math.ceil((countdownEndsAt - clock) / 1000))
     : 0;
   const countingDown = Boolean(countdownEndsAt);
+  const selectionEndsAt = drafting ? room?.selectionEndsAt : undefined;
+  const selectionLeft = selectionEndsAt
+    ? Math.max(0, Math.ceil((selectionEndsAt - clock) / 1000))
+    : null;
+  const bothLocked = Boolean(drafting && yours?.confirmed && rivalPreview?.confirmed);
+  if (drafting) cameFromSelect.current = true;
+  const revealBattle = Boolean(
+    casualSelect
+    && room
+    && shouldEnterLiveBattle(room, playerId)
+    && cameFromSelect.current,
+  );
 
   useEffect(() => {
-    if (!countdownEndsAt) return;
+    if (!countdownEndsAt && !selectionEndsAt) return;
     setClock(Date.now());
     const timer = window.setInterval(() => setClock(Date.now()), 200);
     return () => window.clearInterval(timer);
-  }, [countdownEndsAt]);
+  }, [countdownEndsAt, selectionEndsAt]);
 
   useEffect(() => {
     startRequested.current = false;
@@ -190,7 +224,7 @@ export default function CasualRoomPage() {
       if (response.type === 'casual.state') {
         setRoom(response.room);
         if (response.room.status === 'battling') {
-          router.push(`/battle/${response.room.matchId}`);
+          router.replace(`/battle/${response.room.matchId}`);
         }
       }
     }).catch(err => {
@@ -206,6 +240,32 @@ export default function CasualRoomPage() {
     roomId,
     router,
   ]);
+
+  useEffect(() => {
+    if (!bothLocked || !isPlayer) return;
+    const timer = window.setTimeout(() => {
+      void client.request({ type: 'casual.start', roomId }).then(response => {
+        if (response.type === 'casual.state') setRoom(response.room);
+      }).catch(err => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [bothLocked, client, isPlayer, roomId]);
+
+  useEffect(() => {
+    if (!room?.matchId || !shouldEnterLiveBattle(room, playerId)) return;
+    if (!cameFromSelect.current) {
+      router.replace(`/battle/${room.matchId}`);
+      return;
+    }
+    if (battleHandoff.current) return;
+    battleHandoff.current = true;
+    const matchId = room.matchId;
+    window.setTimeout(() => {
+      router.replace(`/battle/${matchId}`);
+    }, 1100);
+  }, [playerId, room, router]);
 
   const act = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -243,15 +303,34 @@ export default function CasualRoomPage() {
   const code = room ? room.id.slice(0, 8).toUpperCase() : '········';
 
   return (
-    <div className="pa-page">
+    <div className={`pa-page${casualSelect && (countingDown || drafting || revealBattle) ? ' is-match-phase' : ''}`}>
+      {casualSelect && countingDown ? <CasualCountdown seconds={countdownLeft} /> : null}
+      {casualSelect && (drafting || revealBattle) ? (
+        <CasualSelectBoard
+          yours={yours}
+          selected={selected}
+          confirmed={Boolean(yours?.confirmed) || revealBattle}
+          rivalConfirmed={Boolean(rivalPreview?.confirmed)}
+          secondsLeft={selectionLeft}
+          disabled={busy || revealBattle}
+          busy={busy}
+          onToggle={toggleSlot}
+          onLock={() => void act(() => sendSelection(selected, true))}
+        />
+      ) : null}
+      {revealBattle ? <CasualBattleReveal /> : null}
+      {casualSelect && (countingDown || drafting || revealBattle) ? (
+        <ErrorToast error={error} onDismiss={() => setError(null)} />
+      ) : null}
+      {casualSelect && (countingDown || drafting || revealBattle) ? null : (
+      <>
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <p className="pa-kicker"><i /> — {room ? formatCasualRoomLabel(room) : 'Arena fight'} —</p>
-          <h1>{room ? `Challenge ${code}` : 'Finding your room…'}</h1>
+          <h1 className={room ? undefined : 'pa-async'}>{room ? `Challenge ${code}` : 'Finding your room…'}</h1>
           <p className="pa-lead">
             {competitive
               ? 'Bring a legal Gen 9 OU team. The rival cannot see your paste until the fight starts.'
-              : 'Ready up after a rival joins. Random sixes drop after the countdown, then pick three.'}
+              : 'Ready up once a rival joins. The 6→3 pick happens after both of you are ready.'}
           </p>
         </div>
         <Link className="pa-btn pa-btn-surface" href="/arena">Back to arena</Link>
@@ -276,34 +355,13 @@ export default function CasualRoomPage() {
                 countdownLeft,
                 youReady,
                 rivalReady,
-                yoursConfirmed: Boolean(yours?.confirmed),
-                rivalConfirmed: Boolean(rivalPreview?.confirmed),
               }) : ''}
             </p>
 
-            {casualSelect && drafting ? (
-              <CasualSelectBoard
-                yours={yours}
-                rival={rivalPreview}
-                selected={selected}
-                confirmed={Boolean(yours?.confirmed)}
-                rivalConfirmed={Boolean(rivalPreview?.confirmed)}
-                revealed={revealed}
-                disabled={busy}
-                onToggle={toggleSlot}
-              />
-            ) : null}
-
-            {casualSelect && !drafting && room.status !== 'starting' && room.status !== 'battling' && room.status !== 'completed' && room.status !== 'cancelled' ? (
-              <div className="pa-protocol">
-                <span>
-                  {countingDown
-                    ? 'Random sixes drop when the countdown ends'
-                    : room.opponentId
-                      ? 'Ready up to deal random sixes'
-                      : 'Sixes stay sealed until both trainers ready and the countdown ends'}
-                </span>
-                <TeamStrip slots={6} />
+            {countingDown && !casualSelect ? (
+              <div className="pa-countdown" role="status" aria-live="polite">
+                <small>{countdownLeft > 0 ? 'Battle starts in' : 'Fight!'}</small>
+                <b key={countdownLeft > 0 ? countdownLeft : 'go'}>{countdownLeft > 0 ? countdownLeft : 'GO'}</b>
               </div>
             ) : null}
 
@@ -330,19 +388,8 @@ export default function CasualRoomPage() {
               </div>
             ) : null}
 
-            {countingDown ? (
-              <div className="pa-countdown" role="status" aria-live="polite">
-                <small>
-                  {casualSelect
-                    ? (countdownLeft > 0 ? 'Teams drop in' : 'Deal!')
-                    : (countdownLeft > 0 ? 'Battle starts in' : 'Fight!')}
-                </small>
-                <b>{countdownLeft > 0 ? countdownLeft : 'GO'}</b>
-              </div>
-            ) : null}
-
             <div className="pa-lobby-vs">
-              <article className="pa-lobby-side cyan">
+              <article className={`pa-lobby-side cyan${yourId ? ' is-present' : ''}`}>
                 <small>Your trainer</small>
                 <ProfileTrainerSprite label={yourId} side="left" />
                 <strong><TrainerName playerId={yourId} /></strong>
@@ -360,7 +407,7 @@ export default function CasualRoomPage() {
               <div className="pa-lobby-mid">
                 <span>VS</span>
               </div>
-              <article className="pa-lobby-side coral">
+              <article key={rivalId ?? 'open'} className={`pa-lobby-side coral${rivalId ? ' is-present' : ' is-open'}`}>
                 <small>Opponent</small>
                 {rivalId ? <ProfileTrainerSprite label={rivalId} side="right" /> : <span className="pa-fight-open" aria-hidden />}
                 <strong>{rivalId ? <TrainerName playerId={rivalId} /> : 'Waiting…'}</strong>
@@ -384,18 +431,47 @@ export default function CasualRoomPage() {
 
       {room ? (
         <section className="pa-split">
-          <div className="pa-vault">
+          <div className={`pa-vault${stakesLocked ? ' is-funded' : ''}${real ? ' rail-sol' : ' rail-poke'}`}>
             <header>
-              <h2>Match economics</h2>
-              <span className="ok">Player-funded</span>
+              <h2>{real ? 'Real stake' : 'Mock fight'}</h2>
+              <span className={real ? (stakesLocked ? 'ok' : 'warn') : 'ok'}>
+                {real ? (stakesLocked ? 'Escrow locked' : 'Escrow') : 'No SOL'}
+              </span>
             </header>
             <div className="pa-econ-rows">
-              <div><span>Collateral each</span><strong>{formatPoke(room.economics.collateral)}</strong></div>
-              <div><span>Gross match pool</span><strong>{formatPoke(room.economics.totalPot)}</strong></div>
-              <div className="fee"><span>Protocol fee · 2% at match start</span><strong>{formatPoke(room.economics.protocolFee)}</strong></div>
-              <div className="payout"><span>Winner receives</span><strong>{formatPoke(room.economics.winnerPayout)}</strong></div>
+              <div><span>Your stake</span><strong>{money(room.economics.collateral)}</strong></div>
+              <div><span>Opponent stake</span><strong>{money(room.economics.collateral)}</strong></div>
+              <div><span>Amount locked</span><strong>{money(room.economics.totalPot)}</strong></div>
+              <div className="fee"><span>Platform fee · 2%</span><strong>{money(room.economics.protocolFee)}</strong></div>
+              <div className="payout"><span>Potential payout</span><strong>{money(room.economics.winnerPayout)}</strong></div>
             </div>
-            <p className="pa-econ-note">One fee from the gross pool. No withdrawal tax.</p>
+            <p className="pa-econ-note">
+              {real
+                ? (stakesLocked
+                  ? 'Both stakes are locked. The server settles escrow from the battle result.'
+                  : room.status === 'cancelled'
+                    ? 'Challenge cancelled. Unlocked stakes are refunded by the escrow rules.'
+                    : 'Funds lock only after each wallet signs. The battle cannot start until both deposits confirm.')
+                : 'Mock fight. Development balance only. Nothing is escrowed on-chain.'}
+            </p>
+            {room.status === 'completed' ? (
+              <div className="pa-econ-rows pa-settle">
+                <div>
+                  <span>{room.winnerId ? (room.winnerId === playerId ? 'WIN' : 'LOSS') : 'RESULT'}</span>
+                  <strong>{room.winnerId ? (room.winnerId === playerId ? 'You won' : 'You lost') : 'Unresolved'}</strong>
+                </div>
+                <div><span>Stake</span><strong>{money(room.economics.collateral)}</strong></div>
+                <div className="payout">
+                  <span>Payout</span>
+                  <strong>
+                    {room.payout
+                      ? money(room.payout.amount)
+                      : 'Pending settlement'}
+                  </strong>
+                </div>
+                <div><span>Escrow</span><strong>{real ? (room.payout ? 'Settled' : 'Pending') : 'Mock ledger'}</strong></div>
+              </div>
+            ) : null}
           </div>
           <div className="pa-vault">
             <header>
@@ -407,10 +483,15 @@ export default function CasualRoomPage() {
               <span>{room.roomType === 'private' ? 'Private challenge' : 'Open challenge'}</span>
               <button
                 type="button"
-                className="pa-btn pa-btn-surface pa-btn-sm"
-                onClick={() => void navigator.clipboard?.writeText(window.location.href)}
+                className={`pa-btn pa-btn-surface pa-btn-sm${copied ? ' is-copied' : ''}`}
+                onClick={() => {
+                  void navigator.clipboard?.writeText(window.location.href).then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1200);
+                  });
+                }}
               >
-                Copy challenge link
+                {copied ? 'Link copied' : 'Copy challenge link'}
               </button>
             </div>
           </div>
@@ -420,7 +501,17 @@ export default function CasualRoomPage() {
       <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <div className="pa-lobby-actions">
-        {canAccept ? (
+        {canAccept && real && !acceptArmed ? (
+          <button
+            type="button"
+            className="pa-btn pa-btn-gold"
+            disabled={busy}
+            onClick={() => setAcceptArmed(true)}
+          >
+            Review stake
+          </button>
+        ) : null}
+        {canAccept && (!real || acceptArmed) ? (
           <button
             type="button"
             className="pa-btn pa-btn-primary"
@@ -428,36 +519,30 @@ export default function CasualRoomPage() {
             onClick={() => void act(async () => {
               const response = await client.request({ type: 'casual.accept', roomId });
               if (response.type === 'casual.state') setRoom(response.room);
+              await lockReturnedStake(response);
             })}
           >
-            Accept challenge
+            {real ? 'Confirm stake and accept' : 'Accept challenge'}
           </button>
         ) : null}
-        {isPlayer && selecting && !yours?.confirmed && !countingDown ? (
+        {needsStake && !canAccept ? (
+          <button
+            type="button"
+            className="pa-btn pa-btn-gold"
+            disabled={busy}
+            onClick={() => void act(async () => {
+              const response = await client.request({ type: 'casual.stake', roomId });
+              await lockReturnedStake(response);
+            })}
+          >
+            Lock my stake
+          </button>
+        ) : null}
+        {isPlayer && casualSelect && room && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
           <button
             type="button"
             className="pa-btn pa-btn-primary"
-            disabled={busy || !canConfirm}
-            onClick={() => void act(() => sendSelection(selected, true))}
-          >
-            Confirm three
-          </button>
-        ) : null}
-        {isPlayer && selecting && yours?.confirmed && !countingDown ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-surface"
-            disabled={busy}
-            onClick={() => void act(() => sendSelection(selected, false))}
-          >
-            Unconfirm
-          </button>
-        ) : null}
-        {isPlayer && casualSelect && room && (room.status === 'full' || room.status === 'ready') ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-primary"
-            disabled={busy}
+            disabled={busy || (real && !stakesLocked && !youReady)}
             onClick={() => void act(async () => {
               if (!playerId) return;
               const response = await client.request({
@@ -475,7 +560,7 @@ export default function CasualRoomPage() {
           <button
             type="button"
             className="pa-btn pa-btn-primary"
-            disabled={busy || (!youReady && !canLockCompetitive)}
+            disabled={busy || (real && !stakesLocked && !youReady) || (!youReady && !canLockCompetitive)}
             onClick={() => void act(async () => {
               if (!playerId) return;
               const response = await client.request({
@@ -494,7 +579,7 @@ export default function CasualRoomPage() {
           <button
             type="button"
             className="pa-btn pa-btn-surface"
-            disabled={busy}
+            disabled={busy || (real && !stakesLocked && !(playerId && room.ready[playerId]))}
             onClick={() => void act(async () => {
               if (!playerId) return;
               const response = await client.request({
@@ -547,6 +632,8 @@ export default function CasualRoomPage() {
           </button>
         ) : null}
       </div>
+      </>
+      )}
     </div>
   );
 }

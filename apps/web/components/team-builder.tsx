@@ -4,7 +4,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
-import { isDemoAuthEnabled } from '@/lib/demo-auth';
+import {
+  customFormats,
+  formatById,
+  formatBuilderBlurb,
+  formatLabel,
+} from '@/lib/tournament-formats';
 import type { TeamSearchHit } from '@/lib/protocol';
 import {
   NATURES,
@@ -22,12 +27,14 @@ import {
   readRoster,
   readSavedTeam,
   clearSavedTeam,
+  classifyTeamProblems,
   filterItemHits,
   filterMoveHits,
   filterSpeciesHits,
   setsFromInspection,
   setsToPaste,
   sortMoveHits,
+  teamLegalityTone,
   visibleTeamProblems,
   writeSavedTeam,
   type EditorSet,
@@ -60,13 +67,27 @@ const MOVE_SORTS: { id: MoveSort; label: string }[] = [
   { id: 'type', label: 'Type' },
 ];
 
-export function TeamBuilder() {
+export function TeamBuilder({
+  initialRulesetId = 'gen9ou',
+  tournamentId,
+  formatLocked = false,
+}: {
+  initialRulesetId?: string;
+  tournamentId?: string;
+  formatLocked?: boolean;
+}) {
   const { client, playerId, connected } = useArena();
+  const [rulesetId, setRulesetId] = useState(initialRulesetId);
+  const formatCard = formatById(rulesetId);
+  const formatName = formatLabel(rulesetId);
+  const formatBlurb = formatBuilderBlurb(rulesetId);
+  const builderFormats = useMemo(() => customFormats(), []);
+  const preserveDraftOnRulesetChange = useRef(false);
   const [name, setName] = useState('Demo Circuit');
   const [sets, setSets] = useState<EditorSet[]>(() => Array.from({ length: 6 }, emptySet));
   const [selected, setSelected] = useState(0);
   const [inspection, setInspection] = useState<TeamInspection | null>(null);
-  const [notice, setNotice] = useState('Loading the Gen 9 OU validator.');
+  const [notice, setNotice] = useState(`Loading the ${formatName} validator.`);
   const [paste, setPaste] = useState('');
   const [knownMoves, setKnownMoves] = useState<Record<string, TeamSearchHit>>({});
   const [saved, setSaved] = useState(false);
@@ -83,45 +104,83 @@ export function TeamBuilder() {
   const [learnset, setLearnset] = useState<TeamSearchHit[]>([]);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const [showIssues, setShowIssues] = useState(true);
   const inspectGeneration = useRef(0);
   const catalogGeneration = useRef(0);
   const speciesGeneration = useRef(0);
 
   useEffect(() => {
+    setRulesetId(initialRulesetId);
+  }, [initialRulesetId]);
+
+  useEffect(() => {
     let cancelled = false;
     setHydrated(false);
     async function load() {
+      if (preserveDraftOnRulesetChange.current) {
+        preserveDraftOnRulesetChange.current = false;
+        if (playerId) setRoster(readRoster(playerId, rulesetId));
+        setSpeciesCatalog(null);
+        setItemCatalog(null);
+        setLearnset([]);
+        setKnownMoves({});
+        setHydrated(true);
+        return;
+      }
       if (!playerId || !connected) {
         setNotice('Connect a wallet to edit and save a trainer-scoped team.');
         setHydrated(true);
         return;
       }
-      const roster = readRoster(playerId);
-      setRoster(roster);
-      const stored = readSavedTeam(playerId);
+      const nextRoster = readRoster(playerId, rulesetId);
+      setRoster(nextRoster);
+      const stored = readSavedTeam(playerId, rulesetId);
       try {
         if (stored) {
-          const message = await client.request({ type: 'team.inspect', team: stored.paste });
+          if (!stored.paste.trim()) {
+            setName(stored.name);
+            setTeamId(stored.id);
+            setSets(Array.from({ length: 6 }, emptySet));
+            setInspection(null);
+            setPaste('');
+            setNotice(`Pick Pokémon legal in ${formatName}.`);
+            setSaved(true);
+            setHydrated(true);
+            return;
+          }
+          const message = await client.request({ type: 'team.inspect', team: stored.paste, ruleset: rulesetId });
           if (cancelled || message.type !== 'team.inspect') return;
           setName(stored.name);
           setTeamId(stored.id);
           setSets(setsFromInspection(message.inspection));
           setInspection(message.inspection);
           setPaste(stored.paste);
-          setNotice(message.inspection.packed ? 'Saved team passes Gen 9 OU.' : 'Saved draft still has clause problems.');
+          setNotice(message.inspection.packed ? `Saved team passes ${formatName}.` : 'Saved draft still has clause problems.');
           setSaved(true);
+          setHydrated(true);
+          return;
+        }
+        if (rulesetId !== 'gen9ou') {
+          if (cancelled) return;
+          const blankId = `team-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          setTeamId(blankId);
+          setName(`${formatName} team`);
+          setSets(Array.from({ length: 6 }, emptySet));
+          setInspection(null);
+          setPaste('');
+          setNotice(`Pick Pokémon legal in ${formatName}.`);
           setHydrated(true);
           return;
         }
         const starter = await client.request({ type: 'team.starter' });
         if (cancelled || starter.type !== 'team.starter') return;
-        const message = await client.request({ type: 'team.inspect', team: starter.paste });
+        const message = await client.request({ type: 'team.inspect', team: starter.paste, ruleset: rulesetId });
         if (cancelled || message.type !== 'team.inspect') return;
         setName(starter.name);
         setSets(setsFromInspection(message.inspection));
         setInspection(message.inspection);
         setPaste(starter.paste);
-        setNotice('Starter team passes Gen 9 OU. Edit a slot, then save.');
+        setNotice(`Starter team passes ${formatName}. Edit a slot, then save.`);
         setHydrated(true);
       } catch (error) {
         if (!cancelled) {
@@ -134,7 +193,7 @@ export function TeamBuilder() {
     return () => {
       cancelled = true;
     };
-  }, [client, playerId, connected]);
+  }, [client, playerId, connected, rulesetId, formatName]);
 
   useEffect(() => {
     if (!hydrated || !connected) return undefined;
@@ -145,7 +204,7 @@ export function TeamBuilder() {
         if (generation === inspectGeneration.current) setInspection(null);
         return;
       }
-      void client.request({ type: 'team.inspect', team: nextPaste }).then(message => {
+      void client.request({ type: 'team.inspect', team: nextPaste, ruleset: rulesetId }).then(message => {
         if (generation !== inspectGeneration.current) return;
         if (message.type === 'team.inspect') setInspection(message.inspection);
       }).catch(error => {
@@ -154,7 +213,7 @@ export function TeamBuilder() {
       });
     }, 280);
     return () => window.clearTimeout(handle);
-  }, [client, connected, hydrated, sets]);
+  }, [client, connected, hydrated, sets, rulesetId]);
 
   const current = sets[selected] ?? emptySet();
   const pickerSet = picker && picker.kind !== 'import'
@@ -178,10 +237,38 @@ export function TeamBuilder() {
   const builderProblems = useMemo(() => (
     inspection ? visibleTeamProblems(inspection.problems) : []
   ), [inspection]);
+  const problemGroups = useMemo(() => classifyTeamProblems(builderProblems), [builderProblems]);
+  const filledSlots = sets.filter(set => set.species.trim()).length;
+  const legalityTone = teamLegalityTone(filledSlots, inspection?.packed, builderProblems);
 
   const filteredMoves = useMemo(() => {
     return sortMoveHits(filterMoveHits(learnset, pickerQuery, typeFilter, categoryFilter), moveSort);
   }, [categoryFilter, learnset, moveSort, pickerQuery, typeFilter]);
+
+  function switchFormat(nextId: string) {
+    if (nextId === rulesetId || formatLocked) return;
+    if (!formatById(nextId)) return;
+    preserveDraftOnRulesetChange.current = true;
+    closePicker();
+    setSpeciesCatalog(null);
+    setItemCatalog(null);
+    setLearnset([]);
+    setKnownMoves({});
+    setInspection(null);
+    setSaved(false);
+    setShowIssues(true);
+    setRulesetId(nextId);
+    const nextLabel = formatLabel(nextId);
+    const filled = sets.filter(set => set.species.trim()).length;
+    setNotice(filled
+      ? `Switched to ${nextLabel}. Revalidating the current team — illegal pieces stay marked until you change them.`
+      : `Building for ${nextLabel}. ${formatBuilderBlurb(nextId)}`);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('ruleset', nextId);
+      window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+    }
+  }
 
   function updateSet(patch: Partial<EditorSet>) {
     updateSetAt(selected, patch);
@@ -245,7 +332,7 @@ export function TeamBuilder() {
     }
     setCatalogBusy(true);
     try {
-      const message = await client.request({ type: 'team.search', kind: 'species', query: '' });
+      const message = await client.request({ type: 'team.search', kind: 'species', query: '', ruleset: rulesetId });
       if (generation !== catalogGeneration.current) return;
       if (message.type === 'team.search') {
         setSpeciesCatalog(message.hits ?? message.results.map(name => ({ name })));
@@ -277,7 +364,7 @@ export function TeamBuilder() {
     setItemCatalog(null);
     setCatalogBusy(true);
     try {
-      const message = await client.request({ type: 'team.search', kind: 'item', query: '', species });
+      const message = await client.request({ type: 'team.search', kind: 'item', query: '', species, ruleset: rulesetId });
       if (generation !== catalogGeneration.current) return;
       if (message.type === 'team.search') {
         setItemCatalog({
@@ -315,6 +402,7 @@ export function TeamBuilder() {
         kind: 'move',
         query: '',
         species: target.species.trim(),
+        ruleset: rulesetId,
       });
       if (generation !== catalogGeneration.current) return;
       if (message.type === 'team.search') {
@@ -341,9 +429,9 @@ export function TeamBuilder() {
     closePicker();
     try {
       const [abilities, moves, items] = await Promise.all([
-        client.request({ type: 'team.search', kind: 'ability', query: '', species }),
-        client.request({ type: 'team.search', kind: 'move', query: '', species }),
-        client.request({ type: 'team.search', kind: 'item', query: '', species }),
+        client.request({ type: 'team.search', kind: 'ability', query: '', species, ruleset: rulesetId }),
+        client.request({ type: 'team.search', kind: 'move', query: '', species, ruleset: rulesetId }),
+        client.request({ type: 'team.search', kind: 'item', query: '', species, ruleset: rulesetId }),
       ]);
       if (generation !== speciesGeneration.current) return;
       const abilityNames = abilities.type === 'team.search' ? abilities.results : [];
@@ -397,14 +485,14 @@ export function TeamBuilder() {
 
   async function applyPaste() {
     try {
-      const message = await client.request({ type: 'team.inspect', team: paste });
+      const message = await client.request({ type: 'team.inspect', team: paste, ruleset: rulesetId });
       if (message.type !== 'team.inspect') return;
       setSets(setsFromInspection(message.inspection));
       setInspection(message.inspection);
       setSelected(0);
       setSaved(false);
       closePicker();
-      setNotice(message.inspection.packed ? 'Imported paste passes Gen 9 OU.' : 'Imported paste still has clause problems.');
+      setNotice(message.inspection.packed ? `Imported paste passes ${formatName}.` : 'Imported paste still has clause problems.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Import failed.');
     }
@@ -441,19 +529,19 @@ export function TeamBuilder() {
       setTeamId(id);
       return;
     }
-    const message = await client.request({ type: 'team.inspect', team: nextPaste });
+    const message = await client.request({ type: 'team.inspect', team: nextPaste, ruleset: rulesetId });
     if (message.type !== 'team.inspect') return;
     setSets(setsFromInspection(message.inspection));
     setInspection(message.inspection);
     setSelected(0);
-    setNotice(message.inspection.packed ? 'Saved team passes Gen 9 OU.' : 'Saved draft still has clause problems.');
+    setNotice(message.inspection.packed ? `Saved team passes ${formatName}.` : 'Saved draft still has clause problems.');
   }
 
   async function switchTeam(id: string) {
     if (!playerId || id === teamId) return;
-    writeSavedTeam(playerId, snapshotTeam(teamId || `team-${Date.now().toString(36)}`));
-    activateTeam(playerId, id);
-    const next = readRoster(playerId);
+    writeSavedTeam(playerId, snapshotTeam(teamId || `team-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`), rulesetId);
+    activateTeam(playerId, id, rulesetId);
+    const next = readRoster(playerId, rulesetId);
     setRoster(next);
     const team = next.teams.find(item => item.id === id);
     if (!team) return;
@@ -462,10 +550,10 @@ export function TeamBuilder() {
 
   function startNewTeam() {
     if (playerId) {
-      const currentId = teamId || `team-${Date.now().toString(36)}`;
-      writeSavedTeam(playerId, snapshotTeam(currentId));
-      const created = addBlankTeam(playerId);
-      setRoster(readRoster(playerId));
+      const currentId = teamId || `team-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      writeSavedTeam(playerId, snapshotTeam(currentId), rulesetId);
+      const created = addBlankTeam(playerId, rulesetId);
+      setRoster(readRoster(playerId, rulesetId));
       setTeamId(created.id);
     }
     blankEditor('New team');
@@ -476,26 +564,39 @@ export function TeamBuilder() {
     const occupied = sets.some(set => set.species.trim());
     if (occupied && !window.confirm('Clear this team and start from scratch?')) return;
     blankEditor('New team');
-    if (playerId) clearSavedTeam(playerId);
-    if (playerId) setRoster(readRoster(playerId));
+    if (playerId) clearSavedTeam(playerId, rulesetId);
+    if (playerId) setRoster(readRoster(playerId, rulesetId));
     setNotice('Blank team. Choose a Pokémon in slot 1.');
   }
 
-  function save() {
+  async function save() {
     if (!playerId) {
       setNotice('Connect a wallet before saving a team.');
       return;
     }
-    const id = teamId || `team-${Date.now().toString(36)}`;
-    writeSavedTeam(playerId, snapshotTeam(id));
+    const id = teamId || `team-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const snapshot = snapshotTeam(id);
+    writeSavedTeam(playerId, snapshot, rulesetId);
     setTeamId(id);
-    setRoster(readRoster(playerId));
+    setRoster(readRoster(playerId, rulesetId));
     setSaved(true);
-    setNotice(inspection?.packed
-      ? 'Saved on this browser. Ready up or register to bring this team.'
-      : isDemoAuthEnabled()
-        ? 'Draft saved. It does not pass Gen 9 OU, so a match will bring the demo team.'
-        : 'Draft saved. It does not pass Gen 9 OU, so it cannot be locked for a match.');
+    if (tournamentId && snapshot.validated) {
+      try {
+        await client.request({
+          type: 'tournament.updateTeam',
+          tournamentId,
+          team: snapshot.paste,
+        });
+        setNotice(`Saved for ${formatName}. The tournament entry was updated.`);
+        return;
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
+    setNotice(snapshot.validated
+      ? `Saved for ${formatName}. It is ready when that cup opens.`
+      : `Draft saved. It does not pass ${formatName}, so it cannot enter that cup.`);
   }
 
   function openImport() {
@@ -510,9 +611,8 @@ export function TeamBuilder() {
     <div className="pa-page tb">
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <p className="pa-kicker"><i /> — Gen 9 OU · Competitive roster —</p>
           <h1>Team builder</h1>
-          <p className="pa-lead">Pick six from the Pokédex, lock four attacks each, then save for casual competitive or cups.</p>
+          <p className="pa-lead">Choose a format first. The Pokédex, moves, abilities, and items follow that ruleset.</p>
         </div>
         <div className="tb-file-actions">
           <label className="tb-name">
@@ -527,18 +627,111 @@ export function TeamBuilder() {
           <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={startNewTeam}>New</button>
           <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={openImport}>Import / export</button>
           <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={clearTeam}>Clear</button>
-          <button type="button" className="pa-btn pa-btn-primary pa-btn-sm" onClick={save}>{saved ? 'Saved' : 'Save team'}</button>
+          <button type="button" className="pa-btn pa-btn-primary pa-btn-sm" onClick={() => void save()}>{saved ? 'Saved' : 'Save team'}</button>
         </div>
       </header>
 
+      <section className={`tb-format ${formatLocked ? 'is-locked' : ''}`} aria-label="Team format">
+        <div className="tb-format-copy">
+          <small>Team format</small>
+          <strong>{formatName}</strong>
+          <p>{formatBlurb}</p>
+          {formatLocked ? (
+            <em>Locked for this tournament entry. Finish this format team, then return to the cup.</em>
+          ) : (
+            <em>Changing format rechecks this team. Illegal pieces stay until you replace them.</em>
+          )}
+        </div>
+        <label className="tb-format-select">
+          <span>Format</span>
+          <select
+            aria-label="Team format"
+            value={rulesetId}
+            disabled={formatLocked}
+            onChange={event => switchFormat(event.target.value)}
+          >
+            {builderFormats.map(format => (
+              <option key={format.id} value={format.id}>
+                {format.title}
+                {format.id === 'gen9ou' ? ' · SV OU' : ` · Gen ${format.generation} only`}
+              </option>
+            ))}
+          </select>
+        </label>
+        {!formatLocked ? (
+          <div className="tb-format-chips">
+            {builderFormats.map(format => (
+              <button
+                key={format.id}
+                type="button"
+                className={format.id === rulesetId ? 'active' : ''}
+                aria-pressed={format.id === rulesetId}
+                onClick={() => switchFormat(format.id)}
+              >
+                {format.id === 'gen9ou' ? 'Gen 9 OU' : `Gen ${format.generation}`}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </section>
+
+      <section className={`tb-legality tone-${legalityTone}`} aria-label="Team status">
+        <header>
+          <small>Team status</small>
+          <strong>
+            {legalityTone === 'legal' ? 'Legal'
+              : legalityTone === 'empty' ? 'Empty'
+                : legalityTone === 'needs-changes' ? 'Team needs changes'
+                  : 'Illegal'}
+          </strong>
+          <span>{formatCard?.restriction ?? formatName}</span>
+        </header>
+        <ul>
+          <li className={filledSlots === 6 ? 'ok' : 'warn'}>
+            {filledSlots === 6 ? '✓' : '⚠'} {filledSlots}/6 Pokémon
+          </li>
+          <li className={problemGroups.pokemon.length || (inspection && !inspection.packed && filledSlots) ? (problemGroups.pokemon.length ? 'bad' : (inspection?.packed ? 'ok' : 'warn')) : (filledSlots ? 'ok' : 'muted')}>
+            {problemGroups.pokemon.length
+              ? `✕ ${problemGroups.pokemon.length} Pokémon not Gen-legal for ${formatName}`
+              : inspection?.packed
+                ? '✓ All Pokémon legal'
+                : filledSlots
+                  ? '⚠ Checking Pokémon legality'
+                  : '— No Pokémon yet'}
+          </li>
+          <li className={problemGroups.moves.length ? 'bad' : (inspection?.packed ? 'ok' : 'muted')}>
+            {problemGroups.moves.length
+              ? `✕ ${problemGroups.moves.length} move issue${problemGroups.moves.length === 1 ? '' : 's'}`
+              : inspection?.packed ? '✓ All moves legal' : '— Moves checked with the format'}
+          </li>
+          <li className={problemGroups.abilities.length ? 'bad' : (inspection?.packed ? 'ok' : 'muted')}>
+            {problemGroups.abilities.length
+              ? `✕ ${problemGroups.abilities.length} ability issue${problemGroups.abilities.length === 1 ? '' : 's'}`
+              : inspection?.packed ? '✓ All abilities legal' : '— Abilities checked with the format'}
+          </li>
+          <li className={problemGroups.items.length ? 'bad' : (inspection?.packed ? 'ok' : 'muted')}>
+            {problemGroups.items.length
+              ? `✕ ${problemGroups.items.length} item issue${problemGroups.items.length === 1 ? '' : 's'}`
+              : inspection?.packed ? '✓ All items legal' : '— Items checked with the format'}
+          </li>
+        </ul>
+        {builderProblems.length ? (
+          <div className="tb-legality-actions">
+            <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={() => setShowIssues(value => !value)}>
+              {showIssues ? 'Hide issues' : `View issues (${builderProblems.length})`}
+            </button>
+          </div>
+        ) : null}
+      </section>
+
       <p className={`tb-status ${inspection?.packed ? 'ok' : ''}`}>
         {connected ? notice : 'Connecting to the validator…'}
-        {inspection?.packed ? ' · 0 clause violations' : ''}
+        {inspection?.packed ? ' · Ready for this format' : ''}
       </p>
 
-      {inspection && !inspection.packed && builderProblems.length ? (
+      {showIssues && builderProblems.length ? (
         <ul className="tb-problems">
-          {builderProblems.slice(0, 6).map(problem => <li key={problem}>{problem}</li>)}
+          {builderProblems.slice(0, 8).map(problem => <li key={problem}>{problem}</li>)}
         </ul>
       ) : null}
 
@@ -546,18 +739,22 @@ export function TeamBuilder() {
         <aside className="tb-slots">
           {sets.map((set, index) => {
             const empty = !set.species.trim();
+            const slotIllegal = Boolean(
+              set.species.trim()
+              && builderProblems.some(problem => problem.toLowerCase().includes(set.species.trim().toLowerCase())),
+            );
             return (
               <button
                 key={index}
                 type="button"
-                className={index === selected ? 'active' : ''}
+                className={`${index === selected ? 'active' : ''}${slotIllegal ? ' is-illegal' : ''}`}
                 aria-pressed={index === selected}
                 onClick={() => {
                   setSelected(index);
                   if (empty) void openSpeciesPicker(index);
                 }}
               >
-                <small>Slot {String(index + 1).padStart(2, '0')}{index === selected ? ' · editing' : ''}</small>
+                <small>Slot {String(index + 1).padStart(2, '0')}{index === selected ? ' · editing' : ''}{slotIllegal ? ' · illegal' : ''}</small>
                 <span className="tb-slot-ident">
                   {empty ? <PokemonIcon name="" /> : <PokemonIcon name={set.species} />}
                   <strong>{empty ? 'Choose Pokémon' : set.species}</strong>
@@ -733,7 +930,7 @@ export function TeamBuilder() {
       {picker?.kind === 'species' ? (
         <CatalogModal
           title="Pokédex"
-          hint="Gen 9 OU legal Pokémon"
+          hint={`${formatName} legal Pokémon`}
           query={pickerQuery}
           onQuery={setPickerQuery}
           onClose={closePicker}
@@ -787,46 +984,14 @@ export function TeamBuilder() {
             if (picker?.kind === 'move') void openMovePicker(picker.moveSlot, picker.slot);
           }}
           filters={(
-            <div className="tb-filter-groups">
-              <div className="tb-filter-row">
-                <span>Kind</span>
-                <button type="button" className={!categoryFilter ? 'active' : ''} aria-pressed={!categoryFilter} onClick={() => setCategoryFilter('')}>All</button>
-                {MOVE_CATEGORIES.map(category => (
-                  <button
-                    key={category}
-                    type="button"
-                    className={categoryFilter === category ? 'active' : ''}
-                    aria-pressed={categoryFilter === category}
-                    onClick={() => setCategoryFilter(category)}
-                  >
-                    {category}
-                  </button>
-                ))}
-              </div>
-              <div className="tb-filter-row">
-                <span>Type</span>
-                <button type="button" className={!typeFilter ? 'active' : ''} aria-pressed={!typeFilter} onClick={() => setTypeFilter('')}>Any</button>
-                {TERA_TYPES.map(type => (
-                  <button key={type} type="button" className={typeFilter === type ? 'active' : ''} aria-pressed={typeFilter === type} onClick={() => setTypeFilter(type)}>
-                    {type}
-                  </button>
-                ))}
-              </div>
-              <div className="tb-filter-row">
-                <span>Sort</span>
-                {MOVE_SORTS.map(option => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={moveSort === option.id ? 'active' : ''}
-                    aria-pressed={moveSort === option.id}
-                    onClick={() => setMoveSort(option.id)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <AttackFilters
+              categoryFilter={categoryFilter}
+              typeFilter={typeFilter}
+              moveSort={moveSort}
+              onCategory={setCategoryFilter}
+              onType={setTypeFilter}
+              onSort={setMoveSort}
+            />
           )}
         >
           {catalogBusy && !learnset.length ? <p className="tb-plain" role="status">Loading learnset…</p> : null}
@@ -892,6 +1057,106 @@ export function TeamBuilder() {
           <textarea aria-label="Showdown paste" value={paste} onChange={event => setPaste(event.target.value)} rows={12} />
           <button type="button" className="pa-btn pa-btn-primary" onClick={() => void applyPaste()}>Apply paste</button>
         </CatalogModal>
+      ) : null}
+    </div>
+  );
+}
+
+function AttackFilters({
+  categoryFilter,
+  typeFilter,
+  moveSort,
+  onCategory,
+  onType,
+  onSort,
+}: {
+  categoryFilter: string;
+  typeFilter: string;
+  moveSort: MoveSort;
+  onCategory: (value: string) => void;
+  onType: (value: string) => void;
+  onSort: (value: MoveSort) => void;
+}) {
+  const [open, setOpen] = useState<null | 'kind' | 'type' | 'sort'>(null);
+  const toggle = (group: 'kind' | 'type' | 'sort') => {
+    setOpen(current => current === group ? null : group);
+  };
+  const sortLabel = MOVE_SORTS.find(option => option.id === moveSort)?.label ?? 'Name';
+
+  return (
+    <div className="tb-filter-bar">
+      <div className="tb-filter-triggers" role="toolbar" aria-label="Attack filters">
+        <button
+          type="button"
+          className={open === 'kind' || categoryFilter ? 'active' : ''}
+          aria-expanded={open === 'kind'}
+          onClick={() => toggle('kind')}
+        >
+          Kind{categoryFilter ? ` · ${categoryFilter}` : ''}
+        </button>
+        <button
+          type="button"
+          className={open === 'type' || typeFilter ? 'active' : ''}
+          aria-expanded={open === 'type'}
+          onClick={() => toggle('type')}
+        >
+          Type{typeFilter ? ` · ${typeFilter}` : ''}
+        </button>
+        <button
+          type="button"
+          className={open === 'sort' || moveSort !== 'name' ? 'active' : ''}
+          aria-expanded={open === 'sort'}
+          onClick={() => toggle('sort')}
+        >
+          Sort · {sortLabel}
+        </button>
+      </div>
+      {open === 'kind' ? (
+        <div className="tb-filter-options" role="group" aria-label="Kind">
+          <button type="button" className={!categoryFilter ? 'active' : ''} aria-pressed={!categoryFilter} onClick={() => { onCategory(''); setOpen(null); }}>All</button>
+          {MOVE_CATEGORIES.map(category => (
+            <button
+              key={category}
+              type="button"
+              className={categoryFilter === category ? 'active' : ''}
+              aria-pressed={categoryFilter === category}
+              onClick={() => { onCategory(category); setOpen(null); }}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {open === 'type' ? (
+        <div className="tb-filter-options" role="group" aria-label="Type">
+          <button type="button" className={!typeFilter ? 'active' : ''} aria-pressed={!typeFilter} onClick={() => { onType(''); setOpen(null); }}>Any</button>
+          {TERA_TYPES.map(type => (
+            <button
+              key={type}
+              type="button"
+              className={typeFilter === type ? 'active' : ''}
+              aria-pressed={typeFilter === type}
+              onClick={() => { onType(type); setOpen(null); }}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {open === 'sort' ? (
+        <div className="tb-filter-options" role="group" aria-label="Sort">
+          {MOVE_SORTS.map(option => (
+            <button
+              key={option.id}
+              type="button"
+              className={moveSort === option.id ? 'active' : ''}
+              aria-pressed={moveSort === option.id}
+              onClick={() => { onSort(option.id); setOpen(null); }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       ) : null}
     </div>
   );

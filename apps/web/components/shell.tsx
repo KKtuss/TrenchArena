@@ -4,18 +4,21 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
 
+import { BrandMark } from '@/components/brand-mark';
 import { ErrorToast } from '@/components/error-toast';
+import { AnimatedAmount } from '@/components/motion';
 import { TrainerName } from '@/components/profile-trainer';
 import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatSolLamports } from '@/lib/api-client';
 
 export function ArenaShell({ children }: { children: ReactNode }) {
   const { connectionState, snapshot, error, clearError, connected } = useArena();
-  const pathname = usePathname();
+  const pathname = usePathname() ?? '';
   const navItems = [
     { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
     { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
+    { href: '/history', label: 'History', active: pathname.startsWith('/history') },
     { href: '/teams/builder', label: 'Team Builder', active: pathname.startsWith('/teams/builder') },
     { href: '/tournaments', label: 'Tournaments', active: pathname.startsWith('/tournament') },
     { href: '/treasury', label: 'Treasury & Economy', active: pathname.startsWith('/treasury') },
@@ -27,7 +30,7 @@ export function ArenaShell({ children }: { children: ReactNode }) {
       <header className="shell-nav shell-nav-stitch">
         <div className="shell-nav-inner">
           <Link href="/" className="brand">
-            <span className="brand-mark" aria-hidden>PA</span>
+            <BrandMark className="brand-mark" />
             <span className="brand-copy">
               <strong>
                 PokeArena
@@ -57,12 +60,12 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                     ? `Eligible · $${(snapshot.passport.usdCents / 100).toFixed(0)}`
                     : `Need $20 · $${(snapshot.passport.usdCents / 100).toFixed(0)}`)
                   : snapshot
-                    ? formatPoke(snapshot.wallet.balance)
+                    ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPoke} />
                     : '—'}
               </strong>
               {snapshot?.chainEconomyEnabled && snapshot.solBalances ? (
                 <small style={{ marginLeft: 8 }}>
-                  {(Number(snapshot.solBalances.freeLamports) / 1e9).toFixed(3)} SOL
+                  <AnimatedAmount value={Number(snapshot.solBalances.freeLamports)} format={formatSolLamports} />
                 </small>
               ) : null}
               <span
@@ -77,7 +80,9 @@ export function ArenaShell({ children }: { children: ReactNode }) {
       </header>
       <main className={isHome ? 'is-home' : undefined}>
         <LiveFightBanner />
-        {children}
+        <div key={pathname} className="pa-route">
+          {children}
+        </div>
       </main>
       <ErrorToast error={error} onDismiss={clearError} />
     </>
@@ -85,7 +90,7 @@ export function ArenaShell({ children }: { children: ReactNode }) {
 }
 
 function LiveFightBanner() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? '';
   const router = useRouter();
   const { client, playerId, snapshot } = useArena();
   const [busy, setBusy] = useState(false);
@@ -165,12 +170,11 @@ export function Badge({
 }
 
 export function PageHeader({
-  eyebrow,
   title,
   description,
   action,
 }: {
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   description?: string;
   action?: ReactNode;
@@ -178,7 +182,6 @@ export function PageHeader({
   return (
     <div className="page-header">
       <div>
-        <div className="page-kicker">{eyebrow}</div>
         <h1>{title}</h1>
         {description ? <p>{description}</p> : null}
       </div>

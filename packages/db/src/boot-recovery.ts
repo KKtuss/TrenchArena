@@ -1,4 +1,4 @@
-import type { EconomicsStore, HoldSnapshot } from './economics-store';
+import type { DurableCasualRoom, EconomicsStore, HoldSnapshot } from './economics-store';
 import type { DurableTournament, DurableTournamentMatch, TournamentStore } from './tournament-store';
 
 const TOURNAMENT_HOLD = /^tournament:([^:]+):(.+)$/;
@@ -23,6 +23,12 @@ export interface RecoverDurableStateInput {
   afterSettleTournament?: (tournamentId: string) => Promise<void> | void;
   /** Test hook: invoked before settling a completed tournament. */
   beforeSettleTournament?: (tournamentId: string) => Promise<void> | void;
+  /**
+   * Required when a `sol_chain` casual room is still open. Returns stakes
+   * on-chain and leaves the database room completed or cancelled.
+   * Must not invent a winner.
+   */
+  recoverSolCasualRoom?: (room: DurableCasualRoom) => Promise<void>;
 }
 
 export interface RecoveryReport {
@@ -154,6 +160,7 @@ async function runRecovery(input: RecoverDurableStateInput): Promise<RecoveryRep
       holds: await input.economics.listHolds(),
       report,
       log,
+      recoverSolCasualRoom: input.recoverSolCasualRoom,
     });
   } catch (error) {
     const event = toLogEvent(error);
@@ -381,6 +388,7 @@ async function recoverCasualRooms(input: {
   holds: HoldSnapshot[];
   report: RecoveryReport;
   log: (event: RecoveryLogEvent) => void;
+  recoverSolCasualRoom?: (room: DurableCasualRoom) => Promise<void>;
 }): Promise<void> {
   const roomById = new Map(input.rooms.map(room => [room.id, room]));
   for (const hold of input.holds) {
@@ -401,13 +409,26 @@ async function recoverCasualRooms(input: {
 
   for (const room of [...input.rooms].sort((left, right) => left.id.localeCompare(right.id))) {
     if (room.status === 'completed' || room.status === 'cancelled') continue;
-    // Chain-backed rooms must not be aborted/refunded without reading on-chain
-    // escrow state. Leave them for the chain recovery path.
     if (room.rail === 'sol_chain') {
+      if (!input.recoverSolCasualRoom) {
+        fail('casual', 'SOL casual room requires chain recovery.', { roomId: room.id });
+      }
+      await input.recoverSolCasualRoom(room);
+      const after = await input.economics.getCasualRoom(room.id);
+      if (after && after.status !== 'completed' && after.status !== 'cancelled') {
+        input.log({
+          level: 'info',
+          phase: 'casual',
+          message: 'Left SOL escrow unsettled. No authoritative battle result is persisted.',
+          roomId: room.id,
+        });
+        continue;
+      }
+      input.report.cancelledCasualRoomIds.push(room.id);
       input.log({
         level: 'info',
         phase: 'casual',
-        message: 'Skipping automatic abort for sol_chain room; chain state is authoritative.',
+        message: 'Recovered sol_chain casual room without assigning a winner.',
         roomId: room.id,
       });
       continue;

@@ -342,10 +342,10 @@ export class PostgresTournamentStore implements TournamentStore {
       `INSERT INTO tournaments (
          id, title, format, max_players, bracket_seed, match_timeout_ms, status,
          host_id, entry_fee, rail, entry_atoms, entry_quote_id, prize_lamports,
-         winner_id, created_at, updated_at, started_at, completed_at
+         winner_id, created_at, updated_at, started_at, completed_at, ruleset, finalizes_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, $10, $11, $12,
-         $13::bigint, $14, $15, $16, $17, $18
+         $13::bigint, $14, $15, $16, $17, $18, $19, $20
        )
        ON CONFLICT (id) DO UPDATE SET
          title = EXCLUDED.title,
@@ -357,7 +357,8 @@ export class PostgresTournamentStore implements TournamentStore {
          winner_id = EXCLUDED.winner_id,
          updated_at = EXCLUDED.updated_at,
          started_at = EXCLUDED.started_at,
-         completed_at = EXCLUDED.completed_at`,
+         completed_at = EXCLUDED.completed_at,
+         finalizes_at = EXCLUDED.finalizes_at`,
       [
         tournament.id,
         tournament.title,
@@ -377,6 +378,8 @@ export class PostgresTournamentStore implements TournamentStore {
         new Date(tournament.updatedAt),
         tournament.startedAt === undefined ? null : new Date(tournament.startedAt),
         tournament.completedAt === undefined ? null : new Date(tournament.completedAt),
+        tournament.ruleset ?? 'gen9ou',
+        tournament.finalizesAt === undefined ? null : new Date(tournament.finalizesAt),
       ],
     );
   }
@@ -388,13 +391,14 @@ export class PostgresTournamentStore implements TournamentStore {
   ): Promise<void> {
     await client.query(
       `INSERT INTO tournament_players (
-         tournament_id, player_id, display_name, team, eligible, status, registration_order
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         tournament_id, player_id, display_name, team, eligible, status, registration_order, team_locked
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (tournament_id, player_id) DO UPDATE SET
          display_name = EXCLUDED.display_name,
          team = EXCLUDED.team,
          eligible = EXCLUDED.eligible,
-         status = EXCLUDED.status`,
+         status = EXCLUDED.status,
+         team_locked = EXCLUDED.team_locked`,
       [
         tournamentId,
         player.id,
@@ -403,6 +407,7 @@ export class PostgresTournamentStore implements TournamentStore {
         player.eligible,
         player.status,
         player.registrationOrder,
+        player.teamLocked === true,
       ],
     );
   }
@@ -495,6 +500,7 @@ export class PostgresTournamentStore implements TournamentStore {
       id: String(row.id),
       title: String(row.title),
       format: String(row.format),
+      ruleset: row.ruleset ? String(row.ruleset) : 'gen9ou',
       maxPlayers: Number(row.max_players) as 4 | 8 | 16 | 32,
       bracketSeed: String(row.bracket_seed),
       matchTimeoutMs: Number(row.match_timeout_ms),
@@ -516,6 +522,7 @@ export class PostgresTournamentStore implements TournamentStore {
         eligible: true,
         status: player.status as DurableTournamentPlayer['status'],
         registrationOrder: Number(player.registration_order),
+        ...(player.team_locked === true ? { teamLocked: true } : {}),
       })),
       matchIds: matches.map(match => match.id),
       ...(row.winner_id ? { winner: String(row.winner_id) } : {}),
@@ -527,6 +534,9 @@ export class PostgresTournamentStore implements TournamentStore {
       ...(epoch(row.completed_at as Date | null) === undefined
         ? {}
         : { completedAt: epoch(row.completed_at as Date) }),
+      ...(epoch(row.finalizes_at as Date | null) === undefined
+        ? {}
+        : { finalizesAt: epoch(row.finalizes_at as Date) }),
     };
   }
 

@@ -361,6 +361,38 @@ test('a finished battle is not rewritten as a timeout', async () => {
   assert.equal(battle.getState().failure, undefined);
 });
 
+test('players who keep deciding are not settled by the battle-start clock', async () => {
+  const timeoutMs = 200;
+  const engine = new BattleEngine();
+  const battle = await createStartedBattle(engine, '1,2,3,4', timeoutMs);
+  const startedAt = Date.now();
+  let phases = 0;
+
+  while (phases < 4 && !battle.getResult()) {
+    await new Promise(resolve => setTimeout(resolve, 80));
+    if (battle.getResult()) break;
+    let submitted = false;
+    for (const playerId of [PLAYER_ONE, PLAYER_TWO]) {
+      const request = battle.getState(playerId).request;
+      if (!request?.choices.length) continue;
+      await battle.submitChoice({
+        battleId: battle.id,
+        playerId,
+        revision: request.revision,
+        choice: choiceFor(request.choices[0]),
+      });
+      submitted = true;
+    }
+    if (submitted) phases += 1;
+    else await tick();
+  }
+
+  assert.equal(phases, 4);
+  assert.ok(Date.now() - startedAt >= timeoutMs);
+  assert.equal(battle.getResult(), undefined);
+  assert.equal(battle.getState().lifecycle, 'awaiting-choice');
+});
+
 test('a live timeout settles once even if observers subscribe twice', async () => {
   const battle = await timeoutSilentPlayer(PLAYER_ONE, PLAYER_TWO);
   const first = battle.getResult();

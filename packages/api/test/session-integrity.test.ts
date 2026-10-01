@@ -290,7 +290,7 @@ test('a second socket for the same wallet replaces the first session', async () 
 });
 
 test('disconnect before a casual battle cancels the room and refunds once', async () => {
-  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0, disconnectGraceMs: 80 });
   const port = await server.listen(0);
   const creator = new TestClient(port);
   const opponent = new TestClient(port);
@@ -312,9 +312,13 @@ test('disconnect before a casual battle cancels the room and refunds once', asyn
 
     await creator.close();
     await creator.close();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(server.casual.getRoom(created.room.id).status, 'full');
+    assert.equal(await server.economics.getBalance('demo-player-1'), 10_000_000 - 50_000);
+    assert.equal(await server.economics.getBalance('demo-player-2'), 10_000_000 - 50_000);
     const cancelled = await opponent.waitFor<any>(message => (
       message.type === 'casual.state' && message.room.status === 'cancelled'
-    ));
+    ), 2_000);
     assert.equal(cancelled.room.status, 'cancelled');
     assert.equal(await server.economics.getBalance('demo-player-1'), 10_000_000);
     assert.equal(await server.economics.getBalance('demo-player-2'), 10_000_000);
@@ -384,6 +388,67 @@ test('a live casual disconnect waits for reconnect then forfeits exactly once', 
     assert.equal(await server.economics.getBalance('demo-player-2'), 10_000_000 - 100_000 + 196_000);
     assert.equal(await server.economics.getBalance('demo-player-1'), 10_000_000 - 100_000);
     assert.ok(settled);
+  } finally {
+    await opponent.close();
+    await server.close();
+  }
+});
+
+test('a competitive reconnect does not settle the live fight', async () => {
+  const server = new ApiServer({ allowDemoAuth: true, disconnectGraceMs: 400, countdownMs: 0 });
+  const port = await server.listen(0);
+  const creator = new TestClient(port);
+  const opponent = new TestClient(port);
+  try {
+    await Promise.all([creator.open(), opponent.open()]);
+    await identify(creator, 'demo-player-1');
+    await identify(opponent, 'demo-player-2');
+    creator.send({
+      type: 'casual.create',
+      roomType: 'open',
+      battleSize: '1v1',
+      collateral: 100_000,
+      ruleset: 'competitive',
+    });
+    const created = await creator.waitFor<any>(message => message.type === 'casual.created');
+    opponent.send({ type: 'casual.accept', roomId: created.room.id });
+    await opponent.waitFor(message => message.type === 'casual.state' && message.room.status === 'full');
+    creator.send({
+      type: 'casual.ready',
+      roomId: created.room.id,
+      ready: true,
+      team: DEMO_TEAM_ONE,
+    });
+    opponent.send({
+      type: 'casual.ready',
+      roomId: created.room.id,
+      ready: true,
+      team: DEMO_TEAM_TWO,
+    });
+    await creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'ready');
+    creator.send({ type: 'casual.start', roomId: created.room.id });
+    await creator.waitFor(message => message.type === 'casual.state' && message.room.status === 'battling');
+
+    await creator.close();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(server.casual.getRoom(created.room.id).status, 'battling');
+
+    const reconnected = new TestClient(port);
+    await reconnected.open();
+    await identify(reconnected, 'demo-player-1');
+    reconnected.send({ type: 'match.subscribe', matchId: created.room.matchId });
+    const resumed = await reconnected.waitFor<any>(message => (
+      message.type === 'match.subscribed' || message.type === 'error'
+    ));
+    assert.equal(resumed.type, 'match.subscribed');
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const room = server.casual.getRoom(created.room.id);
+    assert.equal(room.status, 'battling');
+    assert.equal(room.winnerId, undefined);
+    assert.equal(room.payout, undefined);
+    assert.equal(await server.economics.getBalance('demo-player-1'), 10_000_000 - 100_000);
+    assert.equal(await server.economics.getBalance('demo-player-2'), 10_000_000 - 100_000);
+    await reconnected.close();
   } finally {
     await opponent.close();
     await server.close();

@@ -5,6 +5,7 @@ export interface DurableTournamentPlayer {
   eligible: true;
   status: 'registered' | 'withdrawn';
   registrationOrder: number;
+  teamLocked?: boolean;
 }
 
 export interface DurableTournamentMatch {
@@ -28,6 +29,7 @@ export interface DurableTournament {
   id: string;
   title: string;
   format: string;
+  ruleset?: string;
   maxPlayers: 4 | 8 | 16 | 32;
   bracketSeed: string;
   matchTimeoutMs: number;
@@ -45,6 +47,7 @@ export interface DurableTournament {
   updatedAt: number;
   startedAt?: number;
   completedAt?: number;
+  finalizesAt?: number;
 }
 
 export interface RegisterTournamentPlayerInput {

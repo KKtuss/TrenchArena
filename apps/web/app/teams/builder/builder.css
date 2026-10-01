@@ -59,11 +59,192 @@
   color: #10b981;
 }
 
-.tb-problems {
+.tb-format {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(14rem, 0.55fr);
+  gap: 0.85rem 1rem;
+  align-items: start;
+  margin: 0 0 0.85rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid #1d2c4d;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(18, 28, 52, 0.95), rgba(9, 14, 25, 0.98)),
+    repeating-linear-gradient(
+      -12deg,
+      transparent 0,
+      transparent 10px,
+      rgba(86, 120, 180, 0.04) 10px,
+      rgba(86, 120, 180, 0.04) 11px
+    );
+}
+
+.tb-format.is-locked {
+  border-color: #8a6a22;
+  box-shadow: inset 0 0 0 1px rgba(212, 168, 67, 0.18);
+}
+
+.tb-format-copy {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.tb-format-copy small,
+.tb-format-select span,
+.tb-legality small {
   margin: 0;
+  color: #8ea0c0;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.tb-format-copy strong {
+  color: #f4efe6;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tb-format-copy p,
+.tb-format-copy em {
+  margin: 0;
+  color: #b9cacb;
+  font-style: normal;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.tb-format-copy em {
+  color: #d4a843;
+}
+
+.tb-format-select {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.tb-format-chips {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tb-format-chips button {
+  border: 1px solid #1d2c4d;
+  border-radius: 2px;
+  background: #090e19;
+  color: #c7d2e8;
+  padding: 0.35rem 0.55rem;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.tb-format-chips button.active,
+.tb-format-chips button[aria-pressed='true'] {
+  border-color: #d4a843;
+  background: rgba(212, 168, 67, 0.12);
+  color: #f4efe6;
+}
+
+.tb-legality {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0 0 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #1d2c4d;
+  border-radius: 8px;
+  background: #090e19;
+}
+
+.tb-legality.tone-legal {
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.tb-legality.tone-needs-changes,
+.tb-legality.tone-illegal {
+  border-color: rgba(255, 113, 125, 0.4);
+}
+
+.tb-legality header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem 0.75rem;
+}
+
+.tb-legality header strong {
+  color: #f4efe6;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tb-legality header span {
+  margin-left: auto;
+  color: #8ea0c0;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tb-legality ul {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tb-legality li {
+  color: #b9cacb;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.tb-legality li.ok { color: #10b981; }
+.tb-legality li.warn { color: #d4a843; }
+.tb-legality li.bad { color: #ff717d; }
+.tb-legality li.muted { color: #6f809f; }
+
+.tb-legality-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tb-slots button.is-illegal {
+  border-color: rgba(255, 113, 125, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 113, 125, 0.18);
+}
+
+.tb-slots button.is-illegal strong {
+  color: #ff9aa3;
+}
+
+.tb-problems {
+  margin: 0 0 0.85rem;
   padding-left: 1.1rem;
   color: #ff717d;
   font-size: 0.82rem;
+}
+
+@media (max-width: 900px) {
+  .tb-format {
+    grid-template-columns: 1fr;
+  }
+
+  .tb-legality header span {
+    margin-left: 0;
+  }
 }
 
 .tb-grid {
@@ -454,6 +635,35 @@
   gap: 0.35rem;
   max-height: none;
   overflow: visible;
+}
+
+.tb-filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.tb-filter-triggers {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.tb-modal-filters .tb-filter-triggers button {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
 }
 
 .tb-filter-groups {

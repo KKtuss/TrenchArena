@@ -195,8 +195,11 @@ test('websocket Casual views hide opponent picks until both confirm and keep ass
   const creatorPreset = dealt[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.presetId;
   const opponentPreset = dealt[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.presetId;
   assert.ok(creatorPreset);
-  assert.ok(opponentPreset);
-  assert.notEqual(creatorPreset, opponentPreset);
+  assert.equal(creatorPreset, opponentPreset);
+  assert.deepEqual(
+    dealt[1].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-2')?.pokemon.map((mon: { species: string }) => mon.species),
+    dealt[0].room.teamPreview?.find((item: any) => item.playerId === 'demo-player-1')?.pokemon.map((mon: { species: string }) => mon.species),
+  );
 
   clients[0].send({ type: 'casual.select', roomId, slots: [0, 2, 4], confirm: true });
   const afterCreator = await Promise.all(clients.map(client => client.waitFor<any>(message => (

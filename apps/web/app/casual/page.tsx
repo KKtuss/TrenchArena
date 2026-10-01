@@ -58,6 +58,7 @@ export default function CasualLobbyPage() {
               winner={room.winnerId}
               payoutAmount={room.payout?.amount}
               reason={room.payout?.reason}
+              rail={room.rail}
               href={`/result/${room.id}`}
             />
           ))}

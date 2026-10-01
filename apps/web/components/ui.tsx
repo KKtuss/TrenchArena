@@ -4,7 +4,7 @@ import Link from 'next/link';
 
 import { TrainerName } from '@/components/profile-trainer';
 import { Badge, Panel } from '@/components/shell';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatRoomAmount } from '@/lib/api-client';
 import type {
   CasualEconomicsPreview,
   CasualRoom,
@@ -100,12 +100,14 @@ export function ResultCard({
   payoutAmount,
   reason,
   href,
+  rail,
 }: {
   title: string;
   winner?: string;
   payoutAmount?: number;
   reason?: string;
   href?: string;
+  rail?: 'legacy_poke' | 'sol_chain';
 }) {
   return (
     <Panel eyebrow="Match result" title={title} strong>
@@ -119,7 +121,7 @@ export function ResultCard({
         </div>
         <div className="economy-row">
           <span className="muted">Match payout</span>
-          <Badge tone="live">{payoutAmount !== undefined ? formatPoke(payoutAmount) : '—'}</Badge>
+          <Badge tone="live">{payoutAmount !== undefined ? formatRoomAmount(payoutAmount, rail) : '—'}</Badge>
         </div>
         {reason ? <div className="muted">{reason}</div> : null}
         {href ? <Link className="btn btn-primary" href={href}>Open details</Link> : null}
@@ -157,8 +159,8 @@ export function CasualRoomCard({ room }: { room: CasualRoom }) {
       </div>
       <div className="matchup-footer">
         <div className="matchup-stake">
-          <strong>{formatPoke(room.collateral)}</strong>
-          <span>Each · winner {formatPoke(room.economics.winnerPayout)}</span>
+          <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
+          <span>{room.rail === 'sol_chain' ? 'Real SOL' : 'Mock POKE'} each · winner {formatRoomAmount(room.economics.winnerPayout, room.rail)}</span>
         </div>
         <Link className="btn btn-primary" href={`/casual/${room.id}`}>
           {room.status === 'open' ? 'Join' : 'View'}
@@ -198,7 +200,7 @@ export function FeaturedMatchup({ room }: { room: CasualRoom }) {
       <div className="matchup-footer">
         <div className="matchup-stake">
           <small>Stake each</small>
-          <strong>{formatPoke(room.collateral)}</strong>
+          <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
         </div>
         <Link className="btn btn-primary" href={`/casual/${room.id}`}>
           {room.status === 'open' ? 'Join matchup' : 'View matchup'}
@@ -265,7 +267,7 @@ export function MatchPreview({ room }: { room: CasualRoom }) {
         </div>
       </div>
       <div className="match-object-footer">
-        <strong>{formatPoke(room.collateral)}</strong>
+        <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
         <Link className="btn btn-primary" href={`/casual/${room.id}`}>
           {room.status === 'open' ? 'Join' : 'View'}
         </Link>

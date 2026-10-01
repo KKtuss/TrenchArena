@@ -256,6 +256,11 @@ test('chain-backed casual completion waits for verified chain settlement', async
           id: 'chain-settlement-session',
           async start() {},
           getResult: () => win.result,
+          getState: () => ({
+            id: 'chain-settlement-session',
+            lifecycle: 'ended',
+            result: win.result,
+          }),
           getView: () => ({ sides: [] }),
           subscribe(listener: (terminal: BattleTerminal) => void) {
             listener(win);

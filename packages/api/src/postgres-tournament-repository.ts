@@ -148,6 +148,7 @@ function toDurableTournament(tournament: Tournament): DurableTournament {
     id: tournament.id,
     title: tournament.title,
     format: tournament.format,
+    ruleset: tournament.ruleset ?? 'gen9ou',
     maxPlayers: tournament.maxPlayers,
     bracketSeed: tournament.bracketSeed,
     matchTimeoutMs: tournament.matchTimeoutMs,
@@ -161,6 +162,7 @@ function toDurableTournament(tournament: Tournament): DurableTournament {
     updatedAt: tournament.updatedAt,
     ...(tournament.startedAt === undefined ? {} : { startedAt: tournament.startedAt }),
     ...(tournament.completedAt === undefined ? {} : { completedAt: tournament.completedAt }),
+    ...(tournament.finalizesAt === undefined ? {} : { finalizesAt: tournament.finalizesAt }),
   };
 }
 
@@ -169,6 +171,7 @@ function fromDurableTournament(tournament: DurableTournament): Tournament {
     id: tournament.id as TournamentId,
     title: tournament.title,
     format: tournament.format as SupportedFormat,
+    ruleset: tournament.ruleset ?? 'gen9ou',
     maxPlayers: tournament.maxPlayers,
     bracketSeed: tournament.bracketSeed,
     matchTimeoutMs: tournament.matchTimeoutMs,
@@ -182,6 +185,7 @@ function fromDurableTournament(tournament: DurableTournament): Tournament {
     updatedAt: tournament.updatedAt,
     ...(tournament.startedAt === undefined ? {} : { startedAt: tournament.startedAt }),
     ...(tournament.completedAt === undefined ? {} : { completedAt: tournament.completedAt }),
+    ...(tournament.finalizesAt === undefined ? {} : { finalizesAt: tournament.finalizesAt }),
   };
 }
 
@@ -193,6 +197,7 @@ function toDurablePlayer(player: TournamentPlayer): DurableTournamentPlayer {
     eligible: true,
     status: player.status,
     registrationOrder: player.registrationOrder,
+    ...(player.teamLocked ? { teamLocked: true } : {}),
   };
 }
 
@@ -204,6 +209,7 @@ function fromDurablePlayer(player: DurableTournamentPlayer): TournamentPlayer {
     eligible: true,
     status: player.status,
     registrationOrder: player.registrationOrder,
+    ...(player.teamLocked ? { teamLocked: true } : {}),
   };
 }
 

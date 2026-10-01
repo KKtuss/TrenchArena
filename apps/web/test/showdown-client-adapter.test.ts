@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   eventsToShowdownFeed,
+  shouldCatchUpShowdownFeed,
   showdownChoiceToPlayerChoice,
 } from '../lib/showdown-client-adapter';
 
@@ -54,4 +55,11 @@ test('skips consumed sequences and translates move/switch intents', () => {
     terastallize: true,
   });
   assert.throws(() => showdownChoiceToPlayerChoice('>eval process.exit()'));
+});
+
+test('a progressed or finished log is caught up only on a fresh renderer', () => {
+  assert.equal(shouldCatchUpShowdownFeed(0, ['|start|', '|turn|1', '|move|p1a: X|Tackle']), true);
+  assert.equal(shouldCatchUpShowdownFeed(0, ['|start|', '|win|p1']), true);
+  assert.equal(shouldCatchUpShowdownFeed(0, ['|start|', '|switch|p1a: X|X']), false);
+  assert.equal(shouldCatchUpShowdownFeed(4, ['|turn|3']), false);
 });

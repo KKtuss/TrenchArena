@@ -124,10 +124,7 @@ export class BattleSession {
       void this.collectPlayerEvents(player.id, this.routed[this.playerSlots.get(player.id)!]);
     }
 
-    this.timeout = setTimeout(
-      () => this.expireByTimeout(),
-      this.timeoutMs,
-    );
+    this.armDecisionTimer();
 
     try {
       await this.stream.write(this.startCommand());
@@ -230,6 +227,9 @@ export class BattleSession {
 
     const command = choiceToCommand(request, submission.choice);
     this.pendingRequests.delete(submission.playerId);
+    if (this.actionablePendingPlayerIds().length === 0) {
+      this.disarmDecisionTimer();
+    }
     this.acceptedInputs.push({
       playerId: submission.playerId,
       revision: submission.revision,
@@ -324,6 +324,13 @@ export class BattleSession {
     const normalized = normalizeRequest(playerId, revision, request);
     this.pendingRequests.set(playerId, normalized);
     this.lifecycle = 'awaiting-choice';
+    if (normalized.kind !== 'wait') {
+      // Every new decision request starts a fresh window. A clock armed at
+      // battle start cannot still be running on a later turn.
+      this.armDecisionTimer();
+    } else if (this.actionablePendingPlayerIds().length === 0) {
+      this.disarmDecisionTimer();
+    }
 
     if (this.pendingRequests.size === this.players.length) {
       this.resolveReadyOnce();
@@ -339,7 +346,7 @@ export class BattleSession {
       this.inputLog = normalizeInputLog(data);
       this.pendingRequests.clear();
       this.lifecycle = 'ended';
-      if (this.timeout) clearTimeout(this.timeout);
+      this.disarmDecisionTimer();
       this.appendEvent({
         scope: 'public',
         kind: 'result',
@@ -354,12 +361,13 @@ export class BattleSession {
   }
 
   /**
-   * The existing battle timer is a whole-fight deadline, not a separate
-   * per-turn clock. When it fires, the inactive player is whoever still has
-   * an actionable pending request. That result is authoritative for casual
-   * and tournament settlement. Player 1 is never used as a fallback.
+   * Inactivity deadline for the current decision, not a clock from battle
+   * start. Each actionable request arms a fresh window, and the window is
+   * cleared once nobody still owes a move. Firing with nobody pending is not
+   * a result: the turn is resolving, or the fight has not gone live.
    */
   private expireByTimeout(): void {
+    this.timeout = undefined;
     if (this.result || this.failure || this.lifecycle === 'ended' || this.lifecycle === 'failed') {
       return;
     }
@@ -380,7 +388,7 @@ export class BattleSession {
       }
     }
 
-    if (this.readySettled || this.lifecycle === 'awaiting-choice') {
+    if (inactive.length >= 2) {
       this.finishWithResult({
         status: 'tie',
         score: this.viewModel.remainingPokemon(),
@@ -390,7 +398,20 @@ export class BattleSession {
       return;
     }
 
-    this.fail(new BattleTimeoutError(this.timeoutMs), 'timeout');
+    if (this.lifecycle !== 'awaiting-choice') {
+      this.fail(new BattleTimeoutError(this.timeoutMs), 'timeout');
+    }
+  }
+
+  private armDecisionTimer(): void {
+    this.disarmDecisionTimer();
+    this.timeout = setTimeout(() => this.expireByTimeout(), this.timeoutMs);
+  }
+
+  private disarmDecisionTimer(): void {
+    if (!this.timeout) return;
+    clearTimeout(this.timeout);
+    this.timeout = undefined;
   }
 
   private finishWithResult(result: BattleResult): void {
@@ -398,7 +419,7 @@ export class BattleSession {
     this.result = result;
     this.pendingRequests.clear();
     this.lifecycle = 'ended';
-    if (this.timeout) clearTimeout(this.timeout);
+    this.disarmDecisionTimer();
     this.appendEvent({
       scope: 'public',
       kind: 'result',
@@ -418,7 +439,7 @@ export class BattleSession {
     this.lifecycle = 'failed';
     this.pendingRequests.clear();
     this.failure = { code, message: error.message };
-    if (this.timeout) clearTimeout(this.timeout);
+    this.disarmDecisionTimer();
     this.appendEvent({
       scope: 'public',
       kind: 'failure',

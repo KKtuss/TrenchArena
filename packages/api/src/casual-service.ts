@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as scheduleTimeout } from 'node:timers';
 
 import {
   BattleEngine,
@@ -21,7 +22,6 @@ import type { EconomicsStore, PayoutResult } from '@pokearena/db';
 import {
   getCasualPreset,
   pickCreatorPresetId,
-  pickOpponentPresetId,
   type CasualPresetMon,
 } from './casual-presets';
 import { InMemoryEconomicsStore } from './memory-economics-store';
@@ -91,8 +91,32 @@ export interface CasualRoom {
   updatedAt: number;
   completedAt?: number;
   rail?: 'legacy_poke' | 'sol_chain';
+  /** Confirmed on-chain deposits. Server-owned; clients cannot set this. */
+  deposits?: { creator?: boolean; opponent?: boolean };
   teamPreview?: CasualTeamPreview[];
   countdownEndsAt?: number;
+  /** Server clock for the private 6→3 phase. Absent outside drafting. */
+  selectionEndsAt?: number;
+}
+
+/** Completed-fight fields safe to show the participant. No teams or selections. */
+export interface CasualFightRecord {
+  id: string;
+  matchId: string;
+  ruleset: CasualRuleset;
+  creatorId: string;
+  opponentId: string;
+  collateral: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  winnerId?: string;
+  resultStatus?: 'win' | 'tie';
+  endedBy?: string;
+  payoutAmount?: number;
+  payoutSymbol?: 'POKE' | 'SOL';
+  payoutReason?: string;
+  protocolFee?: number;
+  completedAt: number;
+  settled: boolean;
 }
 
 export interface CreateCasualRoomInput {
@@ -106,6 +130,8 @@ export interface CreateCasualRoomInput {
 }
 
 export const CASUAL_START_COUNTDOWN_MS = 5_000;
+/** Private 6→3 window. A stall auto-locks a full trio and the battle can start. */
+export const CASUAL_SELECTION_MS = 120_000;
 
 export class CasualNotReadyError extends Error {
   constructor() {
@@ -166,7 +192,9 @@ export class CasualRoomService {
   private readonly economics: EconomicsStore;
   private readonly now: () => number;
   private readonly countdownMs: number;
+  private readonly selectionMs: number;
   private readonly countdownTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly selectionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly allowDemoAuth: boolean;
   private readonly matchTimeoutMs: number;
   private readonly chainSettlement?: {
@@ -184,6 +212,7 @@ export class CasualRoomService {
     economics?: EconomicsStore | MockEconomics;
     now?: () => number;
     countdownMs?: number;
+    selectionMs?: number;
     allowDemoAuth?: boolean;
     matchTimeoutMs?: number;
     chainSettlement?: CasualRoomService['chainSettlement'];
@@ -192,6 +221,7 @@ export class CasualRoomService {
     this.economics = toEconomicsStore(options.economics);
     this.now = options.now ?? Date.now;
     this.countdownMs = options.countdownMs ?? 0;
+    this.selectionMs = options.selectionMs ?? CASUAL_SELECTION_MS;
     this.allowDemoAuth = options.allowDemoAuth ?? false;
     this.matchTimeoutMs = options.matchTimeoutMs ?? 300_000;
     this.chainSettlement = options.chainSettlement;
@@ -290,8 +320,38 @@ export class CasualRoomService {
     return this.recentResults.slice(0, limit).map(room => this.serializeRoom(room, viewerId));
   }
 
+  /**
+   * Completed casual and competitive rooms this player fought.
+   * Reads the live room plus its settlement payout. Does not include
+   * open, battling, or cancelled rooms.
+   */
+  listCompletedFightRecords(playerId: string): CasualFightRecord[] {
+    return [...this.rooms.values()]
+      .filter((room): room is CasualRoom & { opponentId: string } => (
+        room.status === 'completed'
+        && typeof room.opponentId === 'string'
+        && (room.creatorId === playerId || room.opponentId === playerId)
+      ))
+      .map(room => this.fightRecord(room))
+      .sort((a, b) => b.completedAt - a.completedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  }
+
   getRoom(roomId: string, viewerId?: string): CasualRoom {
     return this.serializeRoom(this.requireRoom(roomId), viewerId);
+  }
+
+  markSolDeposit(roomId: string, side: 'creator' | 'opponent'): CasualRoom {
+    const room = this.requireRoom(roomId);
+    if (room.rail !== 'sol_chain') {
+      throw new Error('This room is not a real-stake match.');
+    }
+    room.deposits = {
+      creator: side === 'creator' ? true : Boolean(room.deposits?.creator),
+      opponent: side === 'opponent' ? true : Boolean(room.deposits?.opponent),
+    };
+    room.updatedAt = this.now();
+    this.notify(room);
+    return this.serializeRoom(room);
   }
 
   getRoomByMatchId(matchId: string, viewerId?: string): CasualRoom | undefined {
@@ -303,6 +363,13 @@ export class CasualRoomService {
 
   async acceptRoom(roomId: string, playerId: string): Promise<CasualRoom> {
     const room = this.requireRoom(roomId);
+    if (
+      room.rail === 'sol_chain'
+      && room.opponentId === playerId
+      && (room.status === 'full' || room.status === 'ready' || room.status === 'drafting')
+    ) {
+      return this.serializeRoom(room, playerId);
+    }
     const joinable = room.status === 'open'
       || (room.rail === 'sol_chain' && room.status === 'pending_deposit');
     if (!joinable) throw new Error('This casual room is no longer open.');
@@ -311,15 +378,11 @@ export class CasualRoomService {
     if (room.roomType === 'private' && room.invitedPlayerId && room.invitedPlayerId !== playerId) {
       throw new Error('You were not invited to this private challenge.');
     }
-    if (room.rail !== 'sol_chain') {
-      await this.economics.acceptCasualRoomWithHold({
-        roomId: room.id,
-        opponentId: playerId,
-        collateral: room.collateral,
-      });
-    } else {
-      await this.economics.setCasualRoomStatus(room.id, 'full');
-    }
+    await this.economics.acceptCasualRoomWithHold({
+      roomId: room.id,
+      opponentId: playerId,
+      collateral: room.collateral,
+    });
     room.opponentId = playerId;
     room.ready[playerId] = false;
     room.status = 'full';
@@ -418,15 +481,15 @@ export class CasualRoomService {
     const key = selectionKey(room.id, playerId);
     const current = this.selections.get(key);
 
-    if (current?.confirmed && confirm && sameSlots(current.slots, normalized)) {
-      room.ready[playerId] = true;
-      this.syncReadyStatus(room);
-      room.updatedAt = this.now();
-      this.notify(room);
-      return this.serializeRoom(room, playerId);
-    }
-    if (current?.confirmed && confirm && !sameSlots(current.slots, normalized)) {
-      throw new CasualSelectionError('Unconfirm before changing a locked selection.');
+    if (current?.confirmed) {
+      if (confirm && sameSlots(current.slots, normalized)) {
+        room.ready[playerId] = true;
+        this.syncReadyStatus(room);
+        room.updatedAt = this.now();
+        this.notify(room);
+        return this.serializeRoom(room, playerId);
+      }
+      throw new CasualSelectionError('Selection is locked.');
     }
 
     this.selections.set(key, {
@@ -435,9 +498,19 @@ export class CasualRoomService {
     });
     room.ready[playerId] = confirm;
     this.syncReadyStatus(room);
+    if (this.selectionsLocked(room.id)) this.clearSelectionTimer(room.id);
     room.updatedAt = this.now();
     this.notify(room);
     return this.serializeRoom(room, playerId);
+  }
+
+  /** True once both players have locked a trio. Does not expose which slots. */
+  selectionsLocked(roomId: string): boolean {
+    const room = this.rooms.get(roomId as CasualRoomId);
+    if (!room?.opponentId || room.status !== 'drafting') return false;
+    const creator = this.selections.get(selectionKey(room.id, room.creatorId));
+    const opponent = this.selections.get(selectionKey(room.id, room.opponentId));
+    return Boolean(creator?.confirmed && opponent?.confirmed);
   }
 
   async cancelRoom(roomId: string, playerId: string): Promise<CasualRoom> {
@@ -450,7 +523,9 @@ export class CasualRoomService {
     }
     if (room.status === 'cancelled') return this.serializeRoom(room, playerId);
     this.clearCountdownTimer(room.id);
+    this.clearSelectionTimer(room.id);
     delete room.countdownEndsAt;
+    delete room.selectionEndsAt;
     if (room.rail === 'sol_chain' && !this.chainSettlement) {
       throw new Error('Chain settlement is not configured for a SOL room.');
     }
@@ -532,7 +607,9 @@ export class CasualRoomService {
     validateAndPackTeam(teams[1], 'gen9ou', battleOptions);
 
     delete room.countdownEndsAt;
+    delete room.selectionEndsAt;
     this.clearCountdownTimer(room.id);
+    this.clearSelectionTimer(room.id);
     room.status = 'starting';
     room.updatedAt = this.now();
     const run = (async () => {
@@ -642,13 +719,18 @@ export class CasualRoomService {
     room.status = 'battling';
     room.updatedAt = this.now();
     await this.economics.setCasualRoomStatus(room.id, 'battling', { battleInstanceId });
-    const unsubscribe = session.subscribe(terminal => {
+    const active: ActiveCasualBattle = {
+      battleInstanceId,
+      session,
+      unsubscribe: () => undefined,
+    };
+    this.activeBattles.set(battleInstanceId, active);
+    active.unsubscribe = session.subscribe(terminal => {
       this.enqueueTerminal(room.id, terminal);
     });
     session.subscribeEvents(() => {
       queueMicrotask(() => this.notify(this.requireRoom(room.id)));
     });
-    this.activeBattles.set(battleInstanceId, { battleInstanceId, session, unsubscribe });
     await this.flushTerminal(room.id);
     if (room.status === 'battling') this.notify(room);
     return room;
@@ -660,7 +742,9 @@ export class CasualRoomService {
       .catch(() => undefined)
       .then(() => this.handleTerminal(roomId, terminal));
     this.terminalJobs.set(roomId, next);
-    void next.catch(() => undefined);
+    void next.catch(error => {
+      console.error('[pokearena] casual settlement failed', roomId, error);
+    });
     return next;
   }
 
@@ -674,9 +758,13 @@ export class CasualRoomService {
     if (!room || room.status === 'completed' || room.status === 'cancelled') return;
 
     if (terminal.type === 'failed') {
+      if (!this.failureIsAuthoritative(room, terminal)) return;
       await this.abortRoom(room);
       return;
     }
+
+    const result = this.confirmedTerminalResult(room, terminal.result);
+    if (!result) return;
 
     let chainPayout: ChainPayoutResult | undefined;
     if (room.rail === 'sol_chain' && !this.chainSettlement) {
@@ -687,43 +775,49 @@ export class CasualRoomService {
         roomId: room.id,
         creatorId: room.creatorId,
         opponentId: room.opponentId,
-        ...(terminal.result.status === 'win' && terminal.result.winner
-          ? { winnerId: terminal.result.winner }
+        ...(result.status === 'win' && result.winner
+          ? { winnerId: result.winner }
           : {}),
       });
     }
 
-    if (terminal.result.status === 'win' && terminal.result.winner && room.opponentId) {
-      room.winnerId = terminal.result.winner;
-      room.payout = chainPayout ?? await this.economics.completeCasualWin({
-          roomId: room.id,
-          winnerId: terminal.result.winner,
-          loserId: terminal.result.winner === room.creatorId ? room.opponentId : room.creatorId,
-          collateral: room.collateral,
-          reason: this.forfeitedRooms.has(room.id) || terminal.result.endedBy === 'timeout'
-            ? 'casual-forfeit'
-            : 'casual-win',
-        });
+    if (result.status === 'win' && result.winner && room.opponentId) {
+      room.winnerId = result.winner;
+      const recorded = await this.economics.completeCasualWin({
+        roomId: room.id,
+        winnerId: result.winner,
+        loserId: result.winner === room.creatorId ? room.opponentId : room.creatorId,
+        collateral: room.collateral,
+        reason: this.forfeitedRooms.has(room.id) || result.endedBy === 'timeout'
+          ? 'casual-forfeit'
+          : 'casual-win',
+      });
+      room.payout = chainPayout ?? recorded;
     } else if (room.opponentId) {
       delete room.winnerId;
-      room.payout = chainPayout ?? await this.economics.completeCasualTie({
-          roomId: room.id,
-          player1Id: room.creatorId,
-          player2Id: room.opponentId,
-          collateral: room.collateral,
-        });
+      const recorded = await this.economics.completeCasualTie({
+        roomId: room.id,
+        player1Id: room.creatorId,
+        player2Id: room.opponentId,
+        collateral: room.collateral,
+      });
+      room.payout = chainPayout ?? recorded;
     } else {
       await this.abortRoom(room);
       return;
     }
-    room.result = terminal.result;
+    room.result = result;
     room.completedAt = this.now();
     room.updatedAt = room.completedAt;
     room.status = 'completed';
     if (room.battleInstanceId) {
       const battle = this.activeBattles.get(room.battleInstanceId);
-      if (battle) {
-        room.rosters = battle.session.getView('spectator').sides.map(side => ({
+      const readView = battle?.session.getView;
+      const sides = battle && typeof readView === 'function'
+        ? readView.call(battle.session, 'spectator').sides
+        : undefined;
+      if (sides) {
+        room.rosters = sides.map(side => ({
           playerId: side.playerId,
           pokemon: side.party.map(mon => ({
             species: mon.species,
@@ -738,8 +832,58 @@ export class CasualRoomService {
     this.notify(room);
   }
 
+  /**
+   * Settlement is allowed only when this room's battle session has already
+   * ended and its stored result is the claimed terminal. An active fight,
+   * a faint, or a mismatched event returns undefined and must not be paid.
+   */
+  private confirmedTerminalResult(room: CasualRoom, claimed: BattleResult): BattleResult | undefined {
+    if (!room.battleInstanceId) return undefined;
+    const battle = this.activeBattles.get(room.battleInstanceId);
+    if (!battle || typeof battle.session.getResult !== 'function' || typeof battle.session.getState !== 'function') {
+      return undefined;
+    }
+    const authoritative = battle.session.getResult();
+    if (!authoritative || battle.session.getState().lifecycle !== 'ended') return undefined;
+    if (!sameBattleResult(authoritative, claimed)) return undefined;
+    return authoritative;
+  }
+
+  private failureIsAuthoritative(
+    room: CasualRoom,
+    terminal: Extract<BattleTerminal, { type: 'failed' }>,
+  ): boolean {
+    if (!room.battleInstanceId) return false;
+    const battle = this.activeBattles.get(room.battleInstanceId);
+    if (!battle || typeof battle.session.getState !== 'function') return false;
+    const state = battle.session.getState();
+    return state.lifecycle === 'failed' && state.failure?.code === terminal.failure.code;
+  }
+
+  /**
+   * Return a SOL stake when Showdown never became a live result, then mark
+   * the room cancelled. Chain settlement runs before the database write.
+   */
+  async releaseUnstartedSolRoom(roomId: string, playerId: string): Promise<CasualRoom> {
+    const room = this.requireRoom(roomId);
+    if (playerId !== room.creatorId && playerId !== room.opponentId) {
+      throw new Error('You are not a player in this casual room.');
+    }
+    if (room.status === 'battling' || room.status === 'completed') {
+      return this.serializeRoom(room, playerId);
+    }
+    await this.abortRoom(room);
+    return this.serializeRoom(this.requireRoom(roomId), playerId);
+  }
+
   private async abortRoom(room: CasualRoom): Promise<void> {
     if (room.status === 'completed' || room.status === 'cancelled') return;
+    if (room.rail === 'sol_chain') {
+      if (!this.chainSettlement) {
+        throw new Error('Chain settlement is not configured for a SOL room.');
+      }
+      await this.chainSettlement.refund(room.id, room.creatorId, room.opponentId);
+    }
     await this.economics.abortCasualRoom(room.id);
     room.status = 'cancelled';
     room.updatedAt = this.now();
@@ -779,17 +923,83 @@ export class CasualRoomService {
     room.status = 'drafting';
     room.ready[room.creatorId] = false;
     if (room.opponentId) room.ready[room.opponentId] = false;
+    delete room.countdownEndsAt;
+    if (this.selectionMs > 0) {
+      room.selectionEndsAt = this.now() + this.selectionMs;
+      this.armSelection(room);
+    } else {
+      delete room.selectionEndsAt;
+    }
+  }
+
+  /**
+   * When the selection clock expires, lock each player into three slots.
+   * An unfinished trio is filled from the remaining shared six in slot order.
+   */
+  sealSelection(roomId: string, viewerId?: string): CasualRoom {
+    const room = this.requireRoom(roomId);
+    if (room.status !== 'drafting') return this.serializeRoom(room, viewerId);
+    if (room.selectionEndsAt != null && this.now() < room.selectionEndsAt) {
+      throw new CasualSelectionError('Selection timer is still running.');
+    }
+    this.applySelectionTimeout(room);
+    return this.serializeRoom(room, viewerId);
+  }
+
+  private applySelectionTimeout(room: CasualRoom): void {
+    if (room.status !== 'drafting' || !room.opponentId) return;
+    this.clearSelectionTimer(room.id);
+    for (const playerId of [room.creatorId, room.opponentId]) {
+      const key = selectionKey(room.id, playerId);
+      const current = this.selections.get(key);
+      if (current?.confirmed && current.slots.length === CASUAL_TEAM_SIZE) {
+        room.ready[playerId] = true;
+        continue;
+      }
+      const slots = fillSelectionSlots(current?.slots ?? []);
+      this.selections.set(key, { slots, confirmed: true });
+      room.ready[playerId] = true;
+    }
+    room.updatedAt = this.now();
+    this.notify(room);
+  }
+
+  private armSelection(room: CasualRoom): void {
+    this.clearSelectionTimer(room.id);
+    const endsAt = room.selectionEndsAt;
+    if (!endsAt) return;
+    const delay = Math.max(0, endsAt - this.now());
+    const timer = scheduleTimeout(() => {
+      this.selectionTimers.delete(room.id);
+      try {
+        const current = this.rooms.get(room.id);
+        if (!current || current.status !== 'drafting') return;
+        if (current.selectionEndsAt != null && this.now() < current.selectionEndsAt) return;
+        this.applySelectionTimeout(current);
+      } catch {
+        // Selection may already be locked or the room cancelled.
+      }
+    }, delay);
+    timer.unref?.();
+    this.selectionTimers.set(room.id, timer);
+  }
+
+  private clearSelectionTimer(roomId: string): void {
+    const timer = this.selectionTimers.get(roomId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.selectionTimers.delete(roomId);
   }
 
   private assignCasualPresets(room: CasualRoom): void {
     if (!room.opponentId) return;
     const creatorKey = selectionKey(room.id, room.creatorId);
     const opponentKey = selectionKey(room.id, room.opponentId);
-    const creatorPreset = this.assignedPresets.get(creatorKey) ?? pickCreatorPresetId();
-    this.assignedPresets.set(creatorKey, creatorPreset);
-    if (!this.assignedPresets.has(opponentKey)) {
-      this.assignedPresets.set(opponentKey, pickOpponentPresetId(creatorPreset));
-    }
+    const presetId = this.assignedPresets.get(creatorKey)
+      ?? this.assignedPresets.get(opponentKey)
+      ?? pickCreatorPresetId();
+    this.assignedPresets.set(creatorKey, presetId);
+    this.assignedPresets.set(opponentKey, presetId);
   }
 
   private lockCompetitiveTeam(
@@ -812,6 +1022,35 @@ export class CasualRoomService {
     return this.serializeRoom(room, playerId);
   }
 
+  private fightRecord(room: CasualRoom & { opponentId: string }): CasualFightRecord {
+    const payout = room.payout;
+    const resultStatus = room.result?.status === 'win' || room.result?.status === 'tie'
+      ? room.result.status
+      : undefined;
+    return {
+      id: room.id,
+      matchId: room.matchId,
+      ruleset: room.ruleset,
+      creatorId: room.creatorId,
+      opponentId: room.opponentId,
+      collateral: room.collateral,
+      ...(room.rail ? { rail: room.rail } : {}),
+      ...(room.winnerId ? { winnerId: room.winnerId } : {}),
+      ...(resultStatus ? { resultStatus } : {}),
+      ...(room.result?.endedBy ? { endedBy: room.result.endedBy } : {}),
+      ...(payout
+        ? {
+            payoutAmount: payout.amount,
+            payoutSymbol: payout.symbol,
+            ...(payout.reason ? { payoutReason: payout.reason } : {}),
+            ...(payout.protocolFee !== undefined ? { protocolFee: payout.protocolFee } : {}),
+          }
+        : {}),
+      completedAt: room.completedAt ?? room.updatedAt,
+      settled: payout !== undefined,
+    };
+  }
+
   private serializeRoom(room: CasualRoom, viewerId?: string): CasualRoom {
     const snapshot = cloneRoom(room);
     const teamPreview = this.previewForRoom(room, viewerId);
@@ -827,10 +1066,7 @@ export class CasualRoomService {
     }
     const isPlayer = viewerId === room.creatorId || viewerId === room.opponentId;
     const playerIds = [room.creatorId, room.opponentId].filter((id): id is string => Boolean(id));
-    const bothConfirmed = playerIds.length === 2
-      && playerIds.every(playerId => this.selections.get(selectionKey(room.id, playerId))?.confirmed);
-    const revealed = bothConfirmed
-      || room.status === 'starting'
+    const revealed = room.status === 'starting'
       || room.status === 'battling'
       || room.status === 'completed';
     if (!isPlayer && !revealed) return [];
@@ -883,7 +1119,7 @@ export class CasualRoomService {
     const endsAt = room.countdownEndsAt;
     if (!endsAt) return;
     const delay = Math.max(0, endsAt - this.now());
-    const timer = setTimeout(() => {
+    const timer = scheduleTimeout(() => {
       this.countdownTimers.delete(room.id);
       try {
         this.advanceReadyCountdown(room.id);
@@ -944,6 +1180,15 @@ function cloneRoom(room: CasualRoom): CasualRoom {
   };
 }
 
+function sameBattleResult(left: BattleResult, right: BattleResult): boolean {
+  return left.status === right.status
+    && left.winner === right.winner
+    && left.turns === right.turns
+    && left.endedBy === right.endedBy
+    && left.score.length === right.score.length
+    && left.score.every((value, index) => value === right.score[index]);
+}
+
 function isCasualSelectRoom(room: CasualRoom): boolean {
   return room.ruleset === 'casual' && room.battleSize === '1v1';
 }
@@ -961,6 +1206,18 @@ function battleOptionsFor(room: CasualRoom): { size: number; showdownFormatId: s
 
 function selectionKey(roomId: string, playerId: string): string {
   return `${roomId}:${playerId}`;
+}
+
+function fillSelectionSlots(current: readonly number[]): number[] {
+  const unique: number[] = [];
+  for (const slot of current) {
+    if (!Number.isInteger(slot) || slot < 0 || slot > 5 || unique.includes(slot)) continue;
+    unique.push(slot);
+  }
+  for (let slot = 0; unique.length < CASUAL_TEAM_SIZE && slot < 6; slot += 1) {
+    if (!unique.includes(slot)) unique.push(slot);
+  }
+  return unique.slice(0, CASUAL_TEAM_SIZE);
 }
 
 function normalizeSlots(slots: readonly number[], confirm: boolean): number[] {

@@ -2,14 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useDeltaPulse } from '@/components/motion';
 import { ProfileTrainerSprite } from '@/components/profile-trainer';
 import { PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
+import { hpScale } from '@/lib/motion';
 import { acquireShowdownRuntime, releaseShowdownRuntime } from '@/lib/showdown-runtime';
 import type { ArenaApiClient } from '@/lib/api-client';
 import { useArena } from '@/lib/arena-context';
 import {
   eventsToShowdownFeed,
   latestRequestPayload,
+  shouldCatchUpShowdownFeed,
   showdownChoiceToPlayerChoice,
 } from '@/lib/showdown-client-adapter';
 import {
@@ -46,6 +49,11 @@ interface ShowdownBattle {
   add: (line: string) => void;
   destroy: () => void;
   setViewpoint: (sideid: string) => void;
+  seekTurn: (turn: number, forceReset?: boolean) => void;
+  play: () => void;
+  paused: boolean;
+  atQueueEnd: boolean;
+  subscription?: ((state: string) => void) | null;
   scene?: { log?: { battleParser?: { perspective: string } } };
 }
 
@@ -112,6 +120,36 @@ function ownViewpoint(sides: SideView[] | undefined, playerId: string): 'p1' | '
   return sides?.[1]?.playerId === playerId ? 'p2' : 'p1';
 }
 
+function applyProtocolLines(
+  battle: ShowdownBattle,
+  lines: readonly string[],
+  catchUp: boolean,
+): void {
+  if (!lines.length) return;
+  if (!catchUp) {
+    for (const line of lines) battle.add(line);
+    return;
+  }
+  battle.paused = true;
+  for (const line of lines) battle.add(line);
+  battle.seekTurn(Number.POSITIVE_INFINITY);
+  let resumed = false;
+  const resume = () => {
+    if (resumed) return;
+    resumed = true;
+    battle.play();
+  };
+  if (battle.atQueueEnd) {
+    resume();
+    return;
+  }
+  const previous = battle.subscription;
+  battle.subscription = state => {
+    previous?.(state);
+    if (state === 'atqueueend') resume();
+  };
+}
+
 function applyViewpoint(battle: ShowdownBattle, viewpoint: 'p1' | 'p2') {
   battle.setViewpoint(viewpoint);
   const parser = battle.scene?.log?.battleParser;
@@ -144,9 +182,11 @@ function FightRail({
   );
   const party = side?.party ?? [];
   const standing = party.filter(mon => !mon.fainted).length;
-  const down = party.filter(mon => mon.fainted).length;
+  const faintedCount = party.filter(mon => mon.fainted).length;
   const active = side?.active;
   const hp = typeof active?.hpPercent === 'number' ? active.hpPercent : null;
+  const pulse = useDeltaPulse(hp);
+  const down = Boolean(active?.fainted || hp === 0);
   return (
     <aside className={`fight-rail fight-rail-${align}`}>
       <div className="fight-rail-body">
@@ -162,20 +202,21 @@ function FightRail({
                 <dt>Standing</dt>
               </div>
               <div>
-                <dd>{party.length ? down : '—'}</dd>
+                <dd>{party.length ? faintedCount : '—'}</dd>
                 <dt>Down</dt>
               </div>
             </dl>
             {active ? (
-              <div className="fight-rail-active">
+              <div className={`fight-rail-active${pulse ? ` is-${pulse}` : ''}${down ? ' is-down' : ''}`}>
                 <span>In play</span>
-                <b>{active.species}</b>
+                <b key={active.species} className="fight-rail-active-name">{active.species}</b>
+                {active.status ? <small key={active.status} className="fight-rail-status">{active.status}</small> : null}
                 {hp !== null ? (
                   <i
                     className={hp > 50 ? 'hp-high' : hp > 20 ? 'hp-mid' : 'hp-low'}
                     aria-label={`${hp}% HP`}
                   >
-                    <em style={{ width: `${Math.max(0, Math.min(100, hp))}%` }} />
+                    <em style={{ transform: `scaleX(${hpScale(hp)})` }} />
                   </i>
                 ) : null}
               </div>
@@ -289,7 +330,7 @@ function FightSwitchCard({
             className={`fight-switch-hp ${percent > 50 ? 'hp-high' : percent > 20 ? 'hp-mid' : 'hp-low'}`}
             aria-hidden
           >
-            <em style={{ width: `${percent}%` }} />
+            <em style={{ transform: `scaleX(${hpScale(percent)})` }} />
           </i>
         ) : null}
       </span>
@@ -355,7 +396,10 @@ export function ShowdownBattle({
       sequenceRef.current,
       playerId,
     );
-    for (const line of feed.publicLines) battle.add(line);
+    applyProtocolLines(battle, feed.publicLines, shouldCatchUpShowdownFeed(
+      sequenceRef.current,
+      feed.publicLines,
+    ));
     if (!watching) {
       const latest = latestRequestPayload(feed.requestPayloads);
       if (latest !== undefined) {
@@ -484,6 +528,18 @@ export function ShowdownBattle({
     return result;
   }, [battleView?.failure, battleView?.result, request, watching]);
 
+  const phaseKey = battleView?.result
+    ? 'complete'
+    : !ready
+      ? 'loading'
+      : submitting
+        ? 'sending'
+        : request?.teamPreview || request?.requestType === 'team'
+          ? 'preview'
+          : choices.length
+            ? 'turn'
+            : 'wait';
+
   const phaseLabel = battleView?.result
     ? 'Fight complete'
     : !ready
@@ -508,7 +564,7 @@ export function ShowdownBattle({
 
   return (
     <section
-      className={`showdown-battle-root dark${watching ? ' is-watch' : ''}`}
+      className={`showdown-battle-root dark${watching ? ' is-watch' : ''}${battleView?.result ? ` is-settled is-${battleView.result.status}` : ''}`}
       data-testid={watching ? 'showdown-battle-watch' : 'showdown-battle'}
       aria-label={watching ? 'Live spectator battle feed. This match is not playable from here.' : undefined}
     >
@@ -544,7 +600,7 @@ export function ShowdownBattle({
         </div>
       </div>
       ) : (
-      <div className={`showdown-battle-controls${choices.length ? '' : ' is-idle'}`}>
+      <div className={`showdown-battle-controls${choices.length ? '' : ' is-idle'} is-${phaseKey}`}>
         <div className="showdown-battle-controls-header">
           <span className="showdown-controls-label">Fight controls</span>
           <span className="showdown-phase">{phaseLabel}</span>

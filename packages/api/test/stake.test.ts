@@ -197,6 +197,12 @@ test('a live failure refunds the reserved stakes once', async () => {
       return {
         id: 'stake-fail',
         async start() {},
+        getResult: () => undefined,
+        getState: () => ({
+          id: 'stake-fail',
+          lifecycle: 'failed',
+          failure: { code: 'simulator-error', message: 'down' },
+        }),
         subscribe(listener: (terminal: BattleTerminal) => void) {
           const failure: BattleTerminal = {
             type: 'failed',
@@ -231,6 +237,12 @@ test('a casual win pays the pot minus the 2% fee once', async () => {
       return {
         id: 'stake-win',
         async start() {},
+        getResult: () => win.result,
+        getState: () => ({
+          id: 'stake-win',
+          lifecycle: 'ended',
+          result: win.result,
+        }),
         subscribe(listener: (terminal: BattleTerminal) => void) {
           listener(win);
           listener(win);

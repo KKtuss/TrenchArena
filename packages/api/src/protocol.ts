@@ -1,6 +1,7 @@
 import type { BattleView, PlayerChoice } from '@pokearena/battle-engine';
 
 import type { CasualRoom } from './casual-service';
+import type { FightHistoryCursor, FightHistoryEntry } from './fight-history';
 import type { LiveFight } from './live-fights';
 import type { PublicTrainerProfile } from './trainer-directory';
 import type {
@@ -40,8 +41,18 @@ export type ClientMessage =
       collateralLamports?: number;
       invitedPlayerId?: string;
       ruleset?: 'casual' | 'competitive';
+      /** `mock` is the default. `real` posts both stakes to the existing SOL escrow. */
+      stake?: 'mock' | 'real';
     }
+  | { type: 'casual.stake'; requestId: string; roomId: string }
   | { type: 'casual.list'; requestId: string }
+  | {
+      type: 'history.list';
+      requestId: string;
+      limit?: number;
+      beforeCompletedAt?: number;
+      beforeId?: string;
+    }
   | { type: 'casual.accept'; requestId: string; roomId: string }
   | { type: 'casual.ready'; requestId: string; roomId: string; ready: boolean; team?: string }
   | {
@@ -55,16 +66,20 @@ export type ClientMessage =
   | { type: 'casual.cancel'; requestId: string; roomId: string }
   | { type: 'casual.forfeit'; requestId: string; roomId: string }
   | { type: 'casual.subscribe'; requestId: string; roomId: string }
-  | { type: 'casual.preview'; requestId: string; collateral: number }
-  | { type: 'tournament.create'; requestId: string; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number }
+  | { type: 'casual.preview'; requestId: string; collateral: number; stake?: 'mock' | 'real' }
+  | { type: 'tournament.create'; requestId: string; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number; ruleset?: string }
   | { type: 'tournament.list'; requestId: string }
   | {
       type: 'tournament.join';
       requestId: string;
       tournamentId: string;
       team?: string;
+      slots?: number[];
       playerPokeAta?: string;
     }
+  | { type: 'tournament.updateTeam'; requestId: string; tournamentId: string; team: string }
+  | { type: 'tournament.lockTeam'; requestId: string; tournamentId: string }
+  | { type: 'tournament.leave'; requestId: string; tournamentId: string }
   | { type: 'tournament.start'; requestId: string; tournamentId: string }
   | { type: 'tournament.cancel'; requestId: string; tournamentId: string }
   | { type: 'tournament.subscribe'; requestId: string; tournamentId: string }
@@ -88,19 +103,23 @@ export type ClientMessage =
     }
   | { type: 'ping'; requestId: string }
   | { type: 'team.starter'; requestId: string }
-  | { type: 'team.inspect'; requestId: string; team: string }
+  | { type: 'team.inspect'; requestId: string; team: string; ruleset?: string }
   | {
       type: 'team.search';
       requestId: string;
       kind: 'species' | 'move' | 'item' | 'ability';
       query: string;
       species?: string;
+      ruleset?: string;
     };
 
 export interface TournamentSummary {
   id: string;
   title: string;
   format: string;
+  ruleset?: string;
+  createdAt?: number;
+  finalizesAt?: number;
   maxPlayers: number;
   status: string;
   playerCount: number;
@@ -184,6 +203,7 @@ export type ServerMessage = { requestId?: string } & (
   | { type: 'tx.update'; intentId: string; status: string; signature?: string; error?: string }
   | { type: 'casual.created'; room: CasualRoom; intent?: TxIntentPayload }
   | { type: 'casual.list'; rooms: CasualRoom[]; recentResults: CasualRoom[] }
+  | { type: 'history.list'; entries: FightHistoryEntry[]; nextCursor?: FightHistoryCursor }
   | { type: 'casual.state'; room: CasualRoom }
   | { type: 'casual.preview'; economics: CasualEconomicsPreview | Record<string, unknown> }
   | { type: 'casual.result'; room: CasualRoom; payout?: MockPayoutResult | ChainPayoutResult }
@@ -266,6 +286,24 @@ export function parseClientMessage(raw: string): ClientMessage {
     case 'ping':
     case 'team.starter':
       return { type: value.type, requestId: value.requestId as string };
+    case 'history.list': {
+      const limit = value.limit;
+      if (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > 25)) {
+        throw new Error('limit must be an integer from 1 to 25.');
+      }
+      const beforeCompletedAt = value.beforeCompletedAt;
+      if (beforeCompletedAt !== undefined && !Number.isInteger(beforeCompletedAt)) {
+        throw new Error('beforeCompletedAt must be an integer.');
+      }
+      if (value.beforeId !== undefined) requireString(value, 'beforeId');
+      return {
+        type: 'history.list',
+        requestId: value.requestId as string,
+        ...(limit !== undefined ? { limit: limit as number } : {}),
+        ...(beforeCompletedAt !== undefined ? { beforeCompletedAt: beforeCompletedAt as number } : {}),
+        ...(value.beforeId !== undefined ? { beforeId: value.beforeId as string } : {}),
+      };
+    }
     case 'trainer.profile':
       requireString(value, 'username');
       requireString(value, 'spriteId');
@@ -287,7 +325,12 @@ export function parseClientMessage(raw: string): ClientMessage {
     case 'team.inspect':
       requireString(value, 'team');
       if ((value.team as string).length > 12_000) throw new Error('team paste is too long.');
-      return { type: 'team.inspect', requestId: value.requestId as string, team: value.team as string };
+      return {
+        type: 'team.inspect',
+        requestId: value.requestId as string,
+        team: value.team as string,
+        ...optionalRuleset(value),
+      };
     case 'team.search': {
       if (value.kind !== 'species' && value.kind !== 'move' && value.kind !== 'item' && value.kind !== 'ability') {
         throw new Error('kind must be species, move, item, or ability.');
@@ -301,6 +344,7 @@ export function parseClientMessage(raw: string): ClientMessage {
         kind: value.kind,
         query,
         ...(value.species !== undefined ? { species: value.species as string } : {}),
+        ...optionalRuleset(value),
       };
     }
     case 'casual.create': {
@@ -320,6 +364,9 @@ export function parseClientMessage(raw: string): ClientMessage {
       if (value.ruleset !== undefined && value.ruleset !== 'casual' && value.ruleset !== 'competitive') {
         throw new Error('ruleset must be casual or competitive.');
       }
+      if (value.stake !== undefined && value.stake !== 'mock' && value.stake !== 'real') {
+        throw new Error('stake must be mock or real.');
+      }
       return {
         type: 'casual.create',
         requestId: value.requestId as string,
@@ -333,12 +380,14 @@ export function parseClientMessage(raw: string): ClientMessage {
           ? { invitedPlayerId: value.invitedPlayerId as string }
           : {}),
         ...(value.ruleset !== undefined ? { ruleset: value.ruleset } : {}),
+        ...(value.stake !== undefined ? { stake: value.stake } : {}),
       };
     }
     case 'casual.accept':
     case 'casual.cancel':
     case 'casual.forfeit':
     case 'casual.subscribe':
+    case 'casual.stake':
       requireString(value, 'roomId');
       return {
         type: value.type,
@@ -383,10 +432,14 @@ export function parseClientMessage(raw: string): ClientMessage {
       if (!Number.isInteger(value.collateral)) {
         throw new Error('collateral must be an integer.');
       }
+      if (value.stake !== undefined && value.stake !== 'mock' && value.stake !== 'real') {
+        throw new Error('stake must be mock or real.');
+      }
       return {
         type: 'casual.preview',
         requestId: value.requestId as string,
         collateral: value.collateral as number,
+        ...(value.stake !== undefined ? { stake: value.stake } : {}),
       };
     case 'tournament.create':
       if (value.title !== undefined) requireString(value, 'title');
@@ -408,6 +461,7 @@ export function parseClientMessage(raw: string): ClientMessage {
         ...(value.title !== undefined ? { title: value.title as string } : {}),
         ...(value.maxPlayers !== undefined ? { maxPlayers: value.maxPlayers as 4 | 8 | 16 | 32 } : {}),
         ...(value.entryFee !== undefined ? { entryFee: value.entryFee as number } : {}),
+        ...optionalRuleset(value),
       };
     case 'tournament.start':
     case 'tournament.cancel':
@@ -429,6 +483,24 @@ export function parseClientMessage(raw: string): ClientMessage {
           ? { playerPokeAta: value.playerPokeAta as string }
           : {}),
         ...optionalTeam(value),
+        ...optionalSlots(value),
+      };
+    case 'tournament.updateTeam':
+      requireString(value, 'tournamentId');
+      requireString(value, 'team');
+      return {
+        type: 'tournament.updateTeam',
+        requestId: value.requestId as string,
+        tournamentId: value.tournamentId as string,
+        team: value.team as string,
+      };
+    case 'tournament.lockTeam':
+    case 'tournament.leave':
+      requireString(value, 'tournamentId');
+      return {
+        type: value.type,
+        requestId: value.requestId as string,
+        tournamentId: value.tournamentId as string,
       };
     case 'match.subscribe':
       requireString(value, 'matchId');
@@ -492,6 +564,22 @@ function parseChoice(value: unknown): PlayerChoice {
     default:
       throw new Error(`Unsupported choice type: ${value.type}`);
   }
+}
+
+function optionalRuleset(value: Record<string, unknown>): { ruleset?: string } {
+  if (value.ruleset === undefined) return {};
+  if (typeof value.ruleset !== 'string' || !value.ruleset.trim() || value.ruleset.length > 40) {
+    throw new Error('ruleset must be a short string.');
+  }
+  return { ruleset: value.ruleset };
+}
+
+function optionalSlots(value: Record<string, unknown>): { slots?: number[] } {
+  if (value.slots === undefined) return {};
+  if (!Array.isArray(value.slots) || value.slots.length > 6 || value.slots.some(slot => !Number.isInteger(slot))) {
+    throw new Error('slots must be a short list of integers.');
+  }
+  return { slots: value.slots as number[] };
 }
 
 function optionalTeam(value: Record<string, unknown>): { team?: string } {

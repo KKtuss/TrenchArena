@@ -36,8 +36,8 @@ export interface TournamentEconomicsPreview {
 }
 
 export interface MockPayoutResult {
-  symbol: 'POKE';
-  mocked: true;
+  symbol: 'POKE' | 'SOL';
+  mocked?: true;
   winnerId?: string;
   amount: number;
   protocolFee?: number;
@@ -94,14 +94,20 @@ export interface CasualRoom {
     pokemon: { species: string; fainted: boolean }[];
   }[];
   payout?: MockPayoutResult;
+  rail?: 'legacy_poke' | 'sol_chain';
+  deposits?: { creator?: boolean; opponent?: boolean };
   teamPreview?: CasualTeamPreview[];
   countdownEndsAt?: number;
+  selectionEndsAt?: number;
 }
 
 export interface TournamentSummary {
   id: string;
   title: string;
   format: string;
+  ruleset?: string;
+  createdAt?: number;
+  finalizesAt?: number;
   maxPlayers: number;
   status: string;
   playerCount: number;
@@ -245,6 +251,27 @@ export interface TeamSearchHit {
   pp?: number;
 }
 
+export interface FightHistoryEntry {
+  id: string;
+  matchId: string;
+  mode: 'casual' | 'competitive' | 'tournament';
+  opponentId: string;
+  result: 'win' | 'loss' | 'tie' | 'forfeit';
+  completedAt: number;
+  symbol: 'POKE' | 'SOL';
+  stake: number;
+  payout: number;
+  fee: number;
+  net: number;
+  paid: boolean;
+  detailPath: string;
+}
+
+export interface FightHistoryCursor {
+  completedAt: number;
+  id: string;
+}
+
 export type ServerMessage =
   | { type: 'ready'; playerId: string; requestId?: string }
   | {
@@ -290,6 +317,7 @@ export type ServerMessage =
     }
   | { type: 'casual.created'; room: CasualRoom; intent?: TxIntentPayload; requestId?: string }
   | { type: 'casual.list'; rooms: CasualRoom[]; recentResults: CasualRoom[]; requestId?: string }
+  | { type: 'history.list'; entries: FightHistoryEntry[]; nextCursor?: FightHistoryCursor; requestId?: string }
   | { type: 'casual.state'; room: CasualRoom; requestId?: string }
   | { type: 'casual.preview'; economics: CasualEconomicsPreview; requestId?: string }
   | { type: 'casual.result'; room: CasualRoom; payout?: MockPayoutResult; requestId?: string }
@@ -337,19 +365,25 @@ export type ClientMessage =
       collateralLamports?: number;
       invitedPlayerId?: string;
       ruleset?: CasualRuleset;
+      stake?: 'mock' | 'real';
     }
   | { type: 'casual.list' }
+  | { type: 'history.list'; limit?: number; beforeCompletedAt?: number; beforeId?: string }
   | { type: 'casual.accept'; roomId: string }
+  | { type: 'casual.stake'; roomId: string }
   | { type: 'casual.ready'; roomId: string; ready: boolean; team?: string }
   | { type: 'casual.select'; roomId: string; slots: number[]; confirm?: boolean }
   | { type: 'casual.start'; roomId: string; team?: string }
   | { type: 'casual.cancel'; roomId: string }
   | { type: 'casual.forfeit'; roomId: string }
   | { type: 'casual.subscribe'; roomId: string }
-  | { type: 'casual.preview'; collateral: number }
-  | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number }
+  | { type: 'casual.preview'; collateral: number; stake?: 'mock' | 'real' }
+  | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number; ruleset?: string }
   | { type: 'tournament.list' }
-  | { type: 'tournament.join'; tournamentId: string; team?: string; playerPokeAta?: string }
+  | { type: 'tournament.join'; tournamentId: string; team?: string; slots?: number[]; playerPokeAta?: string }
+  | { type: 'tournament.updateTeam'; tournamentId: string; team: string }
+  | { type: 'tournament.lockTeam'; tournamentId: string }
+  | { type: 'tournament.leave'; tournamentId: string }
   | { type: 'tournament.start'; tournamentId: string }
   | { type: 'tournament.subscribe'; tournamentId: string }
   | { type: 'match.subscribe'; matchId: string }
@@ -366,10 +400,11 @@ export type ClientMessage =
     }
   | { type: 'ping' }
   | { type: 'team.starter' }
-  | { type: 'team.inspect'; team: string }
+  | { type: 'team.inspect'; team: string; ruleset?: string }
   | {
       type: 'team.search';
       kind: 'species' | 'move' | 'item' | 'ability';
       query: string;
       species?: string;
+      ruleset?: string;
     };

@@ -153,15 +153,18 @@ export class InMemoryEconomicsStore implements EconomicsStore {
       const room = this.rooms.get(input.roomId);
       if (!room) throw new Error(`Unknown casual room: ${input.roomId}`);
       if (room.status === 'full' && room.opponentId === input.opponentId) {
-        if (this.inner.hasHold(opponentHoldKey(input.roomId))) return;
+        if (room.rail === 'sol_chain' || this.inner.hasHold(opponentHoldKey(input.roomId))) return;
       }
-      if (room.status !== 'open') throw new Error('This casual room is no longer open.');
+      const solJoin = room.rail === 'sol_chain' && room.status === 'pending_deposit';
+      if (room.status !== 'open' && !solJoin) throw new Error('This casual room is no longer open.');
       if (room.opponentId) throw new Error('This casual room is already full.');
       if (input.opponentId === room.creatorId) throw new Error('Creator already occupies this room.');
       if (room.invitedPlayerId && room.invitedPlayerId !== input.opponentId) {
         throw new Error('You were not invited to this private challenge.');
       }
-      await this.reserve(opponentHoldKey(input.roomId), input.opponentId, input.collateral);
+      if (room.rail !== 'sol_chain') {
+        await this.reserve(opponentHoldKey(input.roomId), input.opponentId, input.collateral);
+      }
       room.opponentId = input.opponentId;
       room.status = 'full';
     });
@@ -200,6 +203,21 @@ export class InMemoryEconomicsStore implements EconomicsStore {
     return this.withLock(input.roomId, async () => {
       const room = this.rooms.get(input.roomId);
       if (room?.status === 'cancelled') throw new Error('This casual room is no longer open.');
+      if (room?.rail === 'sol_chain') {
+        const settlementKey = `casual:${input.roomId}`;
+        room.status = 'completed';
+        room.winnerId = input.winnerId;
+        room.resultStatus = 'win';
+        room.settlementKey = settlementKey;
+        return {
+          symbol: 'POKE',
+          mocked: true,
+          winnerId: input.winnerId,
+          amount: 0,
+          protocolFee: 0,
+          reason: input.reason ?? 'casual-win',
+        };
+      }
       const settlementKey = `casual:${input.roomId}`;
       const existing = this.inner.inspectSettlement(settlementKey);
       await this.consume(creatorHoldKey(input.roomId));
@@ -225,6 +243,20 @@ export class InMemoryEconomicsStore implements EconomicsStore {
     return this.withLock(input.roomId, async () => {
       const room = this.rooms.get(input.roomId);
       if (room?.status === 'cancelled') throw new Error('This casual room is no longer open.');
+      if (room?.rail === 'sol_chain') {
+        const settlementKey = `casual:${input.roomId}`;
+        room.status = 'completed';
+        delete room.winnerId;
+        room.resultStatus = 'tie';
+        room.settlementKey = settlementKey;
+        return {
+          symbol: 'POKE',
+          mocked: true,
+          amount: 0,
+          protocolFee: 0,
+          reason: 'casual-tie',
+        };
+      }
       const settlementKey = `casual:${input.roomId}`;
       const existing = this.inner.inspectSettlement(settlementKey);
       await this.consume(creatorHoldKey(input.roomId));

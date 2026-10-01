@@ -40,7 +40,6 @@ export default function TreasuryPage() {
   return (
     <div className="pa-page">
       <header className="pa-page-head">
-        <p className="pa-kicker"><i /> — Funding map • {chain ? 'chain ledger' : 'legacy mock'} —</p>
         <h1>Treasury &amp; Economy</h1>
         <p className="pa-lead">
           POKE is your passport. SOL is what you compete for. Creator-reward SOL deposits split 90/10 into the

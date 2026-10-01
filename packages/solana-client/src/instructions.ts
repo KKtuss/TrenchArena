@@ -112,9 +112,30 @@ export function depositSolWagerIx(input: {
   });
 }
 
+export function seatMatchOpponentIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  config: PublicKey;
+  opponent: PublicKey;
+  roomId: Uint8Array;
+}): TransactionInstruction {
+  const [matchEscrow] = matchEscrowPda(input.programId, input.roomId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: input.config, isSigner: false, isWritable: false },
+      { pubkey: input.opponent, isSigner: false, isWritable: false },
+      { pubkey: matchEscrow, isSigner: false, isWritable: true },
+    ],
+    data: IX.seatMatchOpponent,
+  });
+}
+
 export function refundSolWagerIx(input: {
   programId: PublicKey;
   authority: PublicKey;
+  config: PublicKey;
   recipient: PublicKey;
   roomId: Uint8Array;
   side: 0 | 1;
@@ -125,6 +146,7 @@ export function refundSolWagerIx(input: {
     programId: input.programId,
     keys: [
       { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: input.config, isSigner: false, isWritable: false },
       { pubkey: input.recipient, isSigner: false, isWritable: true },
       { pubkey: matchEscrow, isSigner: false, isWritable: true },
       { pubkey: matchVault, isSigner: false, isWritable: true },

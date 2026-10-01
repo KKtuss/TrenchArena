@@ -1,4 +1,5 @@
 import type { TournamentEconomicsPreview, TournamentSummary } from './protocol';
+import { rotationEvent, type FormatPresentation } from './tournament-formats';
 
 export const GEN1_CUP_TITLE = 'GEN 1 CUP';
 export const GEN1_CUP_THEME = 'GENERATION 1 POKÉMON';
@@ -7,18 +8,24 @@ export const TOURNAMENT_ENTRY_POKE = 50_000;
 /** Approximate USD entry when chain economy quotes POKE. */
 export const TOURNAMENT_ENTRY_USD = 5;
 export const TOURNAMENT_FIELD_SIZE = 32;
-export const SCHEDULE_SLOT_COUNT = 4;
+/** One full casual → cup → OU cycle across generations 1–9. */
+export const SCHEDULE_SLOT_COUNT = 27;
+export const ROTATION_SLOT_MS = 30 * 60 * 1000;
 export const HOUR_MS = 60 * 60 * 1000;
 
 export type ScheduleSlotKind = 'now' | 'next';
+export type ScheduleWhen = 'CURRENT' | 'NEXT' | 'LATER';
 export type ScheduleTheme = 'gen1' | 'unknown';
 
 export type ScheduleSlot = {
   key: string;
   kind: ScheduleSlotKind;
+  when: ScheduleWhen;
   theme: ScheduleTheme;
+  rulesetId: string;
   title: string;
   themeLabel: string;
+  format: FormatPresentation;
   startsAt: number;
   endsAt: number;
   tournament?: TournamentSummary;
@@ -30,52 +37,63 @@ export function hourFloor(now = Date.now()): number {
   return date.getTime();
 }
 
+export function slotStart(now = Date.now()): number {
+  return Math.floor(now / ROTATION_SLOT_MS) * ROTATION_SLOT_MS;
+}
+
 export function buildTournamentSchedule(
   tournaments: TournamentSummary[],
   now = Date.now(),
 ): ScheduleSlot[] {
-  const anchor = hourFloor(now);
-  const active = pickActiveTournament(tournaments);
+  const anchor = slotStart(now);
+  const origin = Math.floor(anchor / ROTATION_SLOT_MS);
   const slots: ScheduleSlot[] = [];
 
   for (let index = 0; index < SCHEDULE_SLOT_COUNT; index += 1) {
-    const startsAt = anchor + index * HOUR_MS;
-    const endsAt = startsAt + HOUR_MS;
-    if (index === 0) {
-      slots.push({
-        key: active?.id ?? `slot-${startsAt}`,
-        kind: 'now',
-        theme: 'gen1',
-        title: active?.title?.toUpperCase().includes('GEN 1')
-          ? active.title.toUpperCase()
-          : GEN1_CUP_TITLE,
-        themeLabel: GEN1_CUP_THEME,
-        startsAt,
-        endsAt,
-        tournament: active,
-      });
-      continue;
-    }
+    const startsAt = anchor + index * ROTATION_SLOT_MS;
+    const endsAt = startsAt + ROTATION_SLOT_MS;
+    const format = rotationEvent(origin + index);
+    const tournament = tournamentForSlot(tournaments, format.id, startsAt, endsAt);
     slots.push({
-      key: `unknown-${startsAt}`,
-      kind: 'next',
-      theme: 'unknown',
-      title: 'UNKNOWN',
-      themeLabel: 'THEME TBA',
+      key: tournament?.id ?? `${format.id}-${startsAt}`,
+      kind: index === 0 ? 'now' : 'next',
+      when: index === 0 ? 'CURRENT' : index === 1 ? 'NEXT' : 'LATER',
+      theme: format.id === 'gen1cup' ? 'gen1' : 'unknown',
+      rulesetId: format.id,
+      title: format.title,
+      themeLabel: `${format.region} · ${format.restriction}`,
+      format,
       startsAt,
       endsAt,
+      tournament,
     });
   }
 
   return slots;
 }
 
-function pickActiveTournament(tournaments: TournamentSummary[]): TournamentSummary | undefined {
-  const live = tournaments.find(item => (
-    ['registration', 'ready', 'in-progress', 'active', 'draft'].includes(item.status)
+function tournamentForSlot(
+  tournaments: TournamentSummary[],
+  rulesetId: string,
+  startsAt: number,
+  endsAt: number,
+): TournamentSummary | undefined {
+  const rank = (status: string) => {
+    if (status === 'registration' || status === 'draft') return 0;
+    if (status === 'ready' || status === 'in-progress' || status === 'active') return 1;
+    return 2;
+  };
+  const matches = tournaments.filter(tournament => {
+    if ((tournament.ruleset ?? 'gen9ou') !== rulesetId) return false;
+    if (tournament.status === 'cancelled') return false;
+    const created = tournament.createdAt ?? 0;
+    return created >= startsAt && created < endsAt;
+  });
+  matches.sort((left, right) => (
+    rank(left.status) - rank(right.status)
+    || (right.createdAt ?? 0) - (left.createdAt ?? 0)
   ));
-  if (live) return live;
-  return tournaments.find(item => item.status !== 'completed' && item.status !== 'cancelled');
+  return matches[0];
 }
 
 export function formatCountdown(targetMs: number, now = Date.now()): string {
@@ -88,9 +106,9 @@ export function formatCountdown(targetMs: number, now = Date.now()): string {
 }
 
 export function scheduleStatusLabel(slot: ScheduleSlot): string {
-  if (slot.theme === 'unknown') return 'SCHEDULED';
   const status = slot.tournament?.status;
-  if (!status) return 'REGISTERING';
+  if (status === 'registration' && slot.tournament?.finalizesAt) return 'FINALIZING';
+  if (!status) return slot.kind === 'now' ? 'REGISTERING' : 'SCHEDULED';
   if (status === 'registration' || status === 'draft') return 'REGISTERING';
   if (status === 'ready') return 'FULL';
   if (status === 'in-progress' || status === 'active') return 'LIVE';
@@ -99,7 +117,6 @@ export function scheduleStatusLabel(slot: ScheduleSlot): string {
 }
 
 export function scheduleCtaLabel(slot: ScheduleSlot): string {
-  if (slot.theme === 'unknown') return 'LOCKED';
   const status = slot.tournament?.status;
   if (!status) return 'JOIN TOURNAMENT';
   if (status === 'registration' || status === 'draft') return 'JOIN TOURNAMENT';

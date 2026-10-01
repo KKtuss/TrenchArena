@@ -4,11 +4,11 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { ErrorToast } from '@/components/error-toast';
-import { Gen1CupArt } from '@/components/gen1-cup-art';
+import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
+import { customFormats } from '@/lib/tournament-formats';
 import {
-  GEN1_CUP_TITLE,
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
   buildTournamentSchedule,
@@ -18,9 +18,10 @@ import {
   scheduleStatusLabel,
   type ScheduleSlot,
 } from '@/lib/tournament-schedule';
+import { readSavedTeam } from '@/lib/team';
 
 export default function TournamentsPage() {
-  const { client, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
+  const { client, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet, playerId } = useArena();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // null until mount so SSR and hydration share the same countdown placeholder
@@ -43,11 +44,10 @@ export default function TournamentsPage() {
     [snapshot?.tournaments, now],
   );
 
-  const ensureGen1Cup = async (): Promise<string | null> => {
-    const existing = schedule[0]?.tournament;
-    if (existing) return existing.id;
+  const ensureTournament = async (slot: ScheduleSlot): Promise<string | null> => {
+    if (slot.tournament) return slot.tournament.id;
     if (!walletConnected) {
-      setError('Connect a wallet before joining the Gen 1 Cup.');
+      setError('Connect a wallet before joining a tournament.');
       return null;
     }
     setBusy(true);
@@ -55,9 +55,10 @@ export default function TournamentsPage() {
     try {
       const response = await client.request({
         type: 'tournament.create',
-        title: GEN1_CUP_TITLE,
+        title: slot.title,
         maxPlayers: TOURNAMENT_FIELD_SIZE,
         entryFee: TOURNAMENT_ENTRY_POKE,
+        ruleset: slot.rulesetId,
       });
       await refreshSnapshot();
       if (response.type === 'tournament.created') {
@@ -76,10 +77,9 @@ export default function TournamentsPage() {
     <div className="pa-page">
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <p className="pa-kicker"><i /> — Championship circuit · hourly cups —</p>
           <h1>Tournament schedule</h1>
           <p className="pa-lead">
-            One cup at a time. Low entry. Treasury-funded prizes. Future themes stay UNKNOWN until announced.
+            Preset Gen X, then that generation&apos;s custom cup, then Gen 9 OU. A new tournament every 30 minutes.
           </p>
         </div>
         <div className="pa-page-actions">
@@ -100,11 +100,31 @@ export default function TournamentsPage() {
       <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <div className="pa-live-strip">
-        <span className="pa-live-pill"><i /> Hourly cadence</span>
-        <strong>1 live cup</strong>
-        <span>Next cups every 60 minutes</span>
+        <span className="pa-live-pill"><i /> 30-minute cadence</span>
+        <strong>Preset Gen X → Custom Gen X → Custom Gen 9 OU</strong>
         <span style={{ marginLeft: 'auto', color: '#8ea0c0' }}>No withdrawal tax</span>
       </div>
+
+      <section className="pa-team-prep" aria-label="My tournament teams">
+        <header>
+          <span>My tournament teams</span>
+          <small>Optional until you join that cup</small>
+        </header>
+        <ul>
+          {customFormats().map(format => {
+            const saved = playerId ? readSavedTeam(playerId, format.id) : null;
+            const ready = Boolean(saved?.validated && saved.paste.trim());
+            return (
+              <li key={format.id}>
+                <span>{format.title}</span>
+                {ready ? <em>Ready</em> : (
+                  <Link href={`/teams/builder?ruleset=${format.id}`}>Not prepared</Link>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
 
       <section className="pa-schedule">
         <div className="pa-schedule-list">
@@ -114,13 +134,41 @@ export default function TournamentsPage() {
               slot={slot}
               now={now}
               busy={busy}
+              teamReady={slot.format.teamMode === 'custom'
+                ? Boolean(playerId && readSavedTeam(playerId, slot.rulesetId)?.validated
+                  && readSavedTeam(playerId, slot.rulesetId)?.paste.trim())
+                : null}
               onJoin={async () => {
-                if (slot.theme === 'unknown') return;
+                if (slot.when !== 'CURRENT') return;
+                if (slot.format.teamMode === 'custom') {
+                  const saved = playerId ? readSavedTeam(playerId, slot.rulesetId) : null;
+                  if (!saved?.validated || !saved.paste.trim()) {
+                    window.location.href = `/teams/builder?ruleset=${slot.rulesetId}`;
+                    return;
+                  }
+                  const id = slot.tournament?.id ?? await ensureTournament(slot);
+                  if (!id) return;
+                  try {
+                    await client.request({
+                      type: 'tournament.join',
+                      tournamentId: id,
+                      team: saved.paste,
+                    });
+                  } catch (err) {
+                    const text = err instanceof Error ? err.message : String(err);
+                    if (!/already registered/i.test(text)) {
+                      setError(text);
+                      return;
+                    }
+                  }
+                  window.location.href = `/tournament/${id}`;
+                  return;
+                }
                 if (slot.tournament) {
                   window.location.href = `/tournament/${slot.tournament.id}`;
                   return;
                 }
-                const id = await ensureGen1Cup();
+                const id = await ensureTournament(slot);
                 if (id) window.location.href = `/tournament/${id}`;
               }}
             />
@@ -170,52 +218,72 @@ export default function TournamentsPage() {
   );
 }
 
+function buildTeamLabel(slot: ScheduleSlot): string {
+  return slot.format.id === 'gen9ou'
+    ? 'Build Gen 9 OU Team'
+    : `Build Gen ${slot.format.generation} Team`;
+}
+
 function ScheduleCard({
   slot,
   now,
   busy,
+  teamReady,
   onJoin,
 }: {
   slot: ScheduleSlot;
   now: number | null;
   busy: boolean;
+  teamReady: boolean | null;
   onJoin: () => void;
 }) {
+  const joinable = slot.when === 'CURRENT';
+  const prizeKnown = joinable;
   const economics = slot.tournament?.economics
     ?? previewTreasuryPrize(TOURNAMENT_ENTRY_POKE, TOURNAMENT_FIELD_SIZE);
   const players = slot.tournament?.playerCount ?? 0;
   const maxPlayers = slot.tournament?.maxPlayers ?? TOURNAMENT_FIELD_SIZE;
   const status = scheduleStatusLabel(slot);
-  const cta = scheduleCtaLabel(slot);
-  const locked = slot.theme === 'unknown';
-  const countdown = now == null ? '--:--:--' : formatCountdown(slot.startsAt, now);
-  const href = slot.tournament ? `/tournament/${slot.tournament.id}` : undefined;
-  const isGen1 = slot.theme === 'gen1';
-  const prize = economics.prizePool.toLocaleString('en-US');
+  const cta = joinable ? scheduleCtaLabel(slot) : 'UPCOMING';
+  const finalizesAt = slot.tournament?.finalizesAt;
+  const locking = finalizesAt != null && now != null && now < finalizesAt;
+  const countdownTarget = locking
+    ? finalizesAt
+    : now != null && now >= slot.startsAt ? slot.endsAt : slot.startsAt;
+  const countdown = now == null ? '--:--:--' : formatCountdown(countdownTarget, now);
+  const countdownLabel = locking ? 'Locks in' : now != null && now >= slot.startsAt ? 'Window' : 'Starts in';
+  const href = joinable && slot.tournament ? `/tournament/${slot.tournament.id}` : undefined;
+  const isGen1Cup = slot.format.id === 'gen1cup';
+  const prize = prizeKnown ? economics.prizePool.toLocaleString('en-US') : 'TBD';
 
   return (
-    <article className={`pa-schedule-card ${slot.kind}${locked ? ' is-locked' : ''}${isGen1 ? ' is-gen1' : ''}`}>
+    <article className={`pa-schedule-card ${slot.kind} is-format is-${slot.format.accent}${isGen1Cup ? ' is-gen1' : ''}${joinable ? '' : ' is-upcoming'}`}>
       <div className="pa-schedule-card-mark">
-        <span>{slot.kind === 'now' ? 'NOW' : 'NEXT'}</span>
+        <span>{slot.when}</span>
         <strong>{slot.title}</strong>
-        <small>{isGen1 ? `KANTO · ${maxPlayers} PLAYERS` : slot.themeLabel}</small>
+        <small>{slot.themeLabel}</small>
+        <small>{slot.format.teamModeLabel} · {maxPlayers} PLAYERS</small>
       </div>
 
-      {isGen1 ? (
+      {isGen1Cup ? (
         <Gen1CupArt compact />
       ) : (
-        <div className="pa-schedule-card-when">
-          <small>Starts in</small>
+        <FormatStage compact trainer={slot.format.trainer} pokemon={slot.format.pokemon} />
+      )}
+
+      {!joinable ? (
+        <div className="pa-schedule-countdown-overlay" aria-label={`${countdownLabel} ${countdown}`}>
+          <small>{countdownLabel}</small>
           <strong>{countdown}</strong>
         </div>
-      )}
+      ) : null}
 
       <div className="pa-schedule-card-close">
         <div className="pa-schedule-prize">
           <small>Treasury prize</small>
           <strong>
             <em>{prize}</em>
-            <span>POKE</span>
+            {prizeKnown ? <span>POKE</span> : null}
           </strong>
         </div>
         <dl className="pa-schedule-facts">
@@ -229,25 +297,44 @@ function ScheduleCard({
           </div>
           <div>
             <dt>Field</dt>
-            <dd>{locked ? `— / ${maxPlayers}` : `${players} / ${maxPlayers}`}</dd>
+            <dd>{`${players} / ${maxPlayers}`}</dd>
           </div>
+          {joinable ? (
+            <div>
+              <dt>{countdownLabel}</dt>
+              <dd>{countdown}</dd>
+            </div>
+          ) : null}
         </dl>
-        {isGen1 ? (
-          href ? (
-            <Link className="pa-btn pa-btn-gold" href={href}>{cta}</Link>
-          ) : (
-            <button
-              type="button"
-              className="pa-btn pa-btn-gold"
-              disabled={busy}
-              onClick={onJoin}
-            >
-              {busy ? 'Opening…' : cta}
-            </button>
-          )
-        ) : (
+        <p className="pa-schedule-prep">
+          {teamReady === null
+            ? 'Preset • No team required'
+            : teamReady
+              ? 'Your team: Ready'
+              : 'Your team: Not prepared'}
+        </p>
+        {!joinable && teamReady === false ? (
+          <Link className="pa-btn pa-btn-surface" href={`/teams/builder?ruleset=${slot.rulesetId}`}>
+            {buildTeamLabel(slot)}
+          </Link>
+        ) : !joinable ? (
           <button type="button" className="pa-btn pa-btn-surface" disabled>
-            {cta}
+            Upcoming
+          </button>
+        ) : teamReady === false ? (
+          <Link className="pa-btn pa-btn-gold" href={`/teams/builder?ruleset=${slot.rulesetId}`}>
+            {buildTeamLabel(slot)}
+          </Link>
+        ) : href ? (
+          <Link className="pa-btn pa-btn-gold" href={href}>{cta}</Link>
+        ) : (
+          <button
+            type="button"
+            className="pa-btn pa-btn-gold"
+            disabled={busy}
+            onClick={onJoin}
+          >
+            {busy ? 'Opening…' : cta}
           </button>
         )}
       </div>

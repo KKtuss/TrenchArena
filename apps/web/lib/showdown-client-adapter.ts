@@ -93,3 +93,20 @@ export function showdownChoiceToPlayerChoice(choiceText: string): PlayerChoice {
 export function latestRequestPayload(payloads: readonly unknown[]): unknown | undefined {
   return payloads.length ? payloads[payloads.length - 1] : undefined;
 }
+
+/**
+ * A renderer that has not applied any lines yet should jump to the current
+ * protocol state when that log is already past the opening. Incremental
+ * lines keep animating.
+ */
+export function shouldCatchUpShowdownFeed(
+  fromSequence: number,
+  publicLines: readonly string[],
+): boolean {
+  if (fromSequence > 0 || publicLines.length === 0) return false;
+  return publicLines.some(line => (
+    line.startsWith('|win|')
+    || line.startsWith('|tie|')
+    || /^\|turn\|[1-9]/.test(line)
+  ));
+}
