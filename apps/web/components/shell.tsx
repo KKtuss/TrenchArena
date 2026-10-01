@@ -18,7 +18,6 @@ export function ArenaShell({ children }: { children: ReactNode }) {
   const navItems = [
     { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
     { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
-    { href: '/history', label: 'History', active: pathname.startsWith('/history') },
     { href: '/teams/builder', label: 'Team Builder', active: pathname.startsWith('/teams/builder') },
     { href: '/tournaments', label: 'Tournaments', active: pathname.startsWith('/tournament') },
     { href: '/treasury', label: 'Treasury & Economy', active: pathname.startsWith('/treasury') },

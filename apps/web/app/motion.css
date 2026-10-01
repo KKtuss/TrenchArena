@@ -488,6 +488,8 @@
   .fight-dock,
   .showdown-battle-root,
   .pa-battle-intro,
+  .pa-match-vs-card,
+  .pa-match-vs-bar i,
   .pa-tree-match,
   .pa-tree-row,
   .pa-tree-champion,
@@ -498,5 +500,9 @@
   .battle * {
     animation: none !important;
     transition: none !important;
+  }
+
+  .pa-match-vs-bar i {
+    transform: none;
   }
 }

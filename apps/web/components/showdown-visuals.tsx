@@ -2,6 +2,7 @@ import {
   SHOWDOWN_SPRITE_CDN,
   SHOWDOWN_SPRITES,
   fullSpriteId,
+  itemIconOffset,
   pokemonIconOffset,
   typeIconSrc,
 } from '@/lib/showdown-visuals';
@@ -71,6 +72,22 @@ export function TrainerSprite({
       className="ps-trainer-img"
       src={`${SHOWDOWN_SPRITES}/trainers/${trainer}.png`}
       alt={label}
+    />
+  );
+}
+
+export function ItemIcon({ name }: { name: string }) {
+  const offset = itemIconOffset(name);
+  if (!offset) return null;
+  return (
+    <span
+      className="ps-item"
+      role="img"
+      aria-hidden
+      style={{
+        backgroundImage: `url(${SHOWDOWN_SPRITE_CDN}/sprites/itemicons-sheet.png)`,
+        backgroundPosition: `-${offset.left}px -${offset.top}px`,
+      }}
     />
   );
 }

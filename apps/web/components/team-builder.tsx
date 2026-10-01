@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import { PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
+import { ItemIcon, PokemonIcon, PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import { useArena } from '@/lib/arena-context';
 import {
   customFormats,
@@ -28,13 +28,15 @@ import {
   readSavedTeam,
   clearSavedTeam,
   classifyTeamProblems,
+  ITEM_GROUPS,
   filterItemHits,
   filterMoveHits,
+  itemGroup,
   filterSpeciesHits,
   setsFromInspection,
   setsToPaste,
+  sortItemHits,
   sortMoveHits,
-  teamLegalityTone,
   visibleTeamProblems,
   writeSavedTeam,
   type EditorSet,
@@ -59,6 +61,33 @@ const STAT_LABEL: Record<StatId, string> = {
   spe: 'Spe',
 };
 
+function builderStatusLine(input: {
+  connected: boolean;
+  notice: string;
+  formatName: string;
+  filledSlots: number;
+  problems: readonly string[];
+  groups: ReturnType<typeof classifyTeamProblems>;
+}): string {
+  if (!input.connected) return 'Connect a wallet to check this team against the live validator.';
+  if (!input.problems.length) return input.notice;
+  const parts: string[] = [];
+  if (input.filledSlots < 6) parts.push(`${input.filledSlots}/6 Pokémon`);
+  if (input.groups.pokemon.length) {
+    parts.push(`${input.groups.pokemon.length} Pokémon not legal in ${input.formatName}`);
+  }
+  const counted: Array<[number, string]> = [
+    [input.groups.moves.length, 'move issue'],
+    [input.groups.abilities.length, 'ability issue'],
+    [input.groups.items.length, 'item issue'],
+    [input.groups.other.length, 'other issue'],
+  ];
+  for (const [count, label] of counted) {
+    if (count) parts.push(`${count} ${label}${count === 1 ? '' : 's'}`);
+  }
+  return (parts.length ? parts : [input.problems[0]]).slice(0, 3).join(' · ');
+}
+
 const MOVE_CATEGORIES = ['Physical', 'Special', 'Status'] as const;
 const MOVE_SORTS: { id: MoveSort; label: string }[] = [
   { id: 'name', label: 'Name' },
@@ -78,7 +107,6 @@ export function TeamBuilder({
 }) {
   const { client, playerId, connected } = useArena();
   const [rulesetId, setRulesetId] = useState(initialRulesetId);
-  const formatCard = formatById(rulesetId);
   const formatName = formatLabel(rulesetId);
   const formatBlurb = formatBuilderBlurb(rulesetId);
   const builderFormats = useMemo(() => customFormats(), []);
@@ -99,12 +127,12 @@ export function TeamBuilder({
   const [typeFilter, setTypeFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [moveSort, setMoveSort] = useState<MoveSort>('name');
+  const [itemGroupFilter, setItemGroupFilter] = useState('');
   const [speciesCatalog, setSpeciesCatalog] = useState<TeamSearchHit[] | null>(null);
   const [itemCatalog, setItemCatalog] = useState<{ species: string; hits: TeamSearchHit[] } | null>(null);
   const [learnset, setLearnset] = useState<TeamSearchHit[]>([]);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
-  const [showIssues, setShowIssues] = useState(true);
   const inspectGeneration = useRef(0);
   const catalogGeneration = useRef(0);
   const speciesGeneration = useRef(0);
@@ -231,19 +259,53 @@ export function TeamBuilder({
     return filterSpeciesHits(speciesCatalog ?? [], pickerQuery, typeFilter);
   }, [pickerQuery, speciesCatalog, typeFilter]);
 
-  const filteredItems = useMemo(() => {
-    return filterItemHits(itemCatalog?.hits ?? [], pickerQuery);
-  }, [itemCatalog, pickerQuery]);
+  const searchedItems = useMemo(
+    () => sortItemHits(filterItemHits(itemCatalog?.hits ?? [], pickerQuery)),
+    [itemCatalog, pickerQuery],
+  );
+  const itemGroupsPresent = useMemo(
+    () => ITEM_GROUPS.filter(group => searchedItems.some(hit => itemGroup(hit) === group)),
+    [searchedItems],
+  );
+  const filteredItems = useMemo(
+    () => (itemGroupFilter ? searchedItems.filter(hit => itemGroup(hit) === itemGroupFilter) : searchedItems),
+    [itemGroupFilter, searchedItems],
+  );
+
+  useEffect(() => {
+    if (itemGroupFilter && !itemGroupsPresent.some(group => group === itemGroupFilter)) {
+      setItemGroupFilter('');
+    }
+  }, [itemGroupFilter, itemGroupsPresent]);
   const builderProblems = useMemo(() => (
     inspection ? visibleTeamProblems(inspection.problems) : []
   ), [inspection]);
   const problemGroups = useMemo(() => classifyTeamProblems(builderProblems), [builderProblems]);
   const filledSlots = sets.filter(set => set.species.trim()).length;
-  const legalityTone = teamLegalityTone(filledSlots, Boolean(inspection?.packed), builderProblems);
+  const statusLine = builderStatusLine({
+    connected,
+    notice,
+    formatName,
+    filledSlots,
+    problems: builderProblems,
+    groups: problemGroups,
+  });
+  const statusTone = builderProblems.length ? 'bad' : inspection?.packed ? 'ok' : '';
 
   const filteredMoves = useMemo(() => {
     return sortMoveHits(filterMoveHits(learnset, pickerQuery, typeFilter, categoryFilter), moveSort);
   }, [categoryFilter, learnset, moveSort, pickerQuery, typeFilter]);
+  const selectedAttack = useMemo(() => {
+    if (picker?.kind !== 'move') return null;
+    const name = pickerSet.moves[picker.moveSlot]?.trim() ?? '';
+    if (!name) return null;
+    const fromLearnset = learnset.find(hit => hit.name.toLowerCase() === name.toLowerCase());
+    if (fromLearnset) return fromLearnset;
+    return moveFact(name, knownMoves, detail?.moveDetails) ?? { name };
+  }, [detail?.moveDetails, knownMoves, learnset, picker, pickerSet.moves]);
+  const otherMoves = selectedAttack
+    ? filteredMoves.filter(hit => hit.name.toLowerCase() !== selectedAttack.name.toLowerCase())
+    : filteredMoves;
 
   function switchFormat(nextId: string) {
     if (nextId === rulesetId || formatLocked) return;
@@ -256,7 +318,6 @@ export function TeamBuilder({
     setKnownMoves({});
     setInspection(null);
     setSaved(false);
-    setShowIssues(true);
     setRulesetId(nextId);
     const nextLabel = formatLabel(nextId);
     const filled = sets.filter(set => set.species.trim()).length;
@@ -355,6 +416,7 @@ export function TeamBuilder({
     }
     setPicker({ kind: 'item', slot });
     setPickerQuery('');
+    setItemGroupFilter('');
     setPickerError(null);
     const generation = ++catalogGeneration.current;
     if (itemCatalog && itemCatalog.species.toLowerCase() === species.toLowerCase()) {
@@ -612,128 +674,50 @@ export function TeamBuilder({
       <header className="pa-page-head pa-page-head-row">
         <div>
           <h1>Team builder</h1>
-          <p className="pa-lead">Choose a format first. The Pokédex, moves, abilities, and items follow that ruleset.</p>
+          <p className={`tb-status ${statusTone}`} role="status">
+            {statusLine}
+          </p>
         </div>
         <div className="tb-file-actions">
-          <label className="tb-name">
-            Team name
-            <input aria-label="Team name" value={name} onChange={event => { setName(event.target.value); setSaved(false); }} />
-          </label>
-          {roster.teams.length > 1 ? (
-            <select aria-label="Saved teams" value={teamId} onChange={event => void switchTeam(event.target.value)}>
-              {roster.teams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}
-            </select>
-          ) : null}
-          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={startNewTeam}>New</button>
-          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={openImport}>Import / export</button>
-          <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={clearTeam}>Clear</button>
-          <button type="button" className="pa-btn pa-btn-primary pa-btn-sm" onClick={() => void save()}>{saved ? 'Saved' : 'Save team'}</button>
+          <div className="tb-file-main">
+            <label className="tb-name">
+              Team name
+              <input aria-label="Team name" value={name} onChange={event => { setName(event.target.value); setSaved(false); }} />
+            </label>
+            {roster.teams.length > 1 ? (
+              <select aria-label="Saved teams" value={teamId} onChange={event => void switchTeam(event.target.value)}>
+                {roster.teams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}
+              </select>
+            ) : null}
+            <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={startNewTeam}>New</button>
+            <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={openImport}>Import / export</button>
+            <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={clearTeam}>Clear</button>
+          </div>
+          <div className="tb-file-commit">
+            <label className="tb-format-select">
+              <span>Format</span>
+              <select
+                aria-label="Team format"
+                value={rulesetId}
+                disabled={formatLocked}
+                onChange={event => switchFormat(event.target.value)}
+              >
+                {builderFormats.filter(format => format.id === 'gen9ou').map(format => (
+                  <option key={format.id} value={format.id}>{format.title} · SV OU</option>
+                ))}
+                <optgroup label="Generation cups">
+                  {builderFormats.filter(format => format.id !== 'gen9ou').map(format => (
+                    <option key={format.id} value={format.id}>
+                      {format.title} · Gen {format.generation} only
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </label>
+            <button type="button" className="pa-btn pa-btn-primary pa-btn-sm" onClick={() => void save()}>{saved ? 'Saved' : 'Save team'}</button>
+          </div>
         </div>
       </header>
-
-      <section className={`tb-format ${formatLocked ? 'is-locked' : ''}`} aria-label="Team format">
-        <div className="tb-format-copy">
-          <small>Team format</small>
-          <strong>{formatName}</strong>
-          <p>{formatBlurb}</p>
-          {formatLocked ? (
-            <em>Locked for this tournament entry. Finish this format team, then return to the cup.</em>
-          ) : (
-            <em>Changing format rechecks this team. Illegal pieces stay until you replace them.</em>
-          )}
-        </div>
-        <label className="tb-format-select">
-          <span>Format</span>
-          <select
-            aria-label="Team format"
-            value={rulesetId}
-            disabled={formatLocked}
-            onChange={event => switchFormat(event.target.value)}
-          >
-            {builderFormats.map(format => (
-              <option key={format.id} value={format.id}>
-                {format.title}
-                {format.id === 'gen9ou' ? ' · SV OU' : ` · Gen ${format.generation} only`}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!formatLocked ? (
-          <div className="tb-format-chips">
-            {builderFormats.map(format => (
-              <button
-                key={format.id}
-                type="button"
-                className={format.id === rulesetId ? 'active' : ''}
-                aria-pressed={format.id === rulesetId}
-                onClick={() => switchFormat(format.id)}
-              >
-                {format.id === 'gen9ou' ? 'Gen 9 OU' : `Gen ${format.generation}`}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </section>
-
-      <section className={`tb-legality tone-${legalityTone}`} aria-label="Team status">
-        <header>
-          <small>Team status</small>
-          <strong>
-            {legalityTone === 'legal' ? 'Legal'
-              : legalityTone === 'empty' ? 'Empty'
-                : legalityTone === 'needs-changes' ? 'Team needs changes'
-                  : 'Illegal'}
-          </strong>
-          <span>{formatCard?.restriction ?? formatName}</span>
-        </header>
-        <ul>
-          <li className={filledSlots === 6 ? 'ok' : 'warn'}>
-            {filledSlots === 6 ? '✓' : '⚠'} {filledSlots}/6 Pokémon
-          </li>
-          <li className={problemGroups.pokemon.length || (inspection && !inspection.packed && filledSlots) ? (problemGroups.pokemon.length ? 'bad' : (inspection?.packed ? 'ok' : 'warn')) : (filledSlots ? 'ok' : 'muted')}>
-            {problemGroups.pokemon.length
-              ? `✕ ${problemGroups.pokemon.length} Pokémon not Gen-legal for ${formatName}`
-              : inspection?.packed
-                ? '✓ All Pokémon legal'
-                : filledSlots
-                  ? '⚠ Checking Pokémon legality'
-                  : '— No Pokémon yet'}
-          </li>
-          <li className={problemGroups.moves.length ? 'bad' : (inspection?.packed ? 'ok' : 'muted')}>
-            {problemGroups.moves.length
-              ? `✕ ${problemGroups.moves.length} move issue${problemGroups.moves.length === 1 ? '' : 's'}`
-              : inspection?.packed ? '✓ All moves legal' : '— Moves checked with the format'}
-          </li>
-          <li className={problemGroups.abilities.length ? 'bad' : (inspection?.packed ? 'ok' : 'muted')}>
-            {problemGroups.abilities.length
-              ? `✕ ${problemGroups.abilities.length} ability issue${problemGroups.abilities.length === 1 ? '' : 's'}`
-              : inspection?.packed ? '✓ All abilities legal' : '— Abilities checked with the format'}
-          </li>
-          <li className={problemGroups.items.length ? 'bad' : (inspection?.packed ? 'ok' : 'muted')}>
-            {problemGroups.items.length
-              ? `✕ ${problemGroups.items.length} item issue${problemGroups.items.length === 1 ? '' : 's'}`
-              : inspection?.packed ? '✓ All items legal' : '— Items checked with the format'}
-          </li>
-        </ul>
-        {builderProblems.length ? (
-          <div className="tb-legality-actions">
-            <button type="button" className="pa-btn pa-btn-surface pa-btn-sm" onClick={() => setShowIssues(value => !value)}>
-              {showIssues ? 'Hide issues' : `View issues (${builderProblems.length})`}
-            </button>
-          </div>
-        ) : null}
-      </section>
-
-      <p className={`tb-status ${inspection?.packed ? 'ok' : ''}`}>
-        {connected ? notice : 'Connect a wallet to check this team against the live validator.'}
-        {inspection?.packed ? ' · Ready for this format' : ''}
-      </p>
-
-      {showIssues && builderProblems.length ? (
-        <ul className="tb-problems">
-          {builderProblems.slice(0, 8).map(problem => <li key={problem}>{problem}</li>)}
-        </ul>
-      ) : null}
 
       <div className="tb-grid">
         <aside className="tb-slots">
@@ -793,7 +777,8 @@ export function TeamBuilder({
             <div>
               <small>Held item</small>
               <button type="button" className="tb-pick" onClick={() => void openItemPicker(selected)}>
-                {current.item.trim() || 'Choose item'}
+                {current.item.trim() ? <ItemIcon name={current.item} /> : null}
+                <span>{current.item.trim() || 'Choose item'}</span>
               </button>
             </div>
             <label>
@@ -852,8 +837,8 @@ export function TeamBuilder({
           </div>
         </section>
 
-        <div className="tb-side">
-          <section className="tb-stats">
+        <div className="tb-statcol">
+        <section className="tb-stats">
             <header>
               <strong>Stats</strong>
               <span>{510 - evSpent} / 510 EVs left</span>
@@ -902,29 +887,31 @@ export function TeamBuilder({
               {natureLabel(current.nature)} · {STATS.filter(stat => current.evs[stat.id] > 0).map(stat => `${current.evs[stat.id]} ${STAT_LABEL[stat.id]}`).join(' / ') || 'No EVs'}
             </p>
           </section>
-
-          <section className="tb-intel">
-            <h3>Coverage</h3>
-            {inspection?.threats.length ? (
-              <ul>
-                {inspection.threats.slice(0, 6).map(threat => (
-                  <li key={threat.attack}>
-                    <strong>{threat.attack} {formatMultiplier(threat.worst)}</strong>
-                    <span>{threat.exposed.join(', ') || '—'}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : <p>Coverage appears after species resolve.</p>}
-            <h3>Speed</h3>
-            {inspection?.speeds.length ? (
-              <ol>
-                {inspection.speeds.map(entry => (
-                  <li key={entry.species}><span>{entry.species}</span><b>{entry.speed}</b></li>
-                ))}
-              </ol>
-            ) : <p>Speed appears after a species resolves.</p>}
-          </section>
+        <section className="tb-intel tb-coverage">
+          <h3>Coverage</h3>
+          {inspection?.threats.length ? (
+            <ul>
+              {inspection.threats.slice(0, 6).map(threat => (
+                <li key={threat.attack}>
+                  <strong>{threat.attack} {formatMultiplier(threat.worst)}</strong>
+                  <span>{threat.exposed.join(', ') || '—'}</span>
+                </li>
+              ))}
+            </ul>
+          ) : <p>Coverage appears after species resolve.</p>}
+        </section>
         </div>
+
+        <section className="tb-intel tb-speed">
+          <h3>Speed</h3>
+          {inspection?.speeds.length ? (
+            <ol>
+              {inspection.speeds.map(entry => (
+                <li key={entry.species}><span>{entry.species}</span><b>{entry.speed}</b></li>
+              ))}
+            </ol>
+          ) : <p>Speed appears after a species resolves.</p>}
+        </section>
       </div>
 
       {picker?.kind === 'species' ? (
@@ -995,16 +982,25 @@ export function TeamBuilder({
           )}
         >
           {catalogBusy && !learnset.length ? <p className="tb-plain" role="status">Loading learnset…</p> : null}
+          {selectedAttack ? (
+            <div className="tb-selected-attack">
+              <div className="tb-move-section-head">
+                <p className="tb-item-group">Selected attack</p>
+                <button type="button" className="tb-clear-inline" onClick={() => { updateMoveAt(picker.slot, picker.moveSlot, ''); closePicker(); }}>
+                  Clear
+                </button>
+              </div>
+              <div className="tb-selected-card">
+                <AttackCard hit={selectedAttack} showName />
+              </div>
+            </div>
+          ) : null}
+          <p className="tb-item-group">Legal attacks</p>
           <div className="tb-move-list">
-            <button type="button" className="tb-clear-picker" onClick={() => { updateMoveAt(picker.slot, picker.moveSlot, ''); closePicker(); }}>
-              Clear attack
-            </button>
-            {filteredMoves.map(hit => (
+            {otherMoves.map(hit => (
               <button
                 key={hit.name}
                 type="button"
-                className={hit.name.toLowerCase() === pickerSet.moves[picker.moveSlot]?.trim().toLowerCase() ? 'active' : ''}
-                aria-pressed={hit.name.toLowerCase() === pickerSet.moves[picker.moveSlot]?.trim().toLowerCase()}
                 onClick={() => {
                   updateMoveAt(picker.slot, picker.moveSlot, hit.name);
                   rememberMoves([hit]);
@@ -1029,6 +1025,22 @@ export function TeamBuilder({
           busy={catalogBusy}
           error={pickerError}
           meta={catalogBusy && !itemCatalog ? 'Loading catalog…' : `${filteredItems.length} items`}
+          filters={itemCatalog ? (
+            <>
+              <button type="button" className={!itemGroupFilter ? 'active' : ''} aria-pressed={!itemGroupFilter} onClick={() => setItemGroupFilter('')}>All</button>
+              {itemGroupsPresent.map(group => (
+                <button
+                  key={group}
+                  type="button"
+                  className={itemGroupFilter === group ? 'active' : ''}
+                  aria-pressed={itemGroupFilter === group}
+                  onClick={() => setItemGroupFilter(group)}
+                >
+                  {group}
+                </button>
+              ))}
+            </>
+          ) : null}
           onRetry={() => {
             if (picker?.kind === 'item') void openItemPicker(picker.slot);
           }}
@@ -1036,19 +1048,21 @@ export function TeamBuilder({
           {catalogBusy && !itemCatalog ? <p className="tb-plain" role="status">Loading items…</p> : null}
           <div className="tb-item-list">
             <button type="button" onClick={() => { updateSetAt(picker.slot, { item: '' }); closePicker(); }}>No item</button>
-            {filteredItems.map(hit => (
-              <button
-                key={hit.name}
-                type="button"
-                className={hit.name.toLowerCase() === pickerSet.item.trim().toLowerCase() ? 'active' : ''}
-                aria-pressed={hit.name.toLowerCase() === pickerSet.item.trim().toLowerCase()}
-                onClick={() => { updateSetAt(picker.slot, { item: hit.name }); closePicker(); }}
-              >
-                <span className="tb-hit-name">{hit.name}</span>
-                {hit.description ? <span className="tb-hit-desc">{hit.description}</span> : null}
-              </button>
+            {(itemGroupFilter ? [{ group: itemGroupFilter, hits: filteredItems }] : itemSections(filteredItems)).map(section => (
+              <Fragment key={section.group}>
+                {itemGroupFilter ? null : <p className="tb-item-group">{section.group}</p>}
+                {section.hits.map(hit => (
+                  <ItemChoice
+                    key={hit.name}
+                    hit={hit}
+                    active={hit.name.toLowerCase() === pickerSet.item.trim().toLowerCase()}
+                    onPick={name => { updateSetAt(picker.slot, { item: name }); closePicker(); }}
+                  />
+                ))}
+              </Fragment>
             ))}
           </div>
+          {itemCatalog && !filteredItems.length ? <p className="tb-plain">Nothing matches that search.</p> : null}
         </CatalogModal>
       ) : null}
 
@@ -1059,6 +1073,42 @@ export function TeamBuilder({
         </CatalogModal>
       ) : null}
     </div>
+  );
+}
+
+function itemSections(hits: TeamSearchHit[]): { group: string; hits: TeamSearchHit[] }[] {
+  const sections: { group: string; hits: TeamSearchHit[] }[] = [];
+  for (const hit of hits) {
+    const group = itemGroup(hit);
+    const last = sections[sections.length - 1];
+    if (last?.group === group) last.hits.push(hit);
+    else sections.push({ group, hits: [hit] });
+  }
+  return sections;
+}
+
+function ItemChoice({
+  hit,
+  active,
+  onPick,
+}: {
+  hit: TeamSearchHit;
+  active: boolean;
+  onPick: (name: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={active ? 'active' : ''}
+      aria-pressed={active}
+      onClick={() => onPick(hit.name)}
+    >
+      <ItemIcon name={hit.name} />
+      <span className="tb-item-copy">
+        <span className="tb-hit-name">{hit.name}</span>
+        {hit.description ? <span className="tb-hit-desc">{hit.description}</span> : null}
+      </span>
+    </button>
   );
 }
 

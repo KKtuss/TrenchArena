@@ -1,15 +1,15 @@
 'use client';
 
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
 import {
-  getTrainerSprite,
   isTrainerUsername,
   searchTrainerSprites,
-  shortenAddress,
   trainerSpriteSrc,
   type TrainerSpriteEntry,
 } from '@/lib/trainer-profile';
@@ -17,13 +17,11 @@ import {
 export function TrainerProfileControl() {
   const {
     walletConnected,
-    walletAddress,
     availableWallets,
     connectingWallet,
     connectInjectedWallet,
     connectPreviewSession,
     disconnectInjectedWallet,
-    previewSession,
     trainerSpriteId,
     trainerUsername,
     needsProfileSetup,
@@ -31,11 +29,26 @@ export function TrainerProfileControl() {
     playerLabel,
     authBusy,
   } = useArena();
+  const pathname = usePathname() ?? '';
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const selected = getTrainerSprite(trainerSpriteId);
   const showEditor = needsProfileSetup || editing;
+  const avatar = (
+    <>
+      <img
+        className="trainer-avatar"
+        src={trainerSpriteSrc(walletConnected ? trainerSpriteId : 'unknown')}
+        alt=""
+        width={40}
+        height={40}
+      />
+      <span className="trainer-control-copy">
+        <small>{walletConnected ? 'Trainer' : 'Wallet'}</small>
+        <strong>{walletConnected ? playerLabel : 'Connect'}</strong>
+      </span>
+    </>
+  );
 
   useEffect(() => {
     setMounted(true);
@@ -43,40 +56,33 @@ export function TrainerProfileControl() {
 
   return (
     <div className="trainer-profile">
-      <button
-        type="button"
-        className="trainer-control"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        onClick={() => setOpen(current => !current)}
-      >
-        <img
-          className="trainer-avatar"
-          src={trainerSpriteSrc(walletConnected ? trainerSpriteId : 'unknown')}
-          alt=""
-          width={40}
-          height={40}
-        />
-        <span className="trainer-control-copy">
-          <small>{walletConnected ? 'Trainer' : 'Wallet'}</small>
-          <strong>{walletConnected ? playerLabel : 'Connect'}</strong>
-        </span>
-      </button>
-      {open && !showEditor && mounted ? createPortal(
-        <div className="trainer-popover trainer-popover-fixed" role="dialog" aria-label="Trainer profile">
+      {walletConnected ? (
+        <Link
+          href="/profile"
+          className={`trainer-control${pathname.startsWith('/profile') ? ' is-active' : ''}`}
+          aria-current={pathname.startsWith('/profile') ? 'page' : undefined}
+        >
+          {avatar}
+        </Link>
+      ) : (
+        <button
+          type="button"
+          className="trainer-control"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          onClick={() => setOpen(current => !current)}
+        >
+          {avatar}
+        </button>
+      )}
+      {open && !walletConnected && !showEditor && mounted ? createPortal(
+        <div className="trainer-popover trainer-popover-fixed" role="dialog" aria-label="Connect wallet">
           <div className="trainer-popover-head">
-            <small>{walletConnected ? (previewSession ? 'Browser preview' : 'Trainer') : 'Wallet'}</small>
-            <strong>{walletConnected ? (trainerUsername ?? selected.name) : 'Connect'}</strong>
-            <p>
-              {walletConnected
-                ? previewSession
-                  ? 'No extension on this browser'
-                  : (walletAddress ? shortenAddress(walletAddress, 6) : playerLabel)
-                : 'Phantom, Backpack, or another Solana wallet.'}
-            </p>
+            <small>Wallet</small>
+            <strong>Connect</strong>
+            <p>Phantom, Backpack, or another Solana wallet.</p>
           </div>
-          {!walletConnected ? (
-            <div className="trainer-wallet-actions">
+          <div className="trainer-wallet-actions">
               {(availableWallets.length ? availableWallets : [{ id: 'any', name: 'Solana wallet', adapter: null as any }]).map(wallet => (
                 <button
                   key={wallet.id}
@@ -108,29 +114,7 @@ export function TrainerProfileControl() {
                   </button>
                 </>
               ) : null}
-            </div>
-          ) : (
-            <div className="trainer-wallet-actions">
-              <button
-                type="button"
-                className="pa-btn pa-btn-primary"
-                onClick={() => {
-                  setOpen(false);
-                  setEditing(true);
-                }}
-              >
-                Edit profile
-              </button>
-              <button
-                type="button"
-                className="pa-btn pa-btn-surface"
-                disabled={authBusy}
-                onClick={() => void disconnectInjectedWallet().then(() => setOpen(false))}
-              >
-                Disconnect
-              </button>
-            </div>
-          )}
+          </div>
         </div>,
         document.body,
       ) : null}
@@ -158,7 +142,7 @@ export function TrainerProfileControl() {
   );
 }
 
-function TrainerSetup({
+export function TrainerSetup({
   required,
   initialUsername,
   initialSpriteId,

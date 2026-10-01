@@ -62,4 +62,24 @@ test('a progressed or finished log is caught up only on a fresh renderer', () =>
   assert.equal(shouldCatchUpShowdownFeed(0, ['|start|', '|win|p1']), true);
   assert.equal(shouldCatchUpShowdownFeed(0, ['|start|', '|switch|p1a: X|X']), false);
   assert.equal(shouldCatchUpShowdownFeed(4, ['|turn|3']), false);
+  assert.equal(shouldCatchUpShowdownFeed(0, [
+    '|start|',
+    '|switch|p1a: X|X, L100|100/100',
+    '|switch|p2a: Y|Y, L100|100/100',
+    '|turn|1',
+  ]), false);
+  assert.equal(shouldCatchUpShowdownFeed(0, [
+    '|t:|1',
+    '|start|',
+    '|switch|p1a: X|X',
+    '|turn|1',
+    '|t:|2',
+  ]), false);
+  assert.equal(shouldCatchUpShowdownFeed(0, [
+    '|start|',
+    '|switch|p1a: X|X',
+    '|turn|1',
+    '|move|p1a: X|Tackle',
+    '|turn|10',
+  ]), true);
 });

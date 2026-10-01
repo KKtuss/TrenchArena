@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 
-import { CasualBattleReveal, CasualCountdown, CasualSelectBoard } from '@/components/casual-select';
+import { CASUAL_BATTLE_HANDOFF_MS, CasualBattleReveal, CasualCountdown, CasualSelectBoard } from '@/components/casual-select';
 import { TeamStrip } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
@@ -264,7 +264,7 @@ export default function CasualRoomPage() {
     const matchId = room.matchId;
     window.setTimeout(() => {
       router.replace(`/battle/${matchId}`);
-    }, 1100);
+    }, CASUAL_BATTLE_HANDOFF_MS);
   }, [playerId, room, router]);
 
   const act = async (action: () => Promise<void>) => {
@@ -318,7 +318,7 @@ export default function CasualRoomPage() {
           onLock={() => void act(() => sendSelection(selected, true))}
         />
       ) : null}
-      {revealBattle ? <CasualBattleReveal /> : null}
+      {revealBattle ? <CasualBattleReveal yourId={yourId} rivalId={rivalId} /> : null}
       {casualSelect && (countingDown || drafting || revealBattle) ? (
         <ErrorToast error={error} onDismiss={() => setError(null)} />
       ) : null}
@@ -473,27 +473,69 @@ export default function CasualRoomPage() {
               </div>
             ) : null}
           </div>
-          <div className="pa-vault">
-            <header>
-              <h2>Room code</h2>
-              <span className="ok">Bring your rival</span>
-            </header>
-            <div className="pa-room-code">
-              <strong>{code}</strong>
-              <span>{room.roomType === 'private' ? 'Private challenge' : 'Open challenge'}</span>
-              <button
-                type="button"
-                className={`pa-btn pa-btn-surface pa-btn-sm${copied ? ' is-copied' : ''}`}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(window.location.href).then(() => {
-                    setCopied(true);
-                    window.setTimeout(() => setCopied(false), 1200);
-                  });
-                }}
-              >
-                {copied ? 'Link copied' : 'Copy challenge link'}
-              </button>
+          <div className="pa-split-side">
+            <div className="pa-vault">
+              <header>
+                <h2>Room code</h2>
+                <span className="ok">Bring your rival</span>
+              </header>
+              <div className="pa-room-code">
+                <strong>{code}</strong>
+                <span>{room.roomType === 'private' ? 'Private challenge' : 'Open challenge'}</span>
+                <button
+                  type="button"
+                  className={`pa-btn pa-btn-surface pa-btn-sm${copied ? ' is-copied' : ''}`}
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(window.location.href).then(() => {
+                      setCopied(true);
+                      window.setTimeout(() => setCopied(false), 1200);
+                    });
+                  }}
+                >
+                  {copied ? 'Link copied' : 'Copy challenge link'}
+                </button>
+              </div>
             </div>
+            {isPlayer && (
+              (casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown)
+              || (room.status !== 'battling' && room.status !== 'completed')
+            ) ? (
+              <div className="pa-vault">
+                <div className="pa-lobby-actions pa-room-actions">
+                  {room.status !== 'battling' && room.status !== 'completed' ? (
+                    <button
+                      type="button"
+                      className="pa-btn pa-btn-surface"
+                      disabled={busy}
+                      onClick={() => void act(async () => {
+                        const response = await client.request({ type: 'casual.cancel', roomId });
+                        if (response.type === 'casual.state') setRoom(response.room);
+                      })}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                  {casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
+                    <button
+                      type="button"
+                      className="pa-btn pa-btn-primary"
+                      disabled={busy || (real && !stakesLocked && !youReady)}
+                      onClick={() => void act(async () => {
+                        if (!playerId) return;
+                        const response = await client.request({
+                          type: 'casual.ready',
+                          roomId,
+                          ready: !youReady,
+                        });
+                        if (response.type === 'casual.state') setRoom(response.room);
+                      })}
+                    >
+                      {youReady ? 'Unready' : 'Ready up'}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}
@@ -536,24 +578,6 @@ export default function CasualRoomPage() {
             })}
           >
             Lock my stake
-          </button>
-        ) : null}
-        {isPlayer && casualSelect && room && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-primary"
-            disabled={busy || (real && !stakesLocked && !youReady)}
-            onClick={() => void act(async () => {
-              if (!playerId) return;
-              const response = await client.request({
-                type: 'casual.ready',
-                roomId,
-                ready: !youReady,
-              });
-              if (response.type === 'casual.state') setRoom(response.room);
-            })}
-          >
-            {youReady ? 'Unready' : 'Ready up'}
           </button>
         ) : null}
         {isPlayer && competitive && room && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
@@ -617,19 +641,6 @@ export default function CasualRoomPage() {
         ) : null}
         {room?.status === 'completed' ? (
           <Link className="pa-btn pa-btn-primary" href={`/result/${room.id}`}>View result</Link>
-        ) : null}
-        {isPlayer && room && room.status !== 'battling' && room.status !== 'completed' ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-danger"
-            disabled={busy}
-            onClick={() => void act(async () => {
-              const response = await client.request({ type: 'casual.cancel', roomId });
-              if (response.type === 'casual.state') setRoom(response.room);
-            })}
-          >
-            Cancel
-          </button>
         ) : null}
       </div>
       </>

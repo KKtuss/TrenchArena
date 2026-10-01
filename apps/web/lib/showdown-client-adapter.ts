@@ -94,19 +94,39 @@ export function latestRequestPayload(payloads: readonly unknown[]): unknown | un
   return payloads.length ? payloads[payloads.length - 1] : undefined;
 }
 
+const TURN_LINE = /^\|turn\|(\d+)/;
+
 /**
  * A renderer that has not applied any lines yet should jump to the current
- * protocol state when that log is already past the opening. Incremental
- * lines keep animating.
+ * protocol state when that log is already past the opening send-out.
+ *
+ * A brand-new fight's first log ends at `|turn|1`, after the Poké Ball
+ * throws. That marker is the opening, not proof the fight has moved on.
+ * A later turn, a result, or any protocol after `|turn|1` means the viewer
+ * is rehydrating an in-progress fight and should not replay it.
+ * Incremental lines keep animating.
  */
+function isPastOpeningSendOut(publicLines: readonly string[]): boolean {
+  let passedOpeningTurn = false;
+  for (const line of publicLines) {
+    if (line.startsWith('|win|') || line.startsWith('|tie|')) return true;
+    const turn = TURN_LINE.exec(line);
+    if (turn) {
+      if (Number(turn[1]) > 1) return true;
+      passedOpeningTurn = true;
+      continue;
+    }
+    if (!passedOpeningTurn) continue;
+    if (line.startsWith('|t:|') || line === '|') continue;
+    if (line.startsWith('|')) return true;
+  }
+  return false;
+}
+
 export function shouldCatchUpShowdownFeed(
   fromSequence: number,
   publicLines: readonly string[],
 ): boolean {
   if (fromSequence > 0 || publicLines.length === 0) return false;
-  return publicLines.some(line => (
-    line.startsWith('|win|')
-    || line.startsWith('|tie|')
-    || /^\|turn\|[1-9]/.test(line)
-  ));
+  return isPastOpeningSendOut(publicLines);
 }

@@ -674,6 +674,7 @@ type DexItemLike = {
   onPlate?: string;
   onMemory?: string;
   onDrive?: string;
+  isBerry?: boolean;
 };
 
 type DexSpeciesLike = ReturnType<typeof Dex.species.get>;
@@ -740,7 +741,24 @@ function itemFailsOuClause(item: DexItemLike, species: DexSpeciesLike, move?: st
 }
 
 function describeItem(item: DexItemLike): TeamSearchHit {
-  return { name: item.name, description: readShortDesc(item) };
+  return { name: item.name, description: readShortDesc(item), category: heldItemGroup(item) };
+}
+
+const TYPE_BOOST_ITEMS = new Set([
+  'charcoal', 'mysticwater', 'magnet', 'miracleseed', 'nevermeltice', 'spelltag',
+  'dragonfang', 'blackbelt', 'blackglasses', 'poisonbarb', 'softsand', 'sharpbeak',
+  'twistedspoon', 'silverpowder', 'hardstone', 'silkscarf', 'metalcoat', 'fairyfeather',
+]);
+
+function heldItemGroup(item: DexItemLike): string {
+  if (item.isBerry) return 'Berry';
+  if (item.onPlate) return 'Plate';
+  if (item.onMemory) return 'Memory';
+  if (item.onDrive) return 'Drive';
+  if (item.itemUser?.length) return 'Species';
+  if (item.name.startsWith('Choice ')) return 'Choice';
+  if (item.name.endsWith(' Incense') || item.name.endsWith(' Gem') || TYPE_BOOST_ITEMS.has(item.id)) return 'Type';
+  return 'Held';
 }
 
 function legalItemHits(speciesName: string, maxGeneration?: number): TeamSearchHit[] {

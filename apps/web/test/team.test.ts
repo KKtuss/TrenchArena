@@ -6,11 +6,13 @@ import {
   evsAreUntouched,
   fillMoveSlots,
   filterItemHits,
+  itemGroup,
   filterMoveHits,
   filterSpeciesHits,
   pickStarterEvs,
   pickStarterMoves,
   pickStarterNature,
+  sortItemHits,
   sortMoveHits,
   visibleTeamProblems,
 } from '../lib/team';
@@ -36,6 +38,24 @@ test('filters items by name or description', () => {
   assert.deepEqual(filterItemHits(hits, 'speed').map(hit => hit.name), ['Choice Scarf']);
   assert.deepEqual(filterItemHits(hits, 'left').map(hit => hit.name), ['Leftovers']);
   assert.equal(filterItemHits(hits, 'does-not-exist').length, 0);
+});
+
+test('sorts held items into groups and filters by group', () => {
+  const hits = [
+    { name: 'Leftovers', description: 'Restores a little HP every turn.' },
+    { name: 'Choice Scarf', description: 'Raises Speed but locks the holder into one move.' },
+    { name: 'Aguav Berry', description: 'Restores HP when low.' },
+    { name: 'Light Ball', description: 'If held by a Pikachu, its Attack and Sp. Atk are doubled.' },
+    { name: 'Charcoal', description: "Holder's Fire-type attacks have 1.2x power." },
+    { name: 'Flame Plate', category: 'Plate', description: 'Holder\'s Fire-type attacks have 1.2x power.' },
+  ];
+
+  assert.deepEqual(sortItemHits(hits).map(hit => hit.name), [
+    'Light Ball', 'Choice Scarf', 'Charcoal', 'Aguav Berry', 'Flame Plate', 'Leftovers',
+  ]);
+  assert.deepEqual(filterItemHits(hits, '', 'Berry').map(hit => hit.name), ['Aguav Berry']);
+  assert.deepEqual(filterItemHits(hits, 'fire', 'Type').map(hit => hit.name), ['Charcoal']);
+  assert.equal(itemGroup({ name: 'Wellspring Mask', category: 'Species' }), 'Species');
 });
 
 test('hides unfinished-set move nags from the builder problem list', () => {

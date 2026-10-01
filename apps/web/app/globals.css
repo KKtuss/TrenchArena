@@ -501,6 +501,7 @@ main.is-home {
   padding: 4px 10px 4px 4px;
   color: inherit;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .trainer-control .trainer-figure {

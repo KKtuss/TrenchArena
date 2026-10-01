@@ -1,7 +1,12 @@
 'use client';
 
+import type { CSSProperties } from 'react';
+import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { PokemonSprite, TypeMark } from '@/components/showdown-visuals';
 import type { CasualPreviewMon, CasualTeamPreview } from '@/lib/protocol';
+
+/** How long the lock-in handoff stays up before the battle route opens. */
+export const CASUAL_BATTLE_HANDOFF_MS = 1100;
 
 const SETUP_MOVES = new Set([
   'Swords Dance', 'Nasty Plot', 'Dragon Dance', 'Calm Mind', 'Quiver Dance',
@@ -111,11 +116,49 @@ export function CasualSelectBoard({
   );
 }
 
-export function CasualBattleReveal() {
+export function CasualBattleReveal({
+  yourId,
+  rivalId,
+  durationMs = CASUAL_BATTLE_HANDOFF_MS,
+}: {
+  yourId: string;
+  rivalId?: string;
+  durationMs?: number;
+}) {
   return (
-    <section className="pa-match-vs" role="status" aria-live="assertive">
-      <small>Locked in</small>
-      <b>Let&apos;s battle</b>
+    <section
+      className="pa-match-vs"
+      role="status"
+      aria-live="assertive"
+      style={{ '--pa-handoff': `${durationMs}ms` } as CSSProperties}
+    >
+      <div className="pa-match-vs-card">
+        <header>
+          <small>Both sides locked</small>
+          <h2>Opening the fight</h2>
+        </header>
+        <div className="pa-lobby-vs">
+          <article className="pa-lobby-side cyan is-present">
+            <small>Your trainer</small>
+            <ProfileTrainerSprite label={yourId} side="left" />
+            <strong><TrainerName playerId={yourId} /></strong>
+            <span className="pa-lobby-ready on">Locked</span>
+          </article>
+          <div className="pa-lobby-mid" aria-hidden>
+            <span>VS</span>
+          </div>
+          <article className="pa-lobby-side coral is-present">
+            <small>Opponent</small>
+            {rivalId ? <ProfileTrainerSprite label={rivalId} side="right" /> : null}
+            <strong>{rivalId ? <TrainerName playerId={rivalId} fallback="Rival" /> : 'Rival'}</strong>
+            <span className="pa-lobby-ready on">Locked</span>
+          </article>
+        </div>
+        <p>Teams stay hidden until the first send-out.</p>
+        <div className="pa-match-vs-bar" aria-hidden>
+          <i />
+        </div>
+      </div>
     </section>
   );
 }

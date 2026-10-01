@@ -1,3 +1,12 @@
+.ps-item {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+
 .ps-icon {
   display: inline-block;
   width: 40px;

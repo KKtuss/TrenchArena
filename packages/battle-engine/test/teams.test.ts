@@ -87,8 +87,9 @@ test('item search is scoped to species and drops unusable held items', () => {
   assert.ok(pelipper.hits.find(hit => hit.name === 'Leftovers'));
 
   const pikachu = searchTeamHits('item', '', 'Pikachu');
-  assert.ok(pikachu.hits.find(hit => hit.name === 'Light Ball'));
-  assert.ok(pikachu.hits.find(hit => hit.name === 'Eviolite'));
+  assert.equal(pikachu.hits.find(hit => hit.name === 'Light Ball')?.category, 'Species');
+  assert.equal(pikachu.hits.find(hit => hit.name === 'Eviolite')?.category, 'Held');
+  assert.equal(pikachu.hits.find(hit => hit.name === 'Aguav Berry')?.category, 'Berry');
 
   const ogerpon = searchTeamHits('item', '', 'Ogerpon');
   assert.ok(ogerpon.hits.find(hit => hit.name === 'Wellspring Mask'));

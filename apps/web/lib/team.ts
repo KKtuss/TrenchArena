@@ -164,13 +164,49 @@ export function filterSpeciesHits<T extends SearchableTeamHit>(
   ));
 }
 
-export function filterItemHits<T extends SearchableTeamHit>(hits: T[], query: string): T[] {
+export const ITEM_GROUPS = ['Species', 'Choice', 'Type', 'Berry', 'Plate', 'Memory', 'Drive', 'Held'] as const;
+export type ItemGroup = typeof ITEM_GROUPS[number];
+
+const TYPE_BOOST_ITEMS = new Set([
+  'Charcoal', 'Mystic Water', 'Magnet', 'Miracle Seed', 'Never-Melt Ice', 'Spell Tag',
+  'Dragon Fang', 'Black Belt', 'Black Glasses', 'Poison Barb', 'Soft Sand', 'Sharp Beak',
+  'Twisted Spoon', 'Silver Powder', 'Hard Stone', 'Silk Scarf', 'Metal Coat', 'Fairy Feather',
+]);
+
+export function itemGroup(hit: { name: string; description?: string; category?: string }): ItemGroup {
+  if (hit.category && (ITEM_GROUPS as readonly string[]).includes(hit.category)) {
+    return hit.category as ItemGroup;
+  }
+  const name = hit.name;
+  if (/\bheld by\b/i.test(hit.description ?? '')) return 'Species';
+  if (name.startsWith('Choice ')) return 'Choice';
+  if (name.endsWith(' Berry')) return 'Berry';
+  if (name.endsWith(' Plate')) return 'Plate';
+  if (name.endsWith(' Memory')) return 'Memory';
+  if (name.endsWith(' Drive')) return 'Drive';
+  if (name.endsWith(' Mask')) return 'Species';
+  if (name.endsWith(' Incense') || name.endsWith(' Gem') || TYPE_BOOST_ITEMS.has(name)) return 'Type';
+  return 'Held';
+}
+
+export function filterItemHits<T extends SearchableTeamHit>(hits: T[], query: string, group = ''): T[] {
   const needle = query.trim().toLowerCase();
   return hits.filter(hit => (
-    !needle
-    || hit.name.toLowerCase().includes(needle)
-    || (hit.description ?? '').toLowerCase().includes(needle)
+    (!group || itemGroup(hit) === group)
+    && (
+      !needle
+      || hit.name.toLowerCase().includes(needle)
+      || (hit.description ?? '').toLowerCase().includes(needle)
+    )
   ));
+}
+
+export function sortItemHits<T extends SearchableTeamHit>(hits: T[]): T[] {
+  return [...hits].sort((left, right) => {
+    const groupOrder = ITEM_GROUPS.indexOf(itemGroup(left)) - ITEM_GROUPS.indexOf(itemGroup(right));
+    if (groupOrder !== 0) return groupOrder;
+    return left.name.localeCompare(right.name);
+  });
 }
 
 const DRAFT_MOVE_NAG = /has no moves \(it must have at least one to be usable\)/i;
