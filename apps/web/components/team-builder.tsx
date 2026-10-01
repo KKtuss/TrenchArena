@@ -52,6 +52,14 @@ type Picker =
   | { kind: 'move'; slot: number; moveSlot: number }
   | { kind: 'import' };
 
+type MobileTab = 'team' | 'build' | 'review';
+
+const MOBILE_TABS: { id: MobileTab; label: string }[] = [
+  { id: 'team', label: 'Team' },
+  { id: 'build', label: 'Pokémon' },
+  { id: 'review', label: 'Stats' },
+];
+
 const STAT_LABEL: Record<StatId, string> = {
   hp: 'HP',
   atk: 'Atk',
@@ -114,6 +122,8 @@ export function TeamBuilder({
   const [name, setName] = useState('Demo Circuit');
   const [sets, setSets] = useState<EditorSet[]>(() => Array.from({ length: 6 }, emptySet));
   const [selected, setSelected] = useState(0);
+  const [mobileTab, setMobileTab] = useState<MobileTab>('team');
+  const [phoneLayout, setPhoneLayout] = useState(false);
   const [inspection, setInspection] = useState<TeamInspection | null>(null);
   const [notice, setNotice] = useState(`Loading the ${formatName} validator.`);
   const [paste, setPaste] = useState('');
@@ -140,6 +150,14 @@ export function TeamBuilder({
   useEffect(() => {
     setRulesetId(initialRulesetId);
   }, [initialRulesetId]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 720px)');
+    const sync = () => setPhoneLayout(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -382,6 +400,7 @@ export function TeamBuilder({
 
   async function openSpeciesPicker(slot = selected) {
     setSelected(slot);
+    setMobileTab('build');
     setPicker({ kind: 'species', slot });
     setPickerQuery('');
     setTypeFilter('');
@@ -674,7 +693,7 @@ export function TeamBuilder({
       <header className="pa-page-head pa-page-head-row">
         <div>
           <h1>Team builder</h1>
-          <p className={`tb-status ${statusTone}`} role="status">
+          <p className={`pa-lead tb-status ${statusTone}`} role="status">
             {statusLine}
           </p>
         </div>
@@ -719,8 +738,33 @@ export function TeamBuilder({
         </div>
       </header>
 
-      <div className="tb-grid">
-        <aside className="tb-slots">
+      <div className="tb-mobile-tabs" role="tablist" aria-label="Team builder screens">
+        {MOBILE_TABS.map(tab => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={`tb-tab-${tab.id}`}
+            aria-selected={mobileTab === tab.id}
+            aria-controls={`tb-panel-${tab.id}`}
+            tabIndex={mobileTab === tab.id ? 0 : -1}
+            className={mobileTab === tab.id ? 'active' : ''}
+            onClick={() => setMobileTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className={`tb-grid is-mobile-${mobileTab}`}>
+        <aside
+          className="tb-slots"
+          id="tb-panel-team"
+          role="tabpanel"
+          aria-labelledby="tb-tab-team"
+          data-mobile-panel="team"
+          aria-hidden={phoneLayout ? mobileTab !== 'team' : undefined}
+        >
           {sets.map((set, index) => {
             const empty = !set.species.trim();
             const slotIllegal = Boolean(
@@ -735,6 +779,7 @@ export function TeamBuilder({
                 aria-pressed={index === selected}
                 onClick={() => {
                   setSelected(index);
+                  setMobileTab('build');
                   if (empty) void openSpeciesPicker(index);
                 }}
               >
@@ -750,7 +795,14 @@ export function TeamBuilder({
           })}
         </aside>
 
-        <section className="tb-set">
+        <section
+          className="tb-set"
+          id="tb-panel-build"
+          role="tabpanel"
+          aria-labelledby="tb-tab-build"
+          data-mobile-panel="build"
+          aria-hidden={phoneLayout ? mobileTab !== 'build' : undefined}
+        >
           <header>
             <div className="tb-set-head">
               {current.species.trim() ? (
@@ -837,7 +889,14 @@ export function TeamBuilder({
           </div>
         </section>
 
-        <div className="tb-statcol">
+        <div
+          className="tb-statcol"
+          id="tb-panel-review"
+          role="tabpanel"
+          aria-labelledby="tb-tab-review"
+          data-mobile-panel="review"
+          aria-hidden={phoneLayout ? mobileTab !== 'review' : undefined}
+        >
         <section className="tb-stats">
             <header>
               <strong>Stats</strong>
@@ -902,7 +961,12 @@ export function TeamBuilder({
         </section>
         </div>
 
-        <section className="tb-intel tb-speed">
+        <section
+          className="tb-intel tb-speed"
+          data-mobile-panel="review"
+          aria-labelledby="tb-tab-review"
+          aria-hidden={phoneLayout ? mobileTab !== 'review' : undefined}
+        >
           <h3>Speed</h3>
           {inspection?.speeds.length ? (
             <ol>

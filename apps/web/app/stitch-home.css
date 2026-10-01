@@ -13,25 +13,27 @@
 }
 
 .shell-nav-stitch .brand {
-  gap: 0.75rem;
+  gap: 0.4rem;
   flex-shrink: 0;
 }
 
 .shell-nav-stitch .brand-mark {
   width: 32px;
   height: 32px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
 }
 
 .shell-nav-stitch .brand-copy strong {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  font-family: var(--font-jetbrains), monospace;
-  font-size: 0.875rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 2rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
   text-transform: uppercase;
   color: #dee2f3;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  transform: translateY(1px);
 }
 
 .shell-nav-stitch .brand-copy small {
@@ -47,6 +49,10 @@
   gap: 0.5rem;
   flex-wrap: nowrap;
   height: 100%;
+}
+
+.shell-nav-mobile-toggle {
+  display: none;
 }
 
 .shell-nav-stitch .nav-links a {
@@ -1011,7 +1017,12 @@
 
 .pa-fly-top small {
   margin-left: 0.4rem;
-  color: #00f0ff;
+  color: #f2ede4;
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1.4rem;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .pa-fly article strong,
@@ -1433,6 +1444,11 @@
 .pa-live-strip a {
   margin-left: auto;
   color: #00f0ff;
+}
+
+.pa-strip-end {
+  margin-left: auto;
+  color: #8ea0c0;
 }
 
 .pa-floor-board {
@@ -2527,10 +2543,10 @@
 /* ?? Tournament schedule + stadium bracket ?? */
 .pa-page-actions {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex-wrap: wrap;
   gap: 0.65rem;
-  align-items: flex-end;
+  align-items: center;
 }
 
 .pa-schedule {
@@ -3006,26 +3022,36 @@
 
 .pa-team-prep li {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: center;
   gap: 0.4rem;
-  padding: 0.45rem 0.6rem;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.65rem;
   border: 1px solid rgba(142, 160, 192, 0.18);
   border-radius: 10px;
   background: rgba(8, 12, 24, 0.72);
 }
 
+.pa-team-prep li > a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 100%;
+  text-decoration: none;
+}
+
 .pa-team-prep li span {
-  color: #c5cedd;
-  font-size: 0.68rem;
+  color: #f2ede4;
+  font-size: 0.9rem;
   font-weight: 800;
   letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
 }
 
 .pa-team-prep li em {
-  color: #8dffb0;
-  font-style: normal;
-  font-size: 0.68rem;
-  font-weight: 800;
+  display: none;
 }
 
 .pa-schedule-card-close .pa-btn {
@@ -5592,4 +5618,545 @@
     align-self: center;
   }
 
+}
+
+/* Phone layouts. Desktop rules above stay intact. */
+@media (max-width: 720px) {
+  .shell-nav-stitch .shell-nav-inner {
+    position: relative;
+    padding: 0.45rem 0.75rem 0.25rem;
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    row-gap: 0.15rem;
+  }
+
+  .shell-nav-stitch .brand {
+    transform: translateY(0.25rem);
+  }
+
+  .shell-nav-stitch .brand-copy strong {
+    font-size: 1.7rem;
+  }
+
+  .shell-nav-mobile-toggle {
+    display: flex;
+    order: 3;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #13213d;
+    border-radius: 2px;
+    background: #0b1222;
+    color: #00f0ff;
+    font-family: var(--font-jetbrains), monospace;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+
+  .shell-nav-mobile-icon {
+    display: grid;
+    gap: 0.22rem;
+    width: 1.1rem;
+  }
+
+  .shell-nav-mobile-icon i {
+    display: block;
+    width: 100%;
+    height: 2px;
+    background: currentColor;
+  }
+
+  .shell-nav-mobile-toggle:focus-visible {
+    outline: 2px solid #00f0ff;
+    outline-offset: 2px;
+  }
+
+  .shell-nav-mobile-toggle[aria-expanded="true"] {
+    border-color: rgba(0, 240, 255, 0.55);
+    background: rgba(0, 240, 255, 0.08);
+  }
+
+  .shell-nav-mobile-toggle[aria-expanded="true"] .shell-nav-mobile-icon i:nth-child(2) {
+    opacity: 0;
+  }
+
+  .shell-nav-stitch .nav-links,
+  .shell-nav-stitch .nav-links.mobile-nav-open {
+    position: absolute;
+    top: calc(100% + 0.15rem);
+    left: max(0.75rem, env(safe-area-inset-left));
+    right: max(0.75rem, env(safe-area-inset-right));
+    z-index: 30;
+    width: auto;
+    min-width: 0;
+    max-height: min(60dvh, 20rem);
+    display: none;
+  }
+
+  .shell-nav-stitch .nav-links.mobile-nav-open {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.3rem;
+    border: 1px solid #13213d;
+    background: #0b1222;
+    overflow-y: auto;
+  }
+
+  .shell-nav-stitch .nav-links a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 44px;
+    justify-content: flex-start;
+    padding: 0 0.8rem;
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .shell-nav-stitch .nav-links.mobile-nav-open a.active {
+    background: rgba(0, 240, 255, 0.08);
+  }
+
+  .shell-nav-stitch .nav-links.mobile-nav-open a.active::after {
+    top: 0;
+    right: auto;
+    bottom: 0;
+    left: 0;
+    width: 3px;
+    height: auto;
+  }
+
+  .shell-nav-stitch .wallet-chip,
+  .shell-nav-stitch .trainer-control {
+    min-height: 40px;
+    height: 40px;
+    padding: 0.2rem 0.55rem;
+  }
+
+  .shell-nav-stitch .shell-actions {
+    order: 2;
+    align-self: center;
+    margin-left: auto;
+  }
+
+  .shell-nav-stitch .wallet-chip {
+    display: none;
+  }
+
+  .shell-nav-stitch .trainer-control {
+    width: auto;
+    min-width: 0;
+    max-width: 7rem;
+    justify-content: flex-start;
+    align-self: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.4rem;
+  }
+
+  .shell-nav-stitch .trainer-control-copy {
+    min-width: 0;
+    display: flex;
+  }
+
+  .shell-nav-stitch .trainer-control-copy strong {
+    max-width: 5.5rem;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .shell-nav-stitch .trainer-avatar {
+    width: 30px;
+    height: 30px;
+  }
+
+  .shell-nav-stitch .wallet-chip strong {
+    max-width: 8.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pa-home {
+    padding: 0.85rem 0.75rem calc(2rem + env(safe-area-inset-bottom));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    gap: 1.75rem;
+  }
+
+  .pa-page {
+    width: 100%;
+    padding-bottom: 2rem;
+    gap: 0.75rem;
+  }
+
+  .pa-hero h1 {
+    font-size: clamp(2.15rem, 11.5vw, 3.4rem);
+  }
+
+  .pa-hero .pa-lead {
+    font-size: clamp(0.8125rem, 3.6vw, 0.875rem);
+  }
+
+  .pa-lead-intro {
+    display: block;
+  }
+
+  .pa-ctas {
+    width: min(78%, 12.5rem);
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .pa-ctas .pa-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .pa-tag {
+    font-size: clamp(0.78rem, 3.4vw, 1.05rem);
+    letter-spacing: 0.04em;
+  }
+
+  .pa-stadium-trainers {
+    height: 30rem;
+  }
+
+  .pa-stadium-trainer {
+    width: min(72vw, 19rem);
+    height: 38rem;
+    top: -4rem;
+    opacity: 0.84;
+  }
+
+  .pa-stadium-trainer.left {
+    left: -3rem;
+  }
+
+  .pa-stadium-trainer.right {
+    right: -3rem;
+  }
+
+  .pa-page-head h1,
+  .pa-team-file-head h2 {
+    overflow-wrap: anywhere;
+  }
+
+  .pa-page-head,
+  .pa-page-head-row {
+    gap: 0.55rem;
+  }
+
+  .pa-page-head-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .pa-page-head h1 {
+    margin: 0.1rem 0 0.2rem;
+    font-size: clamp(1.55rem, 7.5vw, 2rem);
+    line-height: 0.95;
+  }
+
+  .pa-page-head .pa-lead,
+  .pa-page-head .tb-status {
+    margin: 0;
+    font-size: 0.68rem;
+    line-height: 1.35;
+  }
+
+  .pa-live-strip,
+  .pa-soon,
+  .pa-feed-bar,
+  .pa-team-file-head,
+  .pa-team-prep header,
+  .pa-route-source {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 0.35rem;
+  }
+
+  .pa-live-strip {
+    justify-content: center;
+    gap: 0.4rem 0.75rem;
+    text-align: center;
+  }
+
+  .pa-live-strip .pa-strip-end {
+    margin-left: 0;
+  }
+
+  .pa-schedule-card .pa-schedule-card-mark {
+    text-align: center;
+    justify-items: center;
+    padding-bottom: 0.2rem;
+  }
+
+  .pa-schedule-card.is-gen1,
+  .pa-schedule-card.is-format {
+    gap: 0.15rem;
+  }
+
+  .pa-schedule-card.is-gen1 .pa-gen1-stage,
+  .pa-schedule-card.is-format .pa-gen1-stage {
+    min-height: 7.5rem;
+  }
+
+  .pa-schedule-card .pa-schedule-card-mark strong,
+  .pa-schedule-card.is-format .pa-schedule-card-mark strong,
+  .pa-schedule-card.is-gen1 .pa-schedule-card-mark strong {
+    font-size: clamp(2.15rem, 9.5vw, 2.75rem);
+    letter-spacing: 0.03em;
+    line-height: 0.92;
+  }
+
+  .pa-schedule-card .pa-schedule-prize {
+    display: grid;
+    width: 100%;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .pa-schedule-card .pa-schedule-prize strong {
+    justify-content: center;
+    width: auto;
+    gap: 0.45rem;
+  }
+
+  .pa-schedule-card .pa-schedule-prize strong em {
+    font-size: clamp(2rem, 9vw, 2.65rem);
+  }
+
+  .pa-schedule-card .pa-schedule-prize strong span {
+    font-size: 0.78rem;
+  }
+
+  .pa-duel-rail > div {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .pa-duel-rail strong,
+  .pa-feed-bar > span:last-child {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .pa-duel-rail {
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+  }
+
+  .pa-duel-rail > div {
+    width: auto;
+  }
+
+  .pa-duel-rail > div:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    gap: 0.35rem;
+  }
+
+  .pa-duel-rail > div:first-child strong {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pa-duel-rail > div:first-child .pa-chip,
+  .pa-duel-rail > div:last-child {
+    flex: 0 0 auto;
+  }
+
+  .pa-fight-trainers {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 0.35rem;
+    justify-items: stretch;
+    text-align: initial;
+  }
+
+  .pa-fight-fighter,
+  .pa-fight-fighter.end {
+    width: auto;
+    min-width: 0;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .pa-fight-fighter.end {
+    justify-content: flex-end;
+    text-align: right;
+  }
+
+  .pa-fight-fighter > div {
+    max-width: none;
+    min-width: 0;
+  }
+
+  .pa-fight-fighter .ps-trainer-img {
+    width: 44px;
+    height: 44px;
+  }
+
+  .pa-fight-vs {
+    margin: 0.1rem 0;
+  }
+
+  .pa-live-strip strong {
+    flex: 1 1 8rem;
+    min-width: 0;
+  }
+
+  .pa-strip-end,
+  .pa-live-strip a {
+    margin-left: 0;
+  }
+
+  .pa-soon > span:last-child {
+    flex-basis: 100%;
+  }
+
+  .pa-team-slots {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pa-team-file-head h2 {
+    font-size: clamp(1.35rem, 7vw, 1.8rem);
+  }
+
+  .pa-signup-field .pa-roster-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pa-profile-stats {
+    gap: 0.5rem;
+  }
+
+  .pa-profile-stat {
+    padding: 0.7rem 0.65rem;
+    min-width: 0;
+  }
+
+  .pa-profile-stat strong,
+  .pa-profile-identity strong {
+    overflow-wrap: anywhere;
+  }
+
+  .pa-history-row {
+    padding: 0.7rem 0.75rem;
+    gap: 0.35rem 0.65rem;
+  }
+
+  .pa-match-count,
+  .pa-match-vs {
+    inset: 0;
+    z-index: 40;
+  }
+
+  .pa-cup-head-actions,
+  .pa-lobby-actions,
+  .pa-page-actions {
+    align-items: stretch;
+  }
+
+  .pa-page-actions {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: nowrap;
+  }
+
+  .pa-cup-head-actions .pa-btn,
+  .pa-lobby-actions .pa-btn,
+  .pa-page-actions .pa-btn {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .pa-segmented {
+    flex-wrap: wrap;
+  }
+
+  .pa-segmented button {
+    flex: 1 1 42%;
+    min-height: 44px;
+    padding: 0.45rem 0.4rem;
+  }
+
+  .pa-bracket-scroll {
+    grid-auto-columns: minmax(12.5rem, 88vw);
+  }
+
+  .pa-schedule-card,
+  .pa-schedule-card.is-format,
+  .pa-schedule-card.is-format.is-gen1,
+  .pa-gen1-stage,
+  .pa-gen1-hero-band {
+    overflow: hidden;
+  }
+
+  .pa-gen1-scene {
+    transform: scale(0.62);
+    transform-origin: center bottom;
+  }
+
+  .pa-gen1-flank {
+    margin-inline: -0.35rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .pa-profile-identity img {
+    width: 96px;
+    height: 96px;
+  }
+
+  .pa-fight-fighter .ps-trainer-img,
+  .pa-fight-trainers .ps-trainer-img,
+  .pa-fight-open {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (max-width: 360px) {
+  .shell-nav-stitch .brand {
+    flex-shrink: 1;
+    min-width: 0;
+    gap: 0.4rem;
+  }
+
+  .shell-nav-stitch .brand-mark {
+    width: 28px;
+    height: 28px;
+  }
+
+  .shell-nav-stitch .brand-copy {
+    min-width: 0;
+  }
+
+  .shell-nav-stitch .brand-copy strong {
+    max-width: 7rem;
+    overflow: hidden;
+    font-size: 1.4rem;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

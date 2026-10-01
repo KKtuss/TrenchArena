@@ -123,7 +123,8 @@ export default function LandingPage() {
         <h1>POKEARENA</h1>
         <p className="pa-tag">Battle. Compete. Climb.</p>
         <p className="pa-lead">
-          Hold POKE to enter. Play for SOL. Cups pay from the Tournament Treasury.
+          <span className="pa-lead-intro">Hold POKE to enter.</span>{' '}
+          Wager SOL in the arena, or enter a tournament and fight for the creator rewards treasury.
         </p>
         {saved?.species.some(Boolean) ? (
           <div className="pa-protocol">

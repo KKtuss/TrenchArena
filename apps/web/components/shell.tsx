@@ -15,6 +15,7 @@ import { formatPoke, formatSolLamports } from '@/lib/api-client';
 export function ArenaShell({ children }: { children: ReactNode }) {
   const { connectionState, snapshot, error, clearError, connected } = useArena();
   const pathname = usePathname() ?? '';
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navItems = [
     { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
     { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
@@ -23,7 +24,6 @@ export function ArenaShell({ children }: { children: ReactNode }) {
     { href: '/treasury', label: 'Treasury & Economy', active: pathname.startsWith('/treasury') },
   ];
   const isHome = pathname === '/';
-
   return (
     <>
       <header className="shell-nav shell-nav-stitch">
@@ -31,20 +31,35 @@ export function ArenaShell({ children }: { children: ReactNode }) {
           <Link href="/" className="brand">
             <BrandMark className="brand-mark" />
             <span className="brand-copy">
-              <strong>
-                PokeArena
-                <span className="brand-pulse" aria-hidden />
-              </strong>
-              <small>Battle Stadium</small>
+              <strong>POKEARENA</strong>
             </span>
           </Link>
-          <nav className="nav-links" aria-label="Primary">
+          <button
+            type="button"
+            className="shell-nav-mobile-toggle"
+            aria-expanded={mobileNavOpen}
+            aria-controls="primary-navigation"
+            aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+            onClick={() => setMobileNavOpen(current => !current)}
+          >
+            <span className="shell-nav-mobile-icon" aria-hidden>
+              <i />
+              <i />
+              <i />
+            </span>
+          </button>
+          <nav
+            id="primary-navigation"
+            className={`nav-links${mobileNavOpen ? ' mobile-nav-open' : ''}`}
+            aria-label="Primary"
+          >
             {navItems.map(item => (
               <Link
                 key={item.href}
                 href={item.href}
                 className={item.active ? 'active' : ''}
                 aria-current={item.active ? 'page' : undefined}
+                onClick={() => setMobileNavOpen(false)}
               >
                 {item.label}
               </Link>

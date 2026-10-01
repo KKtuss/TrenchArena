@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { Anton, Barlow, Barlow_Condensed, Inter, JetBrains_Mono, Teko } from 'next/font/google';
 
@@ -53,6 +53,12 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: 'PokeArena',
   description: 'Playable Pokémon tournament arena with mocked POKE economics.',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

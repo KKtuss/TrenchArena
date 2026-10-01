@@ -1026,6 +1026,10 @@
   outline-offset: 2px;
 }
 
+.tb-mobile-tabs {
+  display: none;
+}
+
 .tb-picker-error {
   display: flex;
   align-items: center;
@@ -1083,5 +1087,202 @@
   .tb-file-main,
   .tb-file-commit {
     align-items: stretch;
+  }
+}
+
+@media (max-width: 720px) {
+  .tb.pa-page {
+    gap: 0.75rem;
+  }
+
+  .tb .pa-page-head {
+    margin-bottom: 0;
+  }
+
+  .tb-file-actions {
+    width: 100%;
+    align-items: stretch;
+    gap: 0.4rem;
+  }
+
+  .tb-file-main,
+  .tb-file-commit {
+    justify-content: flex-start;
+    gap: 0.35rem;
+  }
+
+  .tb-file-main {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+  }
+
+  .tb-file-commit {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .tb-file-main .tb-name,
+  .tb-file-main > select {
+    grid-column: 1 / -1;
+  }
+
+  .tb-name,
+  .tb-format-select {
+    flex: 1 1 100%;
+    white-space: normal;
+    gap: 0.35rem;
+  }
+
+  .tb-name input,
+  .tb-format-select select {
+    width: auto;
+    flex: 1 1 8rem;
+    min-width: 0;
+  }
+
+  .tb input,
+  .tb select,
+  .tb textarea {
+    min-height: 44px;
+  }
+
+  .tb-name input,
+  .tb-format-select select,
+  .tb-file-main > select {
+    min-height: 34px;
+    height: 34px;
+    padding-top: 0.2rem;
+    padding-bottom: 0.2rem;
+    font-size: 0.72rem;
+  }
+
+  .tb-format-select {
+    align-items: center;
+    min-height: 0;
+    width: 100%;
+  }
+
+  .tb-file-main .pa-btn,
+  .tb-file-commit .pa-btn {
+    min-height: 34px;
+    width: 100%;
+    justify-content: center;
+    padding: 0.3rem 0.35rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
+  }
+
+  .tb-slots button,
+  .tb-move-row,
+  .tb-choices button {
+    min-height: 44px;
+  }
+
+  .tb-mobile-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.2rem;
+    margin: 0 0 0.55rem;
+    padding: 0.18rem;
+    border: 1px solid #13213d;
+    border-radius: 4px;
+    background: #0b1222;
+  }
+
+  .tb-mobile-tabs button {
+    min-height: 34px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    background: transparent;
+    color: #8ea0c0;
+    font-family: var(--font-jetbrains), monospace;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .tb-mobile-tabs button.active {
+    border-color: rgba(0, 240, 255, 0.45);
+    background: rgba(0, 240, 255, 0.1);
+    color: #00f0ff;
+  }
+
+  .tb-mobile-tabs button:focus-visible {
+    outline: 2px solid #00f0ff;
+    outline-offset: 2px;
+  }
+
+  .tb-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    min-height: 0;
+  }
+
+  .tb-grid.is-mobile-team [data-mobile-panel]:not([data-mobile-panel="team"]),
+  .tb-grid.is-mobile-build [data-mobile-panel]:not([data-mobile-panel="build"]),
+  .tb-grid.is-mobile-review [data-mobile-panel]:not([data-mobile-panel="review"]) {
+    display: none !important;
+  }
+
+  .tb-grid.is-mobile-team .tb-slots,
+  .tb-grid.is-mobile-build .tb-set,
+  .tb-grid.is-mobile-review .tb-statcol,
+  .tb-grid.is-mobile-review .tb-speed {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .tb-grid.is-mobile-review .tb-statcol {
+    gap: 0.8rem;
+  }
+
+  .tb-grid.is-mobile-review .tb-speed {
+    order: 0;
+  }
+
+  .tb-grid.is-mobile-review .tb-coverage {
+    order: 0;
+  }
+
+  .tb-stats li {
+    grid-template-columns: minmax(0, 1.5fr) minmax(2.4rem, 0.7fr) minmax(2.4rem, 0.7fr) minmax(2rem, 0.55fr);
+    gap: 0.25rem;
+  }
+
+  .tb-stats b,
+  .tb-intel b {
+    min-width: 0;
+  }
+
+  .tb-modal {
+    align-items: end;
+    padding: 0;
+  }
+
+  .tb-modal-card {
+    width: 100%;
+    max-height: min(92dvh, 100%);
+    border-radius: 8px 8px 0 0;
+    padding: 0.85rem 0.75rem calc(0.85rem + env(safe-area-inset-bottom));
+  }
+
+  .tb-modal-card header {
+    align-items: center;
+  }
+
+  .tb-pick,
+  .tb-move-list button,
+  .tb-item-list button {
+    min-height: 44px;
+  }
+
+  .tb-set-meta,
+  .tb-spread {
+    overflow-wrap: anywhere;
   }
 }

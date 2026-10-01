@@ -5066,3 +5066,193 @@ main:has(.is-cup-hub) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Phone and narrow tablet: keep the wrapped header in flow so it cannot cover the page. */
+@media (max-width: 1200px) {
+  .shell-nav {
+    position: sticky;
+    top: 0;
+  }
+
+  main,
+  main.is-home,
+  main:has(.battle-page),
+  main:has(.is-cup-hub) {
+    padding-top: 0;
+  }
+}
+
+@media (max-width: 860px) {
+  .showdown-battle-frame {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+    min-height: 0;
+  }
+
+  .fight-rail-far {
+    order: -1;
+  }
+
+  .showdown-battle-root {
+    --fight-zoom: 1;
+  }
+
+  .showdown-battle-scene {
+    container-type: inline-size;
+    width: min(100%, 640px);
+    height: auto;
+    aspect-ratio: 640 / 360;
+    margin-inline: auto;
+  }
+
+  .showdown-battle-root .battle {
+    zoom: 1 !important;
+    transform: scale(calc(100cqw / 640px)) !important;
+    transform-origin: top left !important;
+    margin-bottom: 0 !important;
+  }
+
+  .fight-rail,
+  .fight-rail-far {
+    justify-content: center;
+    padding: 0.3rem 0.4rem;
+  }
+
+  .fight-rail-body {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.35rem 0.7rem;
+  }
+
+  .fight-rail-card {
+    width: auto;
+    max-width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.3rem 0.5rem;
+  }
+
+  .fight-rail-role {
+    font-size: 1.35rem;
+  }
+
+  .fight-rail-sprite,
+  .fight-rail .ps-trainer-img {
+    width: 52px;
+    height: 52px;
+  }
+
+  .fight-rail-name,
+  .fight-rail-stats dd {
+    font-size: 0.95rem;
+  }
+
+  .fight-rail-team {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    flex: 1 1 10rem;
+    max-width: 100%;
+    gap: 2px;
+  }
+
+  .fight-rail-mon,
+  .fight-rail-team .ps-sprite {
+    height: 44px;
+  }
+
+  .battle-page.pa-page {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .fight-move-head {
+    flex-wrap: wrap;
+  }
+
+  .fight-move-head strong,
+  .fight-switch-copy strong {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+  }
+
+  .showdown-battle-controls-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .pa-battle-bar-fighters {
+    flex: 1 1 16rem;
+  }
+
+  .pa-battle-bar-fighters b {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 720px) {
+  main,
+  main:has(.battle-page),
+  main:has(.is-cup-hub) {
+    width: 100%;
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-bottom: calc(2.5rem + env(safe-area-inset-bottom));
+  }
+
+  main:has(.battle-page) {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  .page-header-action .btn,
+  .pa-btn {
+    min-height: 44px;
+  }
+
+  .pa-btn-sm {
+    min-height: 40px;
+  }
+
+  .trainer-popover-fixed {
+    top: auto;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    left: max(12px, env(safe-area-inset-left));
+    width: auto;
+    max-height: min(70dvh, 520px);
+    overflow: auto;
+  }
+
+  .trainer-setup {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .trainer-setup-card {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+  }
+
+  .pa-toast-stack {
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: auto;
+  }
+
+  .fight-move,
+  .fight-switch,
+  .fight-tera,
+  .fight-confirm {
+    min-height: 44px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}

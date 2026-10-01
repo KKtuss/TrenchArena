@@ -62,7 +62,7 @@ export default function ArenaPage() {
         <span className="pa-live-pill"><i /> {connected ? 'Arena live' : 'Connecting'}</span>
         <strong>{openCount} open</strong>
         <span>{rooms.length} on the board</span>
-        <span style={{ marginLeft: 'auto', color: '#8ea0c0' }}>No withdrawal tax</span>
+        <span className="pa-strip-end">No withdrawal tax</span>
       </div>
 
       <section className="pa-floor-board">

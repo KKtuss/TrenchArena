@@ -7,7 +7,6 @@ import { ErrorToast } from '@/components/error-toast';
 import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
-import { customFormats } from '@/lib/tournament-formats';
 import {
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
@@ -101,30 +100,8 @@ export default function TournamentsPage() {
 
       <div className="pa-live-strip">
         <span className="pa-live-pill"><i /> 30-minute cadence</span>
-        <strong>Preset Gen X → Custom Gen X → Custom Gen 9 OU</strong>
-        <span style={{ marginLeft: 'auto', color: '#8ea0c0' }}>No withdrawal tax</span>
+        <span className="pa-strip-end">No withdrawal tax</span>
       </div>
-
-      <section className="pa-team-prep" aria-label="My tournament teams">
-        <header>
-          <span>My tournament teams</span>
-          <small>Optional until you join that cup</small>
-        </header>
-        <ul>
-          {customFormats().map(format => {
-            const saved = playerId ? readSavedTeam(playerId, format.id) : null;
-            const ready = Boolean(saved?.validated && saved.paste.trim());
-            return (
-              <li key={format.id}>
-                <span>{format.title}</span>
-                {ready ? <em>Ready</em> : (
-                  <Link href={`/teams/builder?ruleset=${format.id}`}>Not prepared</Link>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </section>
 
       <section className="pa-schedule">
         <div className="pa-schedule-list">
@@ -218,12 +195,6 @@ export default function TournamentsPage() {
   );
 }
 
-function buildTeamLabel(slot: ScheduleSlot): string {
-  return slot.format.id === 'gen9ou'
-    ? 'Build Gen 9 OU Team'
-    : `Build Gen ${slot.format.generation} Team`;
-}
-
 function ScheduleCard({
   slot,
   now,
@@ -306,24 +277,13 @@ function ScheduleCard({
             </div>
           ) : null}
         </dl>
-        <p className="pa-schedule-prep">
-          {teamReady === null
-            ? 'Preset • No team required'
-            : teamReady
-              ? 'Your team: Ready'
-              : 'Your team: Not prepared'}
-        </p>
-        {!joinable && teamReady === false ? (
-          <Link className="pa-btn pa-btn-surface" href={`/teams/builder?ruleset=${slot.rulesetId}`}>
-            {buildTeamLabel(slot)}
-          </Link>
-        ) : !joinable ? (
+        {!joinable ? (
           <button type="button" className="pa-btn pa-btn-surface" disabled>
             Upcoming
           </button>
         ) : teamReady === false ? (
           <Link className="pa-btn pa-btn-gold" href={`/teams/builder?ruleset=${slot.rulesetId}`}>
-            {buildTeamLabel(slot)}
+            No available team
           </Link>
         ) : href ? (
           <Link className="pa-btn pa-btn-gold" href={href}>{cta}</Link>

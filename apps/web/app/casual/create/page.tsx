@@ -137,7 +137,7 @@ export default function CreateCasualPage() {
         <strong>{formatLabel}</strong>
         <span>{battleSize.toUpperCase()}</span>
         <span>{roomType === 'private' ? 'Private callout' : 'Open queue'}</span>
-        <span style={{ marginLeft: 'auto', color: '#8ea0c0' }}>No withdrawal tax</span>
+        <span className="pa-strip-end">No withdrawal tax</span>
       </div>
 
       <section className="pa-split">
