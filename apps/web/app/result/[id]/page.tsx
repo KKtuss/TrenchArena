@@ -13,7 +13,7 @@ import { formatRoomAmount } from '@/lib/api-client';
 
 export default function ResultPage() {
   const params = useParams<{ id: string }>();
-  const id = params.id;
+  const id = params?.id ?? '';
   const { client, lastCasualResult, lastTournamentResult, snapshot, playerId } = useArena();
   const [casualRoom, setCasualRoom] = useState(lastCasualResult?.room ?? null);
   const [tournament, setTournament] = useState(lastTournamentResult?.tournament ?? null);

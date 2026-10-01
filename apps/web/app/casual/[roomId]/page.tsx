@@ -77,7 +77,7 @@ function sideReadyLabel(input: {
 
 export default function CasualRoomPage() {
   const params = useParams<{ roomId: string }>();
-  const roomId = params.roomId;
+  const roomId = params?.roomId ?? '';
   const { client, playerId, connected, snapshot, walletAdapter } = useArena();
   const router = useRouter();
   const [room, setRoom] = useState<CasualRoom | null>(null);

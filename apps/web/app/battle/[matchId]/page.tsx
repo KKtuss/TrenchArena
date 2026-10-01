@@ -13,7 +13,7 @@ import { formatPoke, formatRoomAmount } from '@/lib/api-client';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
-  const matchId = params.matchId;
+  const matchId = params?.matchId ?? '';
   const {
     client,
     playerId,

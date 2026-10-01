@@ -125,7 +125,7 @@ function SignupIcon({
 
 export default function TournamentDetailPage() {
   const params = useParams<{ id: string }>();
-  const tournamentId = params.id;
+  const tournamentId = params?.id ?? '';
   const { client, playerId, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
   const [tournament, setTournament] = useState<TournamentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
