@@ -38,6 +38,8 @@ Local validator → real txs → Devnet → production env → mainnet
 ## Launch blockers (configured, not rewritten)
 
 - Production POKE mint, RPC, program id, vaults, authorities
-- Oracle provider (env quote works for local)
+- Oracle provider for the on-chain passport quote (env quote works for local).
+  USD holding checks for an arbitrary SPL mint use Jupiter Price API v3;
+  see `docs/play-token-oracle.md`. `PLAY_TOKEN_MINT` stays unset until that mint exists.
 - CARDS claim/swap adapter (treasury accepts realized SOL deposits now)
 - Buyback bps (`POKEARENA_BUYBACK_BPS`)

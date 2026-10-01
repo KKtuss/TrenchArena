@@ -35,6 +35,11 @@ import { getGenerationPreset } from './generation-presets';
 import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor } from './fight-history';
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
 import { ChainEconomyService } from './chain-economy';
+import {
+  createPlayTokenEligibilityService,
+  type PlayTokenCheckResult,
+  type PlayTokenEligibilityService,
+} from './play-token';
 import { DEMO_TEAM_ONE, DEMO_TEAM_TWO } from './demo-teams';
 import {
   connectPostgresEconomics,
@@ -115,6 +120,15 @@ export interface ApiServerOptions {
   tournamentRepository?: AsyncTournamentRepository;
   chainStore?: PostgresChainStore | null;
   chainEconomy?: ChainEconomyService;
+  /** Injected holding checker. Defaults to the Jupiter-backed service. */
+  playToken?: PlayTokenEligibilityService;
+  /**
+   * Enables POST/GET /dev/token-holding. Forced off when nodeEnv is production.
+   * Defaults to PLAY_TOKEN_ELIGIBILITY_DEBUG.
+   */
+  playTokenDebug?: boolean;
+  /** Overrides NODE_ENV for the debug-route guard. */
+  nodeEnv?: string;
 }
 
 export class TeamRequiredError extends Error {
@@ -191,6 +205,9 @@ export class ApiServer {
   private lastAuthenticatedPlayerId: string | null = null;
   private readonly allowDemoAuth: boolean;
   private readonly devFaucet: boolean;
+  private readonly playToken: PlayTokenEligibilityService;
+  private readonly playTokenDebug: boolean;
+  private readonly nodeEnv: string;
   private readonly disconnectGraceMs: number;
   private readonly network: NetworkPolicy;
   private readonly rateLimiter: ProtocolRateLimiter;
@@ -241,6 +258,12 @@ export class ApiServer {
     this.tournaments = injectedTournaments ?? new TournamentService({ repository });
     this.chainEconomy = options.chainEconomy
       ?? new ChainEconomyService({ chainStore: options.chainStore ?? null });
+    this.nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? 'development';
+    this.playTokenDebug = options.playTokenDebug ?? envFlag(process.env.PLAY_TOKEN_ELIGIBILITY_DEBUG);
+    this.playToken = options.playToken ?? createPlayTokenEligibilityService({
+      env: process.env,
+      connection: this.chainEconomy.client?.connection ?? null,
+    });
     this.casual = casual ?? new CasualRoomService({
       economics: this.economics,
       allowDemoAuth: this.allowDemoAuth,
@@ -2227,6 +2250,15 @@ export class ApiServer {
       response.end(JSON.stringify({ ok: true }));
       return;
     }
+    if (pathname === '/dev/token-holding') {
+      if (!this.playTokenDebugAllowed()) {
+        response.writeHead(404);
+        response.end('Not found');
+        return;
+      }
+      void this.handleTokenHoldingDebug(request, url, response);
+      return;
+    }
     if (!this.allowDemoAuth) {
       response.writeHead(404);
       response.end('Not found');
@@ -2254,6 +2286,57 @@ export class ApiServer {
     }
     response.writeHead(404);
     response.end('Not found');
+  }
+
+  private playTokenDebugAllowed(): boolean {
+    return this.nodeEnv !== 'production' && this.playTokenDebug;
+  }
+
+  /**
+   * Development/admin probe for an arbitrary mint. It only returns a calculation.
+   * It does not authenticate a player, change a session, or grant Arena access.
+   * Client-supplied price, balance, USD value, and eligibility are ignored.
+   */
+  private async handleTokenHoldingDebug(
+    request: IncomingMessage,
+    url: URL,
+    response: ServerResponse,
+  ): Promise<void> {
+    try {
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        response.writeHead(405, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Use GET or POST.' }));
+        return;
+      }
+      const payload = request.method === 'POST'
+        ? await readJsonBody(request)
+        : Object.fromEntries(url.searchParams.entries());
+      if (!isJsonRecord(payload)) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Expected a JSON object.' }));
+        return;
+      }
+      const mint = typeof payload.mint === 'string' ? payload.mint : '';
+      const wallet = typeof payload.wallet === 'string' ? payload.wallet : '';
+      const minimumUsd = typeof payload.minimumUsd === 'number' || typeof payload.minimumUsd === 'string'
+        ? payload.minimumUsd
+        : '';
+      const checked = await this.playToken.check({ mint, wallet, minimumUsd });
+      const status = tokenHoldingHttpStatus(checked);
+      response.writeHead(status, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+      });
+      response.end(JSON.stringify(checked));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Request could not be processed.';
+      response.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({
+        status: 'invalid_request',
+        eligible: false,
+        error: message,
+      }));
+    }
   }
 
   private async handleDevCredit(url: URL, response: ServerResponse): Promise<void> {
@@ -2295,6 +2378,50 @@ export class ApiServer {
       response.end('Not found');
     }
   }
+}
+
+function envFlag(value: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function tokenHoldingHttpStatus(checked: PlayTokenCheckResult): number {
+  if (checked.status === 'invalid_request') return 400;
+  if (checked.status === 'rpc_error') return 503;
+  return 200;
+}
+
+function readJsonBody(request: IncomingMessage, limit = 4_096): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    request.on('data', (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > limit) {
+        reject(new Error('Request body is too large.'));
+        request.destroy();
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      if (!text) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(text));
+      } catch {
+        reject(new Error('Request body must be JSON.'));
+      }
+    });
+    request.on('error', () => reject(new Error('Request body could not be read.')));
+  });
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {
