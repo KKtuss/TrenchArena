@@ -48,7 +48,12 @@ export default function HistoryPage() {
   }, [client, playerId]);
 
   useEffect(() => {
-    if (connectionState !== 'open' || !playerId) {
+    if (!playerId) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    if (connectionState !== 'open') {
       setLoading(connectionState !== 'closed');
       if (connectionState === 'closed') setError('Reconnect to see your fight history.');
       return;
@@ -86,11 +91,14 @@ export default function HistoryPage() {
         <p className="pa-lead">Completed fights and the balance change recorded for each one.</p>
       </header>
 
-      {loading ? <p className="pa-lead pa-async">Loading your fights…</p> : null}
-      {!loading && error ? (
+      {!playerId ? (
+        <p className="pa-lead">Connect a wallet to see your fight history.</p>
+      ) : null}
+      {playerId && loading ? <p className="pa-lead pa-async">Loading your fights…</p> : null}
+      {playerId && !loading && error ? (
         <p className="pa-lead" role="alert">{error}</p>
       ) : null}
-      {!loading && !error && entries.length === 0 ? (
+      {playerId && !loading && !error && entries.length === 0 ? (
         <p className="pa-lead">No completed fights yet. A fight shows up here after it settles.</p>
       ) : null}
 

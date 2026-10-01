@@ -239,7 +239,7 @@ export function TeamBuilder({
   ), [inspection]);
   const problemGroups = useMemo(() => classifyTeamProblems(builderProblems), [builderProblems]);
   const filledSlots = sets.filter(set => set.species.trim()).length;
-  const legalityTone = teamLegalityTone(filledSlots, inspection?.packed, builderProblems);
+  const legalityTone = teamLegalityTone(filledSlots, Boolean(inspection?.packed), builderProblems);
 
   const filteredMoves = useMemo(() => {
     return sortMoveHits(filterMoveHits(learnset, pickerQuery, typeFilter, categoryFilter), moveSort);
@@ -725,7 +725,7 @@ export function TeamBuilder({
       </section>
 
       <p className={`tb-status ${inspection?.packed ? 'ok' : ''}`}>
-        {connected ? notice : 'Connecting to the validator…'}
+        {connected ? notice : 'Connect a wallet to check this team against the live validator.'}
         {inspection?.packed ? ' · Ready for this format' : ''}
       </p>
 
