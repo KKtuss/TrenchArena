@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 
-import { CASUAL_BATTLE_HANDOFF_MS, CasualBattleReveal, CasualCountdown, CasualSelectBoard } from '@/components/casual-select';
+import { CASUAL_BATTLE_HANDOFF_MS, CasualBattleReveal, CasualSelectBoard } from '@/components/casual-select';
 import { TeamStrip } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
@@ -53,10 +53,10 @@ function lobbyNote(input: {
   if (youReady && rivalReady) {
     return countingDown && countdownLeft > 0
       ? 'Both trainers ready. The match is starting.'
-      : 'Countdown done. Choose your three.';
+      : 'Both trainers ready. Choose your three.';
   }
   if (youReady) return 'You are ready. Waiting for the rival to ready up.';
-  return 'Ready up. The match countdown starts when both trainers are ready.';
+  return 'Ready up. Selection opens when both trainers are ready.';
 }
 
 function sideReadyLabel(input: {
@@ -173,7 +173,9 @@ export default function CasualRoomPage() {
   const drafting = Boolean(casualSelect && room?.status === 'drafting');
   const ownPaste = (playerId ? battlePaste(playerId) : undefined) ?? starterPaste;
   const canLockCompetitive = Boolean(ownPaste);
-  const countdownEndsAt = room?.status === 'ready' && room.battleSize === '1v1' ? room.countdownEndsAt : undefined;
+  const countdownEndsAt = !casualSelect && room?.status === 'ready' && room.battleSize === '1v1'
+    ? room.countdownEndsAt
+    : undefined;
   const countdownLeft = countdownEndsAt
     ? Math.max(0, Math.ceil((countdownEndsAt - clock) / 1000))
     : 0;
@@ -304,7 +306,6 @@ export default function CasualRoomPage() {
 
   return (
     <div className={`pa-page${casualSelect && (countingDown || drafting || revealBattle) ? ' is-match-phase' : ''}`}>
-      {casualSelect && countingDown ? <CasualCountdown seconds={countdownLeft} /> : null}
       {casualSelect && (drafting || revealBattle) ? (
         <CasualSelectBoard
           yours={yours}

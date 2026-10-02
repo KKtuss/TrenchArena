@@ -10,7 +10,7 @@ import {
 
 import { CASUAL_PRESETS } from '../src/casual-presets';
 import {
-  CASUAL_START_COUNTDOWN_MS,
+  CASUAL_SELECTION_MS,
   CasualCustomTeamRejectedError,
   CasualRoomService,
   CasualSelectionError,
@@ -176,7 +176,7 @@ test('the Showdown battle starts with exactly the selected three Pokémon', asyn
   assert.equal(opponentSide?.party.length, 3);
 });
 
-test('Casual presets stay hidden until the ready countdown deals them', async () => {
+test('Casual presets stay hidden until both players ready up', async () => {
   const casual = new CasualRoomService();
   const created = await casual.createRoom({
     creatorId: 'demo-player-1',
@@ -203,28 +203,21 @@ test('Casual presets stay hidden until the ready countdown deals them', async ()
   );
 });
 
-test('both ready start a five-second countdown that unready can abort', async () => {
+test('both ready enter selection immediately without a start countdown', async () => {
   let now = 1_700_000_000_000;
-  const casual = new CasualRoomService({ now: () => now, countdownMs: CASUAL_START_COUNTDOWN_MS });
+  const casual = new CasualRoomService({ now: () => now, countdownMs: 5_000 });
   const room = await openFullCasualRoom(casual);
   bothReadyCasual(casual, room.id);
-  const locked = casual.getRoom(room.id, 'demo-player-1');
-  assert.equal(locked.status, 'ready');
-  assert.equal(locked.teamPreview, undefined);
-  assert.equal(locked.countdownEndsAt, now + CASUAL_START_COUNTDOWN_MS);
 
-  casual.setReady(room.id, 'demo-player-1', false);
-  const aborted = casual.getRoom(room.id, 'demo-player-1');
-  assert.equal(aborted.status, 'full');
-  assert.equal(aborted.countdownEndsAt, undefined);
-  assert.equal(aborted.teamPreview, undefined);
-
-  bothReadyCasual(casual, room.id);
-  now += CASUAL_START_COUNTDOWN_MS;
-  const dealt = casual.advanceReadyCountdown(room.id, 'demo-player-1');
+  const dealt = casual.getRoom(room.id, 'demo-player-1');
   assert.equal(dealt.status, 'drafting');
   assert.ok(dealt.teamPreview?.length);
   assert.equal(dealt.countdownEndsAt, undefined);
+  assert.equal(dealt.selectionEndsAt, now + CASUAL_SELECTION_MS);
+  assert.throws(
+    () => casual.setReady(room.id, 'demo-player-1', false),
+    /Room is not ready for readiness changes/,
+  );
 
   confirmCasualPicks(casual, room.id, 'demo-player-1');
   confirmCasualPicks(casual, room.id, 'demo-player-2');

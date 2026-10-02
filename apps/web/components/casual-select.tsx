@@ -163,16 +163,6 @@ export function CasualBattleReveal({
   );
 }
 
-export function CasualCountdown({ seconds }: { seconds: number }) {
-  const value = seconds > 0 ? seconds : 1;
-  return (
-    <section className="pa-match-count" role="status" aria-live="assertive">
-      <small>Match starting</small>
-      <b key={value}>{value}</b>
-    </section>
-  );
-}
-
 function roleFor(mon: CasualPreviewMon): string {
   if (mon.moves.some(move => SETUP_MOVES.has(move))) return 'Setup';
   if (mon.moves.some(move => /Protect|Recover|Roost|Wish|Toxic|Thunder Wave|Will-O-Wisp/.test(move))) {

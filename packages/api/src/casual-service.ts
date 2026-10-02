@@ -471,7 +471,7 @@ export class CasualRoomService {
       throw new CasualSelectionError('Team selection is locked after battle start.');
     }
     if (room.status !== 'drafting') {
-      throw new CasualSelectionError('Waiting for the ready countdown before team selection.');
+      throw new CasualSelectionError('Waiting for both players to ready up before team selection.');
     }
     if (!this.assignedPresets.has(selectionKey(room.id, playerId))) {
       throw new CasualSelectionError('No Casual preset is assigned to this player.');
@@ -1097,14 +1097,11 @@ export class CasualRoomService {
     }
     if (bothReady && room.battleSize === '1v1' && (room.status === 'ready' || room.status === 'drafting')) {
       if (isCasualSelectRoom(room) && room.status === 'ready') {
-        if (this.countdownMs <= 0) {
-          delete room.countdownEndsAt;
-          this.clearCountdownTimer(room.id);
-          this.dealCasualDraft(room);
-        } else {
-          room.countdownEndsAt ??= this.now() + this.countdownMs;
-          this.armCountdown(room);
-        }
+        // Casual 6 → 3 has its own selection clock; a second ready countdown
+        // only delays the useful part of the match.
+        delete room.countdownEndsAt;
+        this.clearCountdownTimer(room.id);
+        this.dealCasualDraft(room);
       } else if (!isCasualSelectRoom(room) && room.status === 'ready') {
         room.countdownEndsAt ??= this.now() + (this.countdownMs > 0 ? this.countdownMs : CASUAL_START_COUNTDOWN_MS);
       }

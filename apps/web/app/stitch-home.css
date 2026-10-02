@@ -2187,35 +2187,6 @@
   min-height: calc(100vh - 4.5rem);
 }
 
-.pa-match-count {
-  position: fixed;
-  inset: 4.2rem 0 0;
-  z-index: 20;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 0.4rem;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(0, 240, 255, 0.16), transparent 42%),
-    rgba(6, 10, 18, 0.94);
-}
-
-.pa-match-count small {
-  color: #8ea0c0;
-  font-family: var(--font-jetbrains), monospace;
-  font-size: 0.72rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-}
-
-.pa-match-count b {
-  color: #f4efe6;
-  font-family: var(--font-display), "Arial Narrow", Impact, sans-serif;
-  font-size: clamp(6rem, 18vw, 10rem);
-  line-height: 0.85;
-  text-shadow: 0 0 32px rgba(0, 240, 255, 0.45);
-}
-
 .pa-match-vs {
   position: fixed;
   inset: 4.2rem 0 0;
@@ -6064,7 +6035,6 @@
     gap: 0.35rem 0.65rem;
   }
 
-  .pa-match-count,
   .pa-match-vs {
     inset: 0;
     z-index: 40;
