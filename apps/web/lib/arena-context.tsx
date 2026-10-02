@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -77,6 +78,10 @@ interface ArenaContextValue {
 const ArenaContext = createContext<ArenaContextValue | null>(null);
 const PREVIEW_PLAYER_IDS = ['demo-player-1', 'demo-player-2'] as const;
 const PREVIEW_SESSION_KEY = 'pokearena.preview-player';
+type InjectedWalletConnectOptions = {
+  onlyIfTrusted?: boolean;
+  silent?: boolean;
+};
 
 function isPreviewPlayer(id: string | null | undefined): id is DemoPlayerId {
   return PREVIEW_PLAYER_IDS.some(playerId => playerId === id);
@@ -123,6 +128,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   const [battleView, setBattleView] = useState<BattleView | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
+  const walletRestoreAttempts = useRef(new Set<string>());
 
   const client = useMemo(() => new ArenaApiClient(), []);
 
@@ -220,17 +226,17 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     }).catch(() => undefined);
   }, [client]);
 
-  const connectInjectedWallet = useCallback(async (wallet?: DetectedWallet) => {
-    const selected = wallet ?? detectSolanaWallets()[0];
-    if (!selected) {
-      setError('No Solana wallet detected. Install Phantom, Backpack, or a compatible MetaMask Solana wallet.');
-      return;
-    }
+  const connectInjectedWalletSession = useCallback(async (
+    selected: DetectedWallet,
+    options: InjectedWalletConnectOptions = {},
+  ): Promise<boolean> => {
     setConnectingWallet(true);
     setAuthBusy(true);
     setError(null);
     try {
-      const address = await connectWallet(selected.adapter);
+      const address = await connectWallet(selected.adapter, {
+        onlyIfTrusted: options.onlyIfTrusted,
+      });
       setWalletAdapter(selected.adapter);
       setWalletAddress(address);
       const stored = readTrainerProfile(address);
@@ -246,17 +252,49 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
       setConnectionState(client.connectionState);
       resetMatchState();
       if (stored?.username) publishTrainerProfile(stored.username, stored.spriteId);
+      return true;
     } catch (err) {
       setConnected(false);
       setPlayerIdState(null);
       setWalletAddress(null);
       client.clearAuth();
-      setError(err instanceof Error ? err.message : String(err));
+      if (!options.silent) setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setConnectingWallet(false);
       setAuthBusy(false);
     }
   }, [client, publishTrainerProfile, resetMatchState]);
+
+  const connectInjectedWallet = useCallback(async (wallet?: DetectedWallet) => {
+    const selected = wallet ?? detectSolanaWallets()[0];
+    if (!selected) {
+      setError('No Solana wallet detected. Install Phantom, Backpack, or a compatible MetaMask Solana wallet.');
+      return;
+    }
+    await connectInjectedWalletSession(selected);
+  }, [connectInjectedWalletSession]);
+
+  useEffect(() => {
+    if (walletAddress || connectingWallet || !availableWallets.length) return;
+    const candidates = availableWallets.filter(wallet => !walletRestoreAttempts.current.has(wallet.id));
+    if (!candidates.length) return;
+    let cancelled = false;
+    const restore = async () => {
+      for (const wallet of candidates) {
+        walletRestoreAttempts.current.add(wallet.id);
+        const restored = await connectInjectedWalletSession(wallet, {
+          onlyIfTrusted: true,
+          silent: true,
+        });
+        if (restored || cancelled) break;
+      }
+    };
+    void restore();
+    return () => {
+      cancelled = true;
+    };
+  }, [availableWallets, connectingWallet, connectInjectedWalletSession, walletAddress]);
 
   const connectPreviewSession = useCallback(async (playerId: DemoPlayerId = 'demo-player-1') => {
     if (!isDemoAuthEnabled()) {

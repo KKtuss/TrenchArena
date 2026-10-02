@@ -10,7 +10,7 @@ export type DetectedWallet = {
 export type SolanaWalletAdapter = {
   publicKey?: { toString(): string } | null;
   isConnected?: boolean;
-  connect(): Promise<{ publicKey?: { toString(): string } } | void>;
+  connect(options?: { onlyIfTrusted?: boolean }): Promise<{ publicKey?: { toString(): string } } | void>;
   disconnect(): Promise<void>;
   signMessage(message: Uint8Array): Promise<Uint8Array | { signature: Uint8Array }>;
   signTransaction?<T>(transaction: T): Promise<T>;
@@ -65,8 +65,11 @@ export function detectSolanaWallets(): DetectedWallet[] {
   return found;
 }
 
-export async function connectWallet(adapter: SolanaWalletAdapter): Promise<string> {
-  const result = await adapter.connect();
+export async function connectWallet(
+  adapter: SolanaWalletAdapter,
+  options?: { onlyIfTrusted?: boolean },
+): Promise<string> {
+  const result = await adapter.connect(options);
   const fromResult = result && typeof result === 'object' && result.publicKey
     ? result.publicKey.toString()
     : null;
