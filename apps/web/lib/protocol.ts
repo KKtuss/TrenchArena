@@ -225,6 +225,18 @@ export interface MatchPayload {
   roomId?: string;
   round?: number;
   bracketPosition?: number;
+  selection?: TournamentSelectionView;
+}
+
+export interface TournamentSelectionView {
+  round: number;
+  presetId: string;
+  presetName: string;
+  pokemon: CasualPreviewMon[];
+  selectionEndsAt: number;
+  selectedSlots: number[];
+  confirmed: boolean;
+  rivalConfirmed: boolean;
 }
 
 export interface LiveFight {
@@ -332,6 +344,7 @@ export type ServerMessage =
       events: any[];
       view?: BattleView;
       source: 'tournament' | 'casual';
+      selection?: TournamentSelectionView;
       requestId?: string;
     }
   | { type: 'match.choice.accepted'; matchId: string; requestId?: string }
@@ -381,6 +394,7 @@ export type ClientMessage =
   | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number; ruleset?: string }
   | { type: 'tournament.list' }
   | { type: 'tournament.join'; tournamentId: string; team?: string; slots?: number[]; playerPokeAta?: string }
+  | { type: 'tournament.select'; matchId: string; slots: number[]; confirm?: boolean }
   | { type: 'tournament.updateTeam'; tournamentId: string; team: string }
   | { type: 'tournament.lockTeam'; tournamentId: string }
   | { type: 'tournament.leave'; tournamentId: string }

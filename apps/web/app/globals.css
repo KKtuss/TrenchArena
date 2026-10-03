@@ -3596,11 +3596,7 @@ main:has(.is-cup-hub) {
   overflow: hidden;
   border: 1px solid #13213d;
   border-radius: 4px;
-  background-color: #050914;
-  background-image:
-    linear-gradient(to right, rgba(19, 33, 61, 0.35) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(19, 33, 61, 0.35) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background: #050914;
 }
 
 .showdown-battle-stage {
@@ -3617,7 +3613,7 @@ main:has(.is-cup-hub) {
   align-items: stretch;
   width: 100%;
   min-height: calc(360px * var(--fight-zoom));
-  background: transparent;
+  background: #050914;
 }
 
 .showdown-battle-scene {
@@ -3625,6 +3621,10 @@ main:has(.is-cup-hub) {
   width: calc(640px * var(--fight-zoom));
   height: calc(360px * var(--fight-zoom));
   flex: none;
+  background: transparent;
+  box-shadow:
+    inset 34px 0 30px -28px rgba(3, 9, 18, 0.82),
+    inset -34px 0 30px -28px rgba(3, 9, 18, 0.82);
 }
 
 .showdown-battle-root .battle,
@@ -3643,10 +3643,22 @@ main:has(.is-cup-hub) {
   zoom: var(--fight-zoom);
 }
 
-.showdown-battle-root .backdrop,
 .showdown-battle-root .leftbar,
 .showdown-battle-root .rightbar {
   display: none !important;
+}
+
+.showdown-battle-root .backdrop {
+  display: block !important;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 640px !important;
+  height: 360px !important;
+  background:
+    linear-gradient(rgba(3, 12, 17, 0.08), rgba(3, 12, 17, 0.08)),
+    var(--showdown-backdrop) center / cover no-repeat !important;
+  opacity: 1 !important;
 }
 
 .showdown-battle-root.is-watch {
@@ -3678,11 +3690,42 @@ main:has(.is-cup-hub) {
   min-width: 0;
   padding: 0.35rem 0.15rem 0.35rem 0.7rem;
   text-align: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.fight-rail::before {
+  content: "";
+  position: absolute;
+  inset: -18px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(3, 9, 18, 0.94) 0%, rgba(3, 9, 18, 0.68) 68%, rgba(3, 9, 18, 0.12) 100%),
+    var(--showdown-backdrop) center / cover no-repeat;
+  filter: blur(14px) brightness(0.62) saturate(0.78);
+  opacity: 0.72;
+  transform: scaleX(1.08);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+}
+
+.fight-rail > * {
+  position: relative;
+  z-index: 1;
 }
 
 .fight-rail-far {
   justify-content: flex-start;
   padding: 0.35rem 0.7rem 0.35rem 0.15rem;
+}
+
+.fight-rail-far::before {
+  background:
+    linear-gradient(270deg, rgba(3, 9, 18, 0.94) 0%, rgba(3, 9, 18, 0.68) 68%, rgba(3, 9, 18, 0.12) 100%),
+    var(--showdown-backdrop) center / cover no-repeat;
+  -webkit-mask-image: linear-gradient(270deg, #000 0%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(270deg, #000 0%, #000 78%, transparent 100%);
 }
 
 .fight-rail-body {
@@ -3901,6 +3944,14 @@ main:has(.is-cup-hub) {
 
 .showdown-battle-controls.is-idle .showdown-battle-controls-header {
   margin-bottom: 0;
+}
+
+.showdown-battle-controls.is-choice-locked .fight-dock {
+  filter: saturate(0.72);
+}
+
+.showdown-battle-controls.is-choice-locked .showdown-phase {
+  color: #f0c14b;
 }
 
 .showdown-battle-controls-header {

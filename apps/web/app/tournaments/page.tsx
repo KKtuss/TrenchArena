@@ -7,6 +7,7 @@ import { ErrorToast } from '@/components/error-toast';
 import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
+import { isLocalTestMode } from '@/lib/local-test-mode';
 import {
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
@@ -25,6 +26,7 @@ export default function TournamentsPage() {
   const [error, setError] = useState<string | null>(null);
   // null until mount so SSR and hydration share the same countdown placeholder
   const [now, setNow] = useState<number | null>(null);
+  const localTestMode = isLocalTestMode();
 
   useEffect(() => {
     if (!connected) return;
@@ -39,8 +41,10 @@ export default function TournamentsPage() {
   }, []);
 
   const schedule = useMemo(
-    () => buildTournamentSchedule(snapshot?.tournaments ?? [], now ?? Date.now()),
-    [snapshot?.tournaments, now],
+    () => buildTournamentSchedule(snapshot?.tournaments ?? [], now ?? Date.now(), {
+      allAvailable: localTestMode,
+    }),
+    [localTestMode, snapshot?.tournaments, now],
   );
 
   const ensureTournament = async (slot: ScheduleSlot): Promise<string | null> => {

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.ts",
+    "test/tournament-e2e.test.ts",
+    "test/tournament-e2e-harness.ts",
+    "test/casual-flow.ts"
+  ]
+}

@@ -1,6 +1,7 @@
 import type { BattleView, PlayerChoice } from '@pokearena/battle-engine';
 
 import type { CasualRoom } from './casual-service';
+import type { CasualPresetMon } from './casual-presets';
 import type { FightHistoryCursor, FightHistoryEntry } from './fight-history';
 import type { LiveFight } from './live-fights';
 import type { PublicTrainerProfile } from './trainer-directory';
@@ -77,6 +78,13 @@ export type ClientMessage =
       slots?: number[];
       playerPokeAta?: string;
     }
+  | {
+      type: 'tournament.select';
+      requestId: string;
+      matchId: string;
+      slots: number[];
+      confirm?: boolean;
+    }
   | { type: 'tournament.updateTeam'; requestId: string; tournamentId: string; team: string }
   | { type: 'tournament.lockTeam'; requestId: string; tournamentId: string }
   | { type: 'tournament.leave'; requestId: string; tournamentId: string }
@@ -126,6 +134,17 @@ export interface TournamentSummary {
   entryFee: number;
   economics: TournamentEconomicsPreview;
   winner?: string;
+}
+
+export interface TournamentSelectionView {
+  round: number;
+  presetId: string;
+  presetName: string;
+  pokemon: CasualPresetMon[];
+  selectionEndsAt: number;
+  selectedSlots: number[];
+  confirmed: boolean;
+  rivalConfirmed: boolean;
 }
 
 export interface PassportSnapshot {
@@ -218,6 +237,7 @@ export type ServerMessage = { requestId?: string } & (
       events: unknown[];
       view?: BattleView;
       source: 'tournament' | 'casual';
+      selection?: TournamentSelectionView;
     }
   | {
       type: 'match.subscribed';
@@ -226,6 +246,7 @@ export type ServerMessage = { requestId?: string } & (
       events: unknown[];
       view?: BattleView;
       source: 'tournament' | 'casual';
+      selection?: TournamentSelectionView;
     }
   | { type: 'match.choice.accepted'; matchId: string }
   | { type: 'live.list'; fights: LiveFight[] }
@@ -485,6 +506,22 @@ export function parseClientMessage(raw: string): ClientMessage {
         ...optionalTeam(value),
         ...optionalSlots(value),
       };
+    case 'tournament.select': {
+      requireString(value, 'matchId');
+      if (!Array.isArray(value.slots) || value.slots.some(slot => !Number.isInteger(slot))) {
+        throw new Error('slots must be an array of integers.');
+      }
+      if (value.confirm !== undefined && typeof value.confirm !== 'boolean') {
+        throw new Error('confirm must be a boolean.');
+      }
+      return {
+        type: 'tournament.select',
+        requestId: value.requestId as string,
+        matchId: value.matchId as string,
+        slots: value.slots as number[],
+        ...(value.confirm !== undefined ? { confirm: value.confirm as boolean } : {}),
+      };
+    }
     case 'tournament.updateTeam':
       requireString(value, 'tournamentId');
       requireString(value, 'team');

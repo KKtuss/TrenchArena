@@ -19,6 +19,7 @@ export function CasualSelectBoard({
   confirmed,
   rivalConfirmed,
   secondsLeft,
+  poolLabel,
   disabled,
   busy,
   onToggle,
@@ -29,6 +30,7 @@ export function CasualSelectBoard({
   confirmed: boolean;
   rivalConfirmed: boolean;
   secondsLeft?: number | null;
+  poolLabel?: string;
   disabled?: boolean;
   busy?: boolean;
   /** Ignored. Kept so older call sites compile. Picks stay private until battle. */
@@ -43,9 +45,9 @@ export function CasualSelectBoard({
     <section className={`pa-choose${confirmed ? ' is-locked' : ''}`} aria-label="Choose your 3">
       <header className="pa-choose-head">
         <div>
-          <small>Pre-battle</small>
+            <small>{poolLabel ?? 'Pre-battle'}</small>
           <h1>Choose your 3</h1>
-          <p>Pick 3 Pokémon for this battle</p>
+            <p>{poolLabel ? 'Pick 3 Pokémon from this round pool' : 'Pick 3 Pokémon for this battle'}</p>
         </div>
         <div className="pa-choose-clock" role="timer" aria-live="polite">
           {clock ? <b>{clock}</b> : null}

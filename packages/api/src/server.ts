@@ -30,7 +30,7 @@ import {
   type PostgresChainStore,
 } from '@pokearena/db';
 
-import { CASUAL_START_COUNTDOWN_MS, CasualRoomService } from './casual-service';
+import { CASUAL_SELECTION_MS, CASUAL_START_COUNTDOWN_MS, CasualRoomService } from './casual-service';
 import { getGenerationPreset } from './generation-presets';
 import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor } from './fight-history';
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
@@ -68,6 +68,7 @@ import {
   type ClientMessage,
   type ServerMessage,
   type TournamentSummary,
+  type TournamentSelectionView,
 } from './protocol';
 import { logInternalError, toPublicError } from './public-errors';
 import {
@@ -95,6 +96,8 @@ import {
 export interface ApiServerOptions {
   /** Defaults to POKEARENA_ALLOW_DEMO_AUTH, which is off unless set true. */
   allowDemoAuth?: boolean;
+  /** Local-only test override for tournament schedule and finalization gates. */
+  localTestMode?: boolean;
   /** Defaults to POKEARENA_DEV_FAUCET (or demo auth). Tops wallets to DEFAULT_DEV_BALANCE_POKE. */
   devFaucet?: boolean;
   /** Time a disconnected player has to re-authenticate before a live fight is forfeited. */
@@ -176,6 +179,15 @@ interface ClientConnection {
   origin: string | null;
 }
 
+type TournamentSelectionState = {
+  round: number;
+  presetId: string;
+  presetName: string;
+  pokemon: TournamentSelectionView['pokemon'];
+  selectionEndsAt: number;
+  picks: Map<string, { slots: number[]; confirmed: boolean }>;
+};
+
 const publicDirectory = join(__dirname, '../../public');
 const DEFAULT_DISCONNECT_GRACE_MS = 10_000;
 
@@ -204,6 +216,7 @@ export class ApiServer {
   private readonly trainers = new TrainerDirectory();
   private lastAuthenticatedPlayerId: string | null = null;
   private readonly allowDemoAuth: boolean;
+  private readonly localTestMode: boolean;
   private readonly devFaucet: boolean;
   private readonly playToken: PlayTokenEligibilityService;
   private readonly playTokenDebug: boolean;
@@ -214,6 +227,9 @@ export class ApiServer {
   private readonly challengeCleanupTimer: NodeJS.Timeout;
   private readonly finalizationTimer: NodeJS.Timeout;
   private readonly sealingTournaments = new Set<string>();
+  private readonly tournamentSelections = new Map<string, TournamentSelectionState>();
+  private readonly tournamentSelectionTimers = new Map<string, NodeJS.Timeout>();
+  private readonly startingTournamentMatches = new Set<string>();
   private shuttingDown = false;
   private economicsPool: Pool | undefined;
 
@@ -227,6 +243,7 @@ export class ApiServer {
     if (isApiServerOptions(tournamentsOrOptions)) {
       options = tournamentsOrOptions;
       this.allowDemoAuth = options.allowDemoAuth ?? isDemoAuthEnabled();
+      this.localTestMode = options.localTestMode ?? envFlag(process.env.POKEARENA_LOCAL_TEST_MODE);
       this.devFaucet = options.devFaucet ?? (this.allowDemoAuth || isDevFaucetEnabled());
       this.disconnectGraceMs = options.disconnectGraceMs ?? DEFAULT_DISCONNECT_GRACE_MS;
       injectedTournaments = options.tournaments;
@@ -234,6 +251,7 @@ export class ApiServer {
       casual = options.casual ?? casual;
     } else {
       this.allowDemoAuth = isDemoAuthEnabled();
+      this.localTestMode = envFlag(process.env.POKEARENA_LOCAL_TEST_MODE);
       this.devFaucet = this.allowDemoAuth || isDevFaucetEnabled();
       this.disconnectGraceMs = DEFAULT_DISCONNECT_GRACE_MS;
       injectedTournaments = tournamentsOrOptions;
@@ -932,7 +950,7 @@ export class ApiServer {
         const targetTournament = await this.tournaments.getTournament(tournamentId);
         const ruleset = getRuleset(targetTournament.ruleset);
         const team = ruleset.teamMode === 'preset-6-choose-3'
-          ? this.presetTeamForJoin(ruleset.presetId, message.slots)
+          ? this.presetTeamForJoin(ruleset.presetId)
           : this.customTeamForJoin(playerId, message.team, ruleset.id);
         validateRulesetTeam(team, ruleset.id);
         if (this.chainEconomy.enabled) {
@@ -981,6 +999,20 @@ export class ApiServer {
         void this.broadcastArenaSnapshots();
         return;
       }
+      case 'tournament.select': {
+        const tournamentMatchId = message.matchId as TournamentMatchId;
+        await this.submitTournamentSelection(
+          tournamentMatchId,
+          playerId,
+          message.slots,
+          message.confirm === true,
+        );
+        connection.matchIds.add(tournamentMatchId);
+        this.ensureMatchSubscription(tournamentMatchId);
+        await this.sendTournamentMatchAsync(connection, tournamentMatchId, 'match.subscribed', message.requestId);
+        this.broadcastTournamentMatch(tournamentMatchId);
+        return;
+      }
       case 'tournament.updateTeam': {
         const tournamentId = message.tournamentId as TournamentId;
         const tournament = await this.tournaments.getTournament(tournamentId);
@@ -1027,7 +1059,7 @@ export class ApiServer {
         const tournamentId = message.tournamentId as TournamentId;
         await this.requireTournamentHost(playerId, tournamentId);
         const beforeStart = await this.tournaments.getTournament(tournamentId);
-        if (beforeStart.finalizesAt !== undefined && Date.now() < beforeStart.finalizesAt) {
+        if (!this.localTestMode && beforeStart.finalizesAt !== undefined && Date.now() < beforeStart.finalizesAt) {
           throw new Error('Team finalization is still open.');
         }
         if (this.chainEconomy.enabled) {
@@ -1040,7 +1072,9 @@ export class ApiServer {
             prizeLamports: Number(process.env.POKEARENA_TOURNAMENT_PRIZE_LAMPORTS ?? 100_000_000),
           });
         }
-        const tournament = await this.tournaments.startTournament(tournamentId);
+        const tournament = await this.tournaments.startTournament(tournamentId, {
+          ignoreFinalization: this.localTestMode,
+        });
         await this.startReadyMatches(tournament.id);
         await this.broadcastTournament(tournament.id);
         this.send(connection, {
@@ -1122,7 +1156,8 @@ export class ApiServer {
         if (view.match.player1 !== playerId && view.match.player2 !== playerId) {
           throw new Error('You are not a player in this match.');
         }
-        if (view.match.status === 'ready' || view.match.status === 'tied' || view.match.status === 'interrupted') {
+        const selection = await this.ensureTournamentSelection(tournamentMatchId);
+        if (!selection && (view.match.status === 'ready' || view.match.status === 'tied' || view.match.status === 'interrupted')) {
           await this.tournaments.startMatch(tournamentMatchId);
         }
         connection.matchIds.add(matchId);
@@ -1555,21 +1590,9 @@ export class ApiServer {
     const tournament = await this.tournaments.getTournament(tournamentId);
     const playerCount = tournament.players.filter(player => player.status === 'registered').length;
     const ruleset = getRuleset(tournament.ruleset);
-    const preset = ruleset.presetId ? getGenerationPreset(ruleset.presetId) : undefined;
     return {
       ...publicTournamentForViewer(tournament, viewerId),
       ruleset: ruleset.id,
-      ...(preset ? {
-        preset: {
-          id: preset.id,
-          name: preset.name,
-          pokemon: preset.pokemon.map(mon => ({
-            ...mon,
-            moves: [...mon.moves],
-            types: [...mon.types],
-          })),
-        },
-      } : {}),
       hostId: tournament.hostId,
       bracket: await this.tournaments.getBracket(tournamentId),
       entryFee: tournament.entryFee,
@@ -1586,12 +1609,9 @@ export class ApiServer {
     return this.teamForTournamentJoin(playerId, team);
   }
 
-  private presetTeamForJoin(presetId: string | undefined, slots: number[] | undefined): string {
+  private presetTeamForJoin(presetId: string | undefined): string {
     if (!presetId) throw new Error('This tournament has no shared preset.');
-    if (!slots || slots.length !== 3 || new Set(slots).size !== 3) {
-      throw new Error('Choose exactly three different Pokémon from the shared six.');
-    }
-    return sliceTeamText(getGenerationPreset(presetId).paste, slots);
+    return getGenerationPreset(presetId).paste;
   }
 
   private teamForTournamentJoin(playerId: string, team: string | undefined): string {
@@ -1604,10 +1624,160 @@ export class ApiServer {
   private async startReadyMatches(tournamentId: TournamentId): Promise<void> {
     for (const match of await this.tournaments.getBracket(tournamentId)) {
       if (match.status !== 'ready' && match.status !== 'tied') continue;
-      await this.tournaments.startMatch(match.id);
-      this.ensureMatchSubscription(match.id);
-      this.broadcastTournamentMatch(match.id);
+      const selection = await this.ensureTournamentSelection(match.id);
+      if (selection) {
+        this.ensureMatchSubscription(match.id);
+        this.broadcastTournamentMatch(match.id);
+      } else {
+        await this.tournaments.startMatch(match.id);
+        this.ensureMatchSubscription(match.id);
+        this.broadcastTournamentMatch(match.id);
+      }
     }
+  }
+
+  private async ensureTournamentSelection(
+    matchId: TournamentMatchId,
+  ): Promise<TournamentSelectionState | undefined> {
+    const existing = this.tournamentSelections.get(matchId);
+    if (existing) return existing;
+    const view = await this.tournaments.getMatch(matchId);
+    if (!view.match.player1 || !view.match.player2) return undefined;
+    if (view.match.status !== 'ready' && view.match.status !== 'tied') return undefined;
+    const tournament = await this.tournaments.getTournament(view.match.tournamentId);
+    const ruleset = getRuleset(tournament.ruleset);
+    if (ruleset.teamMode !== 'preset-6-choose-3' || !ruleset.presetId) return undefined;
+    const preset = getGenerationPreset(ruleset.presetId);
+    const state: TournamentSelectionState = {
+      round: view.match.round,
+      presetId: preset.id,
+      presetName: `${preset.name} · Round ${view.match.round}`,
+      pokemon: preset.pokemon.map(mon => ({
+        ...mon,
+        moves: [...mon.moves],
+        types: [...mon.types],
+      })),
+      selectionEndsAt: Date.now() + CASUAL_SELECTION_MS,
+      picks: new Map(),
+    };
+    this.tournamentSelections.set(matchId, state);
+    const timer = setTimeout(() => {
+      void this.sealTournamentSelection(matchId);
+    }, CASUAL_SELECTION_MS);
+    timer.unref?.();
+    this.tournamentSelectionTimers.set(matchId, timer);
+    return state;
+  }
+
+  private async submitTournamentSelection(
+    matchId: TournamentMatchId,
+    playerId: string,
+    slots: number[],
+    confirm: boolean,
+  ): Promise<void> {
+    const state = await this.ensureTournamentSelection(matchId);
+    if (!state) throw new Error('This tournament fight is not waiting for a Pokémon selection.');
+    const view = await this.tournaments.getMatch(matchId);
+    if (view.match.player1 !== playerId && view.match.player2 !== playerId) {
+      throw new Error('You are not a player in this tournament fight.');
+    }
+    if (Date.now() >= state.selectionEndsAt) {
+      await this.sealTournamentSelection(matchId);
+      return;
+    }
+    if (
+      slots.length > 3
+      || new Set(slots).size !== slots.length
+      || slots.some(slot => slot < 0 || slot >= 6)
+      || (confirm && slots.length !== 3)
+    ) {
+      throw new Error(confirm
+        ? 'Choose exactly three different Pokémon from the shared six.'
+        : 'Choose up to three different Pokémon from the shared six.');
+    }
+    const current = state.picks.get(playerId) ?? { slots: [], confirmed: false };
+    if (current.confirmed) throw new Error('Your tournament selection is already locked.');
+    current.slots = [...slots];
+    current.confirmed = confirm;
+    state.picks.set(playerId, current);
+    if (state.picks.size >= 2 && [...state.picks.values()].every(pick => pick.confirmed)) {
+      await this.startTournamentSelection(matchId, state);
+    }
+  }
+
+  private async sealTournamentSelection(matchId: TournamentMatchId): Promise<void> {
+    const state = this.tournamentSelections.get(matchId);
+    if (!state || Date.now() < state.selectionEndsAt) return;
+    const view = await this.tournaments.getMatch(matchId);
+    const playerIds = [view.match.player1, view.match.player2]
+      .filter((id): id is TournamentPlayerId => Boolean(id));
+    for (const playerId of playerIds) {
+      const current = state.picks.get(playerId) ?? { slots: [], confirmed: false };
+      const slots = [...current.slots];
+      for (let slot = 0; slots.length < 3 && slot < 6; slot += 1) {
+        if (!slots.includes(slot)) slots.push(slot);
+      }
+      state.picks.set(playerId, { slots, confirmed: true });
+    }
+    await this.startTournamentSelection(matchId, state);
+  }
+
+  private async startTournamentSelection(
+    matchId: TournamentMatchId,
+    state: TournamentSelectionState,
+  ): Promise<void> {
+    if (this.startingTournamentMatches.has(matchId)) return;
+    const view = await this.tournaments.getMatch(matchId);
+    const playerIds = [view.match.player1, view.match.player2];
+    if (!playerIds[0] || !playerIds[1]) return;
+    const first = state.picks.get(playerIds[0]);
+    const second = state.picks.get(playerIds[1]);
+    if (!first?.confirmed || !second?.confirmed) return;
+    this.startingTournamentMatches.add(matchId);
+    try {
+      const tournament = await this.tournaments.getTournament(view.match.tournamentId);
+      const preset = getGenerationPreset(state.presetId.replace(/-r\d+$/, ''));
+      const teams: [string, string] = [
+        sliceTeamText(preset.paste, first.slots),
+        sliceTeamText(preset.paste, second.slots),
+      ];
+      await this.tournaments.startMatch(matchId, { teamOverrides: teams });
+      this.clearTournamentSelection(matchId);
+      this.broadcastTournamentMatch(matchId);
+      void this.broadcastTournament(tournament.id);
+    } finally {
+      this.startingTournamentMatches.delete(matchId);
+    }
+  }
+
+  private clearTournamentSelection(matchId: string): void {
+    const timer = this.tournamentSelectionTimers.get(matchId);
+    if (timer) clearTimeout(timer);
+    this.tournamentSelectionTimers.delete(matchId);
+    this.tournamentSelections.delete(matchId);
+  }
+
+  private tournamentSelectionForViewer(
+    matchId: TournamentMatchId,
+    viewerId: string,
+    state: TournamentSelectionState,
+  ): TournamentSelectionView {
+    const selected = state.picks.get(viewerId);
+    const rivalId = [...state.picks.keys()].find(id => id !== viewerId);
+    return {
+      round: state.round,
+      presetId: state.presetId,
+      presetName: state.presetName,
+      pokemon: state.pokemon.map(mon => ({
+        ...mon,
+        moves: [...mon.moves],
+        types: [...mon.types],
+      })),
+      selectionEndsAt: state.selectionEndsAt,
+      selectedSlots: [...(selected?.slots ?? [])],
+      confirmed: Boolean(selected?.confirmed),
+      rivalConfirmed: Boolean(rivalId && state.picks.get(rivalId)?.confirmed),
+    };
   }
 
   private ensureMatchSubscription(matchId: TournamentMatchId): void {
@@ -1777,6 +1947,7 @@ export class ApiServer {
     const state = await this.tournaments.getMatchState(matchId, connection.playerId);
     const eventLog = await this.tournaments.getMatchEvents(matchId, connection.playerId);
     const battleView = await this.tournaments.getMatchView(matchId, connection.playerId);
+    const selectionState = await this.ensureTournamentSelection(matchId);
     this.send(connection, {
       type,
       match: view.match,
@@ -1784,6 +1955,9 @@ export class ApiServer {
       events: eventLog.events as unknown[],
       view: this.trainers.namedView(battleView),
       source: 'tournament',
+      ...(selectionState
+        ? { selection: this.tournamentSelectionForViewer(matchId, connection.playerId, selectionState) }
+        : {}),
     }, requestId);
   }
 

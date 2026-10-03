@@ -88,7 +88,7 @@ function casual(generation: number): RulesetDefinition {
     introducedIn: generation,
     assetGenerationCap: generation,
     teamMode: 'preset-6-choose-3',
-    registerTeamSize: 3,
+    registerTeamSize: 6,
     battleTeamSize: 3,
     battleFormat: GEN_CUP_BATTLE_FORMAT,
     showdownFormatId: GEN_CASUAL_BATTLE_FORMAT_ID,

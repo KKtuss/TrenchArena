@@ -254,11 +254,20 @@ export class TournamentService {
     return (await this.requireTournament(tournamentId));
   }
 
-  async startTournament(tournamentId: TournamentId): Promise<Tournament> {
+  async startTournament(
+    tournamentId: TournamentId,
+    options: { ignoreFinalization?: boolean } = {},
+  ): Promise<Tournament> {
     let tournament = await this.requireTournament(tournamentId);
     if (tournament.status === 'in-progress') return tournament;
-    if (tournament.finalizesAt !== undefined && this.now() < tournament.finalizesAt) {
+    if (!options.ignoreFinalization && tournament.finalizesAt !== undefined && this.now() < tournament.finalizesAt) {
       throw new TournamentError('Team finalization is still open.');
+    }
+    if (options.ignoreFinalization && tournament.finalizesAt !== undefined) {
+      delete tournament.finalizesAt;
+      tournament.updatedAt = this.now();
+      await this.repository.saveTournament(tournament);
+      tournament = await this.requireTournament(tournamentId);
     }
     if (tournament.status === 'registration') {
       try {
@@ -307,7 +316,10 @@ export class TournamentService {
     return this.repository.listMatches(tournamentId);
   }
 
-  async startMatch(matchId: TournamentMatchId): Promise<TournamentMatch> {
+  async startMatch(
+    matchId: TournamentMatchId,
+    options: { teamOverrides?: [string, string] } = {},
+  ): Promise<TournamentMatch> {
     let match: TournamentMatch;
     try {
       match = await this.repository.beginMatchStart(matchId);
@@ -328,7 +340,7 @@ export class TournamentService {
         { id: player1.id, name: player1.displayName },
         { id: player2.id, name: player2.displayName },
       ],
-      teams: [player1.team, player2.team],
+      teams: options.teamOverrides ?? [player1.team, player2.team],
       seed: matchSeed(tournament.bracketSeed, match.round, match.bracketPosition),
       timeoutMs: tournament.matchTimeoutMs,
       showdownFormatId: ruleset.showdownFormatId,

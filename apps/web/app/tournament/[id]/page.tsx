@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
-import { CasualSelectBoard } from '@/components/casual-select';
 import { ErrorToast } from '@/components/error-toast';
 import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
@@ -131,7 +130,6 @@ export default function TournamentDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<SavedTeam | null>(null);
-  const [pickedSlots, setPickedSlots] = useState<number[]>([]);
   const [selected, setSelected] = useState<BracketMatch | null>(null);
   const [boardPreview, setBoardPreview] = useState<'live' | 1 | 2 | 3 | 4 | 'champion'>('live');
   const [now, setNow] = useState<number | null>(null);
@@ -223,14 +221,10 @@ export default function TournamentDetailPage() {
     : 'Single elimination cup with a live bracket, compact rules, and a treasury-funded prize.';
   const isCustomTeamTournament = !isCasualPreset;
   const hasLegalSavedTeam = Boolean(saved?.validated && saved.paste.trim());
-  const casualReady = pickedSlots.length === 3;
-  const canJoinTournament = isCasualPreset ? casualReady : (!isCustomTeamTournament || hasLegalSavedTeam);
+  const canJoinTournament = isCasualPreset ? true : (!isCustomTeamTournament || hasLegalSavedTeam);
 
   const joinCup = () => void act(async () => {
     if (!playerId) throw new Error('Connect a wallet before joining.');
-    if (isCasualPreset && !casualReady) {
-      throw new Error('Choose exactly three Pokémon from the shared six.');
-    }
     if (isCustomTeamTournament && !hasLegalSavedTeam) {
       throw new Error('No legal saved team for this format.');
     }
@@ -239,7 +233,6 @@ export default function TournamentDetailPage() {
       type: 'tournament.join',
       tournamentId,
       ...(paste ? { team: paste } : {}),
-      ...(isCasualPreset ? { slots: pickedSlots } : {}),
     });
     if (response.type === 'tournament.state') {
       setTournament(response.tournament as TournamentDetail);
@@ -469,29 +462,6 @@ export default function TournamentDetailPage() {
               </div>
             </div>
           </div>
-          {isCasualPreset && tournament.preset ? (
-            <CasualSelectBoard
-              yours={{
-                playerId: playerId ?? 'you',
-                presetId: tournament.preset.id,
-                presetName: tournament.preset.name,
-                pokemon: tournament.preset.pokemon,
-                confirmed: false,
-              }}
-              selected={pickedSlots}
-              confirmed={false}
-              rivalConfirmed={false}
-              revealed={false}
-              disabled={!walletConnected || registered || busy}
-              onToggle={slot => {
-                setPickedSlots(current => (
-                  current.includes(slot)
-                    ? current.filter(item => item !== slot)
-                    : current.length >= 3 ? current : [...current, slot]
-                ));
-              }}
-            />
-          ) : null}
           <div className="pa-signup-field">
             <header>
               <h2><SignupIcon name="users" /> Field · {players.length} / {maxPlayers}</h2>
@@ -602,7 +572,7 @@ export default function TournamentDetailPage() {
       {!registered && canRegister && walletConnected ? (
         <p className="pa-cup-note">
               {isCasualPreset
-                ? 'Same 6 for both players • Choose 3. Selections stay private until the match.'
+                ? 'Tournament entry is open. Each fight opens a private 6 → 3 pick when the bracket reaches your round.'
                 : saved?.validated
                   ? `Bringing ${saved.name}`
                   : rulesetId === 'gen9ou' && isDemoAuthEnabled()

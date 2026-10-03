@@ -13,6 +13,7 @@
     "start": "node dist/src/server.js",
     "dev": "node ./scripts/dev-server.js",
     "test": "npm run build && node --test --test-force-exit dist/test/**/*.test.js",
+    "test:tournament:e2e": "tsc -p tsconfig.tournament-e2e.json && node --test --test-force-exit dist/test/tournament-e2e.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

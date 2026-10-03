@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
+import { CasualSelectBoard } from '@/components/casual-select';
 import { BattleIntro } from '@/components/motion';
 
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
@@ -25,6 +26,9 @@ export default function BattlePage() {
     setActiveMatchSubscription,
   } = useArena();
   const [error, setError] = useState<string | null>(null);
+  const [selectedSlots, setSelectedSlots] = useState<number[]>([]);
+  const [selectionBusy, setSelectionBusy] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
   const introRestore = useRef<boolean | null>(null);
   const seenOpen = useRef(connectionState === 'open');
 
@@ -61,6 +65,49 @@ export default function BattlePage() {
       : undefined),
     [match?.tournamentId, snapshot?.tournaments],
   );
+  const tournamentSelection = match?.tournamentId ? match.selection : undefined;
+  const selectionLeft = tournamentSelection
+    ? Math.max(0, Math.ceil((tournamentSelection.selectionEndsAt - clock) / 1000))
+    : null;
+
+  useEffect(() => {
+    setSelectedSlots(tournamentSelection?.selectedSlots ?? []);
+  }, [tournamentSelection?.selectedSlots?.join(',')]);
+
+  useEffect(() => {
+    if (!tournamentSelection) return;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [tournamentSelection?.selectionEndsAt]);
+
+  const sendTournamentSelection = async (slots: number[], confirm = false) => {
+    setSelectionBusy(true);
+    setError(null);
+    try {
+      await client.request({
+        type: 'tournament.select',
+        matchId,
+        slots,
+        confirm,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSelectionBusy(false);
+    }
+  };
+
+  const toggleTournamentSlot = (slot: number) => {
+    if (tournamentSelection?.confirmed || selectionBusy) return;
+    const next = selectedSlots.includes(slot)
+      ? selectedSlots.filter(item => item !== slot)
+      : selectedSlots.length < 3
+        ? [...selectedSlots, slot]
+        : selectedSlots;
+    setSelectedSlots(next);
+    void sendTournamentSelection(next);
+  };
 
   const you = match?.player1 === playerId ? match.player1 : match?.player2;
   const rival = match?.player1 === playerId ? match?.player2 : match?.player1;
@@ -127,6 +174,27 @@ export default function BattlePage() {
       ) : null}
 
       <ErrorToast error={error} onDismiss={() => setError(null)} />
+      {tournamentSelection ? (
+        <CasualSelectBoard
+          yours={{
+            playerId: playerId ?? 'you',
+            presetId: tournamentSelection.presetId,
+            presetName: tournamentSelection.presetName,
+            pokemon: tournamentSelection.pokemon,
+            confirmed: tournamentSelection.confirmed,
+            selectedSlots: tournamentSelection.selectedSlots,
+          }}
+          selected={selectedSlots}
+          confirmed={tournamentSelection.confirmed}
+          rivalConfirmed={tournamentSelection.rivalConfirmed}
+          secondsLeft={selectionLeft}
+          poolLabel={`Round ${tournamentSelection.round} pool`}
+          disabled={selectionBusy}
+          busy={selectionBusy}
+          onToggle={toggleTournamentSlot}
+          onLock={() => void sendTournamentSelection(selectedSlots, true)}
+        />
+      ) : null}
       {match?.status === 'completed' && resultHref ? (
         <div className="pa-live-strip pa-fight-banner">
           <span className="pa-live-pill"><i /> Fight over</span>
@@ -135,7 +203,7 @@ export default function BattlePage() {
         </div>
       ) : null}
 
-      {playerId ? (
+      {playerId && !tournamentSelection ? (
         <ShowdownBattle
           playerId={playerId}
           matchId={matchId}
@@ -145,9 +213,9 @@ export default function BattlePage() {
           client={client}
           onError={onRendererError}
         />
-      ) : (
+      ) : !tournamentSelection ? (
         <div className="error-banner">Connect a wallet to join this fight.</div>
-      )}
+      ) : null}
 
       {resultHref && match?.status === 'completed' ? (
         <div className="pa-lobby-actions">

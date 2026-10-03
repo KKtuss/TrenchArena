@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useDeltaPulse } from '@/components/motion';
 import { ProfileTrainerSprite } from '@/components/profile-trainer';
@@ -83,6 +83,32 @@ interface ShowdownRequest {
     }>;
   };
   rqid?: number;
+}
+
+const SHOWDOWN_BATTLE_BACKGROUNDS = [
+  'bg-beach',
+  'bg-beachshore',
+  'bg-city',
+  'bg-dampcave',
+  'bg-deepsea',
+  'bg-desert',
+  'bg-earthycave',
+  'bg-forest',
+  'bg-icecave',
+  'bg-meadow',
+  'bg-mountain',
+  'bg-river',
+  'bg-route',
+  'bg-thunderplains',
+  'bg-volcanocave',
+] as const;
+
+function stableHash(value: string): number {
+  let hash = 0;
+  for (const character of value) {
+    hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  }
+  return Math.abs(hash);
 }
 
 function quietMissingAudio(): void {
@@ -370,7 +396,16 @@ export function ShowdownBattle({
   const [submitting, setSubmitting] = useState(false);
   const [ready, setReady] = useState(false);
   const [teraArmed, setTeraArmed] = useState(false);
+  const [choiceLocked, setChoiceLocked] = useState(false);
+  const [retainedChoices, setRetainedChoices] = useState<FightChoice[]>([]);
+  const [retainedTeraType, setRetainedTeraType] = useState<string>();
   const watching = mode === 'watch';
+  const backgroundName = SHOWDOWN_BATTLE_BACKGROUNDS[
+    stableHash(matchId) % SHOWDOWN_BATTLE_BACKGROUNDS.length
+  ];
+  const battleStyle = {
+    '--showdown-backdrop': `url('/showdown/fx/${backgroundName}.png')`,
+  } as CSSProperties;
 
   eventsRef.current = events;
   battleViewRef.current = battleView;
@@ -467,6 +502,7 @@ export function ShowdownBattle({
     const view = battleViewRef.current;
     if (watching || !battleInstanceId || !view?.request) return;
     setSubmitting(true);
+    setChoiceLocked(true);
     setRequestState(null);
     try {
       const choice: PlayerChoice = showdownChoiceToPlayerChoice(choiceText);
@@ -478,6 +514,7 @@ export function ShowdownBattle({
         choice,
       });
     } catch (error) {
+      setChoiceLocked(false);
       onErrorRef.current(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
@@ -552,11 +589,27 @@ export function ShowdownBattle({
             ? 'Your turn'
             : 'Waiting on the next request';
 
-  const moves = choices.filter(choice => choice.kind === 'move');
-  const switches = choices.filter(choice => choice.kind === 'switch');
-  const confirms = choices.filter(choice => choice.kind === 'confirm');
   const teraType = request?.active?.[0]?.canTerastallize;
-  const canTera = Boolean(teraType) && moves.length > 0;
+  const canShowRetainedChoices = !watching && !battleView?.result && !battleView?.failure;
+  const visibleChoices = canShowRetainedChoices
+    ? (choices.length ? choices : retainedChoices)
+    : [];
+  const visibleMoves = visibleChoices.filter(choice => choice.kind === 'move');
+  const visibleSwitches = visibleChoices.filter(choice => choice.kind === 'switch');
+  const visibleConfirms = visibleChoices.filter(choice => choice.kind === 'confirm');
+  const visibleTeraType = choices.length ? teraType : retainedTeraType;
+  const controlsLocked = choiceLocked || (!choices.length && visibleChoices.length > 0);
+  const canTera = Boolean(visibleTeraType) && visibleMoves.length > 0;
+
+  useEffect(() => {
+    if (!choices.length || battleView?.result || battleView?.failure) return;
+    setRetainedChoices(choices);
+    setRetainedTeraType(teraType);
+  }, [battleView?.failure, battleView?.result, choices, teraType]);
+
+  useEffect(() => {
+    if (choiceLocked && requestState?.payload) setChoiceLocked(false);
+  }, [choiceLocked, requestState]);
 
   useEffect(() => {
     setTeraArmed(false);
@@ -565,6 +618,7 @@ export function ShowdownBattle({
   return (
     <section
       className={`showdown-battle-root dark${watching ? ' is-watch' : ''}${battleView?.result ? ` is-settled is-${battleView.result.status}` : ''}`}
+      style={battleStyle}
       data-testid={watching ? 'showdown-battle-watch' : 'showdown-battle'}
       aria-label={watching ? 'Live spectator battle feed. This match is not playable from here.' : undefined}
     >
@@ -600,21 +654,21 @@ export function ShowdownBattle({
         </div>
       </div>
       ) : (
-      <div className={`showdown-battle-controls${choices.length ? '' : ' is-idle'} is-${phaseKey}`}>
+      <div className={`showdown-battle-controls${visibleChoices.length ? '' : ' is-idle'}${controlsLocked ? ' is-choice-locked' : ''} is-${phaseKey}`}>
         <div className="showdown-battle-controls-header">
           <span className="showdown-controls-label">Fight controls</span>
           <span className="showdown-phase">{phaseLabel}</span>
         </div>
-        {choices.length ? (
+        {visibleChoices.length ? (
           <div className="fight-dock">
-            {confirms.length ? (
+            {visibleConfirms.length ? (
               <div className="fight-band fight-band-confirm">
-                {confirms.map(choice => (
+                {visibleConfirms.map(choice => (
                   <button
                     key={choice.key}
                     type="button"
                     className="pa-btn pa-btn-primary fight-confirm"
-                    disabled={submitting || !ready}
+                    disabled={submitting || !ready || controlsLocked}
                     onClick={() => void submitChoice(choice.choice)}
                   >
                     <strong>{choice.label}</strong>
@@ -628,24 +682,24 @@ export function ShowdownBattle({
                 <button
                   type="button"
                   className={`fight-tera${teraArmed ? ' is-on' : ''}`}
-                  disabled={submitting || !ready}
+                  disabled={submitting || !ready || controlsLocked}
                   aria-pressed={teraArmed}
                   onClick={() => setTeraArmed(current => !current)}
                 >
-                  <span>Terastallize · {teraType}</span>
+                  <span>Terastallize · {visibleTeraType}</span>
                   <small>{teraArmed ? 'Armed · next attack teras' : 'Tap to arm, then pick an attack'}</small>
                 </button>
               </div>
             ) : null}
-            {moves.length ? (
+            {visibleMoves.length ? (
               <section className="fight-band fight-band-attacks" aria-label="Attacks">
                 <header>Attacks</header>
                 <div className="fight-move-grid">
-                  {moves.map(choice => (
+                  {visibleMoves.map(choice => (
                     <FightMoveCard
                       key={choice.key}
                       choice={choice}
-                      disabled={submitting || !ready}
+                      disabled={submitting || !ready || controlsLocked}
                       teraArmed={canTera && teraArmed}
                       onPick={choiceText => void submitChoice(choiceText)}
                     />
@@ -653,15 +707,15 @@ export function ShowdownBattle({
                 </div>
               </section>
             ) : null}
-            {switches.length ? (
+            {visibleSwitches.length ? (
               <section className="fight-band fight-band-bench" aria-label="Switch in">
                 <header>Switch in</header>
                 <div className="fight-switch-row">
-                  {switches.map(choice => (
+                  {visibleSwitches.map(choice => (
                     <FightSwitchCard
                       key={choice.key}
                       choice={choice}
-                      disabled={submitting || !ready}
+                      disabled={submitting || !ready || controlsLocked}
                       onPick={choiceText => void submitChoice(choiceText)}
                     />
                   ))}

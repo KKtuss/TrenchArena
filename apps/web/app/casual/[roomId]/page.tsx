@@ -497,13 +497,37 @@ export default function CasualRoomPage() {
                 </button>
               </div>
             </div>
-            {isPlayer && (
+            {canAccept || (isPlayer && (
               (casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown)
               || (room.status !== 'battling' && room.status !== 'completed')
-            ) ? (
+            )) ? (
               <div className="pa-vault">
                 <div className="pa-lobby-actions pa-room-actions">
-                  {room.status !== 'battling' && room.status !== 'completed' ? (
+                  {canAccept && real && !acceptArmed ? (
+                    <button
+                      type="button"
+                      className="pa-btn pa-btn-gold"
+                      disabled={busy}
+                      onClick={() => setAcceptArmed(true)}
+                    >
+                      Review stake
+                    </button>
+                  ) : null}
+                  {canAccept && (!real || acceptArmed) ? (
+                    <button
+                      type="button"
+                      className="pa-btn pa-btn-primary"
+                      disabled={busy}
+                      onClick={() => void act(async () => {
+                        const response = await client.request({ type: 'casual.accept', roomId });
+                        if (response.type === 'casual.state') setRoom(response.room);
+                        await lockReturnedStake(response);
+                      })}
+                    >
+                      {real ? 'Confirm stake and accept' : 'Accept challenge'}
+                    </button>
+                  ) : null}
+                  {isPlayer && room.status !== 'battling' && room.status !== 'completed' ? (
                     <button
                       type="button"
                       className="pa-btn pa-btn-surface"
@@ -516,7 +540,7 @@ export default function CasualRoomPage() {
                       Cancel
                     </button>
                   ) : null}
-                  {casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
+                  {isPlayer && casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
                     <button
                       type="button"
                       className="pa-btn pa-btn-primary"
@@ -544,30 +568,6 @@ export default function CasualRoomPage() {
       <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <div className="pa-lobby-actions">
-        {canAccept && real && !acceptArmed ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-gold"
-            disabled={busy}
-            onClick={() => setAcceptArmed(true)}
-          >
-            Review stake
-          </button>
-        ) : null}
-        {canAccept && (!real || acceptArmed) ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-primary"
-            disabled={busy}
-            onClick={() => void act(async () => {
-              const response = await client.request({ type: 'casual.accept', roomId });
-              if (response.type === 'casual.state') setRoom(response.room);
-              await lockReturnedStake(response);
-            })}
-          >
-            {real ? 'Confirm stake and accept' : 'Accept challenge'}
-          </button>
-        ) : null}
         {needsStake && !canAccept ? (
           <button
             type="button"

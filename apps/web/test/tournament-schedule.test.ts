@@ -48,3 +48,9 @@ test('upcoming tournaments are a 30-minute rotation, not a single generic cup', 
   assert.ok(ids.includes('gen9casual'));
   assert.ok(ids.includes('gen9ou'));
 });
+
+test('local test mode makes every scheduled tournament immediately available', () => {
+  const slots = buildTournamentSchedule([], Date.UTC(2026, 0, 1, 0, 7, 0), { allAvailable: true });
+  assert.equal(slots.length, SCHEDULE_SLOT_COUNT);
+  assert.ok(slots.every(slot => slot.when === 'CURRENT'));
+});

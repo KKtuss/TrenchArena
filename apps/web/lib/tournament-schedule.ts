@@ -31,6 +31,10 @@ export type ScheduleSlot = {
   tournament?: TournamentSummary;
 };
 
+export type TournamentScheduleOptions = {
+  allAvailable?: boolean;
+};
+
 export function hourFloor(now = Date.now()): number {
   const date = new Date(now);
   date.setMinutes(0, 0, 0);
@@ -44,6 +48,7 @@ export function slotStart(now = Date.now()): number {
 export function buildTournamentSchedule(
   tournaments: TournamentSummary[],
   now = Date.now(),
+  options: TournamentScheduleOptions = {},
 ): ScheduleSlot[] {
   const anchor = slotStart(now);
   const origin = Math.floor(anchor / ROTATION_SLOT_MS);
@@ -66,6 +71,7 @@ export function buildTournamentSchedule(
       startsAt,
       endsAt,
       tournament,
+      ...(options.allAvailable ? { when: 'CURRENT' as const } : {}),
     });
   }
 
@@ -108,7 +114,7 @@ export function formatCountdown(targetMs: number, now = Date.now()): string {
 export function scheduleStatusLabel(slot: ScheduleSlot): string {
   const status = slot.tournament?.status;
   if (status === 'registration' && slot.tournament?.finalizesAt) return 'FINALIZING';
-  if (!status) return slot.kind === 'now' ? 'REGISTERING' : 'SCHEDULED';
+  if (!status) return slot.when === 'CURRENT' ? 'REGISTERING' : 'SCHEDULED';
   if (status === 'registration' || status === 'draft') return 'REGISTERING';
   if (status === 'ready') return 'FULL';
   if (status === 'in-progress' || status === 'active') return 'LIVE';

@@ -9,6 +9,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "test:tournament:e2e": "pnpm --filter @pokearena/api test:tournament:e2e",
     "sync:copies": "powershell -ExecutionPolicy Bypass -File scripts/sync-workspace-copies.ps1",
     "dev:api": "pnpm --filter @pokearena/api dev",
     "dev:web": "pnpm --filter @pokearena/web dev",
