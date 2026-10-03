@@ -64,7 +64,14 @@ export function loadChainConfig(env: NodeJS.ProcessEnv = process.env): ArenaChai
   const rpcUrl = configuredRpc || DEFAULT_RPC;
   const productionLike = cluster === 'mainnet-beta' || cluster === 'devnet';
   if (enabled && env.NODE_ENV === 'production' && cluster === 'localnet') {
-    throw new ChainConfigError('Production chain economy cannot target localnet.');
+    const allowLocalnet = ['1', 'true', 'yes', 'on'].includes(
+      (env.POKEARENA_ALLOW_LOCALNET_IN_PRODUCTION ?? '').trim().toLowerCase(),
+    );
+    if (!allowLocalnet) {
+      throw new ChainConfigError(
+        'Production chain economy cannot target localnet. Set POKEARENA_ALLOW_LOCALNET_IN_PRODUCTION=true for a host that intentionally runs a local validator.',
+      );
+    }
   }
   if (enabled && productionLike && !configuredRpc) {
     throw new ChainConfigError('POKEARENA_SOLANA_RPC is required for devnet/mainnet chain economy.');
