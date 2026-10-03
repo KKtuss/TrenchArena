@@ -9,12 +9,12 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.prod.json",
     "start": "node dist/src/server.js",
     "dev": "node ./scripts/dev-server.js",
-    "test": "npm run build && node --test --test-force-exit dist/test/**/*.test.js",
+    "test": "tsc -p tsconfig.json && node --test --test-force-exit dist/test/**/*.test.js",
     "test:tournament:e2e": "tsc -p tsconfig.tournament-e2e.json && node --test --test-force-exit dist/test/tournament-e2e.test.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.prod.json --noEmit"
   },
   "dependencies": {
     "@pokearena/battle-engine": "workspace:*",
