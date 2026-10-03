@@ -51,7 +51,7 @@ const EMPTY_EVENTS: unknown[] = [];
 const ignoreWatchError = () => undefined;
 
 export default function LandingPage() {
-  const { client, playerId, snapshot, refreshSnapshot, connected } = useArena();
+  const { client, playerId, snapshot, refreshSnapshot, connected, chainEconomyEnabled } = useArena();
   const [saved, setSaved] = useState<SavedTeam | null>(null);
   const [live, setLive] = useState<{ fight?: LiveFight; view?: BattleView; events?: unknown[] } | null>(null);
 
@@ -102,7 +102,7 @@ export default function LandingPage() {
   const tournaments = snapshot?.tournaments ?? [];
   const flagship = tournaments.find(item => item.status !== 'completed') ?? tournaments[0];
   const minors = tournaments.filter(item => item.id !== flagship?.id).slice(0, 3);
-  const chain = Boolean(snapshot?.chainEconomyEnabled);
+  const chain = chainEconomyEnabled;
   const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => {
     if (chain && room.rail !== 'sol_chain') return sum;
     if (!chain && room.rail === 'sol_chain') return sum;

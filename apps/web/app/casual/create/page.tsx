@@ -17,12 +17,13 @@ export default function CreateCasualPage() {
     walletAdapter,
     connectInjectedWallet,
     connectingWallet,
+    chainEconomyEnabled,
   } = useArena();
   const router = useRouter();
   const [roomType, setRoomType] = useState<'private' | 'open'>('open');
   const [battleSize, setBattleSize] = useState<'1v1' | '2v2'>('1v1');
   const [ruleset, setRuleset] = useState<CasualRuleset>('casual');
-  const chain = Boolean(snapshot?.chainEconomyEnabled);
+  const chain = chainEconomyEnabled;
   const [stakeChoice, setStakeChoice] = useState<'mock' | 'real' | null>(null);
   const stake = stakeChoice ?? (chain ? 'real' : 'mock');
   const real = stake === 'real';

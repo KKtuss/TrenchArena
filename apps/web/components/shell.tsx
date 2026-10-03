@@ -13,7 +13,7 @@ import { useArena } from '@/lib/arena-context';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
 
 export function ArenaShell({ children }: { children: ReactNode }) {
-  const { connectionState, snapshot, error, clearError, connected } = useArena();
+  const { connectionState, snapshot, error, clearError, connected, chainEconomyEnabled } = useArena();
   const pathname = usePathname() ?? '';
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navItems = [
@@ -67,17 +67,19 @@ export function ArenaShell({ children }: { children: ReactNode }) {
           </nav>
           <div className="shell-actions">
             <span className="wallet-chip">
-              <small>{snapshot?.chainEconomyEnabled ? 'Passport' : 'Poke'}</small>
+              <small>{chainEconomyEnabled ? 'Passport' : 'Poke'}</small>
               <strong>
-                {snapshot?.chainEconomyEnabled && snapshot.passport
-                  ? (snapshot.passport.eligible
-                    ? `Eligible · $${(snapshot.passport.usdCents / 100).toFixed(0)}`
-                    : `Need $20 · $${(snapshot.passport.usdCents / 100).toFixed(0)}`)
+                {chainEconomyEnabled
+                  ? (snapshot?.passport
+                    ? (snapshot.passport.eligible
+                      ? `Eligible · $${(snapshot.passport.usdCents / 100).toFixed(0)}`
+                      : `Need $20 · $${(snapshot.passport.usdCents / 100).toFixed(0)}`)
+                    : (connected ? '—' : 'Connect'))
                   : snapshot
                     ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPoke} />
                     : '—'}
               </strong>
-              {snapshot?.chainEconomyEnabled && snapshot.solBalances ? (
+              {chainEconomyEnabled && snapshot?.solBalances ? (
                 <small style={{ marginLeft: 8 }}>
                   <AnimatedAmount value={Number(snapshot.solBalances.freeLamports)} format={formatSolLamports} />
                 </small>

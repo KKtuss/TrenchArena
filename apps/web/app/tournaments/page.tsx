@@ -21,7 +21,7 @@ import {
 import { readSavedTeam } from '@/lib/team';
 
 export default function TournamentsPage() {
-  const { client, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet, playerId } = useArena();
+  const { client, snapshot, refreshSnapshot, connected, walletConnected, connectInjectedWallet, connectingWallet, playerId, chainEconomyEnabled } = useArena();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // null until mount so SSR and hydration share the same countdown placeholder
@@ -40,7 +40,7 @@ export default function TournamentsPage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const chain = Boolean(snapshot?.chainEconomyEnabled);
+  const chain = chainEconomyEnabled;
   const schedule = useMemo(
     () => buildTournamentSchedule(snapshot?.tournaments ?? [], now ?? Date.now(), {
       allAvailable: localTestMode,

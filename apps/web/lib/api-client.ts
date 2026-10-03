@@ -85,6 +85,12 @@ export class ArenaApiClient {
     return this.runWalletAuth(handlers);
   }
 
+  /** Open the socket without authenticating so public capabilities (e.g. chain economy) can arrive. */
+  async ensureOpen(): Promise<void> {
+    this.intentionallyClosed = false;
+    await this.openSocket({ restore: Boolean(this.identity) });
+  }
+
   clearAuth(): void {
     this.identity = null;
     this.authMode = null;

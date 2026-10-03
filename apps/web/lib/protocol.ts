@@ -290,7 +290,7 @@ export interface FightHistoryCursor {
 }
 
 export type ServerMessage =
-  | { type: 'ready'; playerId: string; requestId?: string }
+  | { type: 'ready'; playerId: string; chainEconomyEnabled?: boolean; requestId?: string }
   | {
       type: 'auth.challenge';
       address: string;

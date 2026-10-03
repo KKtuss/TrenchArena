@@ -37,6 +37,7 @@ export default function ProfilePage() {
     playerLabel,
     connectionState,
     snapshot,
+    chainEconomyEnabled,
     trainerSpriteId,
     trainerUsername,
     previewSession,
@@ -109,9 +110,9 @@ export default function ProfilePage() {
   }, [connectionState, load, playerId]);
 
   const stats = useMemo(() => summarize(entries), [entries]);
-  const balance = snapshot?.chainEconomyEnabled && snapshot.solBalances
+  const balance = chainEconomyEnabled && snapshot?.solBalances
     ? formatSolLamports(Number(snapshot.solBalances.freeLamports))
-    : snapshot
+    : !chainEconomyEnabled && snapshot
       ? formatPoke(snapshot.wallet.balance)
       : '—';
 

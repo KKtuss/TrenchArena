@@ -463,7 +463,7 @@ export class ApiServer {
     };
     this.connections.set(socket, connection);
     this.connectionsByIp.set(ip, (this.connectionsByIp.get(ip) ?? 0) + 1);
-    this.send(connection, { type: 'ready', playerId: '' });
+    this.send(connection, this.readyMessage(''));
 
     socket.on('message', raw => {
       void this.handleMessage(connection, raw);
@@ -497,7 +497,7 @@ export class ApiServer {
         );
       }
       await this.claimSession(connection, message.playerId);
-      this.send(connection, { type: 'ready', playerId: message.playerId }, message.requestId);
+      this.send(connection, this.readyMessage(message.playerId), message.requestId);
       this.send(connection, {
         type: 'arena.snapshot',
         snapshot: await this.buildArenaSnapshot(message.playerId),
@@ -561,7 +561,7 @@ export class ApiServer {
         await this.topUpDevBalance(message.address);
       }
       this.send(connection, { type: 'auth.verified', playerId: message.address }, message.requestId);
-      this.send(connection, { type: 'ready', playerId: message.address }, message.requestId);
+      this.send(connection, this.readyMessage(message.address), message.requestId);
       this.send(connection, {
         type: 'arena.snapshot',
         snapshot: await this.buildArenaSnapshot(message.address),
@@ -1295,6 +1295,14 @@ export class ApiServer {
     if (free < needed) {
       throw new Error('Insufficient SOL balance for this stake.');
     }
+  }
+
+  private readyMessage(playerId: string): { type: 'ready'; playerId: string; chainEconomyEnabled: boolean } {
+    return {
+      type: 'ready',
+      playerId,
+      chainEconomyEnabled: this.chainEconomy.enabled,
+    };
   }
 
   private async buildArenaSnapshot(playerId: string): Promise<ArenaSnapshot> {

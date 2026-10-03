@@ -197,7 +197,7 @@ export interface ArenaSnapshot {
 }
 
 export type ServerMessage = { requestId?: string } & (
-  | { type: 'ready'; playerId: string }
+  | { type: 'ready'; playerId: string; chainEconomyEnabled: boolean }
   | {
       type: 'auth.challenge';
       address: string;

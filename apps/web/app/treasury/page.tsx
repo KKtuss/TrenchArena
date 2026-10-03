@@ -7,7 +7,7 @@ import { useArena } from '@/lib/arena-context';
 import { formatPoke, formatRoomAmount, formatSolLamports, formatTournamentPrize } from '@/lib/api-client';
 
 export default function TreasuryPage() {
-  const { client, snapshot, refreshSnapshot } = useArena();
+  const { client, snapshot, refreshSnapshot, chainEconomyEnabled } = useArena();
   const [deposits, setDeposits] = useState<Array<{
     claimKey: string;
     source: string;
@@ -30,7 +30,7 @@ export default function TreasuryPage() {
 
   const rooms = snapshot?.openCasualRooms ?? [];
   const tournaments = snapshot?.tournaments ?? [];
-  const chain = Boolean(snapshot?.chainEconomyEnabled);
+  const chain = chainEconomyEnabled;
 
   const chainCups = tournaments.filter(item => item.rail === 'sol_chain');
   const legacyCups = tournaments.filter(item => item.rail !== 'sol_chain');

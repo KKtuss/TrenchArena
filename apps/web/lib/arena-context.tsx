@@ -48,6 +48,8 @@ interface ArenaContextValue {
   playerLabel: string;
   connected: boolean;
   connectionState: string;
+  /** Server capability from the anonymous `ready` handshake; does not require wallet auth. */
+  chainEconomyEnabled: boolean;
   snapshot: ArenaSnapshot | null;
   error: string | null;
   clearError: () => void;
@@ -114,6 +116,9 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connectionState, setConnectionState] = useState('idle');
+  const [chainEconomyEnabled, setChainEconomyEnabled] = useState(
+    () => process.env.NEXT_PUBLIC_CHAIN_ECONOMY === 'true',
+  );
   const [snapshot, setSnapshot] = useState<ArenaSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastCasualResult, setLastCasualResult] = useState<{
@@ -142,8 +147,16 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   const handleMessage = useCallback((message: ServerMessage) => {
     setConnectionState(client.connectionState);
     switch (message.type) {
+      case 'ready':
+        if (typeof message.chainEconomyEnabled === 'boolean') {
+          setChainEconomyEnabled(message.chainEconomyEnabled);
+        }
+        break;
       case 'arena.snapshot':
         setSnapshot(message.snapshot);
+        if (typeof message.snapshot.chainEconomyEnabled === 'boolean') {
+          setChainEconomyEnabled(message.snapshot.chainEconomyEnabled);
+        }
         if (message.snapshot.trainers) setTrainers(message.snapshot.trainers);
         break;
       case 'trainer.directory':
@@ -209,6 +222,10 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubscribe = client.onConnectionState(setConnectionState);
     return unsubscribe;
+  }, [client]);
+
+  useEffect(() => {
+    void client.ensureOpen().catch(() => undefined);
   }, [client]);
 
   const resetMatchState = useCallback(() => {
@@ -365,6 +382,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     resetMatchState();
     setConnectionState('closed');
     setAuthBusy(false);
+    void client.ensureOpen().catch(() => undefined);
   }, [client, resetMatchState, walletAdapter]);
 
   const saveTrainerProfile = useCallback((username: string, spriteId: string) => {
@@ -415,6 +433,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     ),
     connected,
     connectionState,
+    chainEconomyEnabled,
     snapshot,
     error,
     clearError: () => setError(null),

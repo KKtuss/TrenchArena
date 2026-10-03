@@ -34,7 +34,7 @@ function actionLabel(room: CasualRoom): string {
 }
 
 export default function ArenaPage() {
-  const { client, playerId, snapshot, refreshSnapshot, connected } = useArena();
+  const { client, playerId, snapshot, refreshSnapshot, connected, chainEconomyEnabled } = useArena();
 
   useEffect(() => {
     if (!connected) return;
@@ -50,7 +50,7 @@ export default function ArenaPage() {
         <div>
           <h1>Find your fight.</h1>
           <p className="pa-lead">
-            {snapshot?.chainEconomyEnabled
+            {chainEconomyEnabled
               ? 'Real challenges lock the same SOL stake from both trainers. A 2% fee comes off the pool when the match starts, and the winner is paid from escrow. Mock POKE fights stay available when you create a challenge.'
               : 'Mock fights use the development POKE ledger. Casual deals a random six after both trainers ready up. Competitive uses your own Gen 9 OU team.'}
           </p>
