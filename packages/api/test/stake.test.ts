@@ -303,6 +303,10 @@ class TestClient {
     });
   }
 
+  drain(): void {
+    this.messages.length = 0;
+  }
+
   async open(): Promise<void> {
     if (this.socket.readyState === WebSocket.OPEN) return;
     await new Promise<void>((resolve, reject) => {
@@ -446,7 +450,65 @@ test('tournament entry is reserved with registration and released when registrat
   }
 });
 
-test('a full tournament refunds only the rejected joiner', async () => {
+test('a withdrawn player can rejoin while registration is still open', async () => {
+  const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
+  const port = await server.listen(0);
+  const creator = new TestClient(port);
+  try {
+    await creator.open();
+    await identifyDemo(creator, 'demo-player-1');
+
+    creator.send({ type: 'tournament.create', title: 'Rejoin Cup', maxPlayers: 4, entryFee: 50_000 });
+    const created = await creator.waitFor<any>(message => message.type === 'tournament.created');
+    const tournamentId = created.tournament.id;
+    const balanceBefore = await server.economics.getBalance('demo-player-1');
+
+    creator.send({ type: 'tournament.join', tournamentId, team: DEMO_TEAM_ONE });
+    await creator.waitFor<any>(message => (
+      message.type === 'tournament.state'
+      && message.tournament.id === tournamentId
+      && message.tournament.players?.some((player: any) => (
+        player.id === 'demo-player-1' && player.status === 'registered'
+      ))
+    ));
+    assert.equal(await server.economics.getBalance('demo-player-1'), balanceBefore - 50_000);
+    assert.equal(await server.economics.hasHold(`tournament:${tournamentId}:demo-player-1`), true);
+
+    creator.send({ type: 'tournament.leave', tournamentId });
+    await creator.waitFor<any>(message => (
+      message.type === 'tournament.state'
+      && message.tournament.id === tournamentId
+      && !message.tournament.players?.some((player: any) => (
+        player.id === 'demo-player-1' && player.status === 'registered'
+      ))
+    ));
+    assert.equal(await server.economics.getBalance('demo-player-1'), balanceBefore);
+    assert.equal(await server.economics.hasHold(`tournament:${tournamentId}:demo-player-1`), false);
+
+    creator.drain();
+    creator.send({ type: 'tournament.join', tournamentId, team: DEMO_TEAM_ONE });
+    const rejoined = await creator.waitFor<any>(message => (
+      (message.type === 'tournament.state'
+        && message.tournament.id === tournamentId
+        && message.tournament.players?.some((player: any) => (
+          player.id === 'demo-player-1' && player.status === 'registered'
+        )))
+      || message.type === 'error'
+    ));
+    assert.equal(rejoined.type, 'tournament.state', rejoined.message ?? rejoined.code);
+    assert.equal(
+      rejoined.tournament.players.find((player: any) => player.id === 'demo-player-1')?.status,
+      'registered',
+    );
+    assert.equal(await server.economics.getBalance('demo-player-1'), balanceBefore - 50_000);
+    assert.equal(await server.economics.hasHold(`tournament:${tournamentId}:demo-player-1`), true);
+  } finally {
+    await creator.close();
+    await server.close();
+  }
+});
+
+test('a full tournament waitlists an overflow joiner without reserving funds', async () => {
   const server = new ApiServer({ allowDemoAuth: true, countdownMs: 0 });
   const port = await server.listen(0);
   const seats = [new TestClient(port), new TestClient(port), new TestClient(port), new TestClient(port)];
@@ -474,13 +536,22 @@ test('a full tournament refunds only the rejected joiner', async () => {
 
     const balanceBefore = await server.economics.getBalance(wallets[2].address);
     rejected.send({ type: 'tournament.join', tournamentId, team: DEMO_TEAM_ONE });
-    const full = await rejected.waitFor<any>(message => message.type === 'error');
-    assert.match(full.message, /player limit/);
+    const waitlisted = await rejected.waitFor<any>(message => (
+      message.type === 'tournament.state'
+      && message.tournament.id === tournamentId
+      && message.tournament.players?.some((player: any) => (
+        player.id === wallets[2].address && player.status === 'waitlisted'
+      ))
+    ));
+    assert.equal(
+      waitlisted.tournament.players.find((player: any) => player.id === wallets[2].address)?.status,
+      'waitlisted',
+    );
     assert.equal(await server.economics.getBalance(wallets[2].address), balanceBefore);
     assert.equal(await server.economics.hasHold('tournament:' + tournamentId + ':' + wallets[2].address), false);
     assert.equal(await server.economics.getBalance('demo-player-1'), DEFAULT_DEV_BALANCE_POKE - 50_000);
     assert.equal(await server.economics.hasHold('tournament:' + tournamentId + ':demo-player-1'), true);
-    assert.equal((await server.tournaments.getTournament(tournamentId)).players.length, 4);
+    assert.equal((await server.tournaments.getTournament(tournamentId)).players.length, 5);
   } finally {
     await Promise.all([...seats, rejected].map(client => client.close()));
     await server.close();

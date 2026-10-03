@@ -19,7 +19,10 @@ export async function sendSerializedTransaction(
     const { Connection, Transaction } = await import('@solana/web3.js');
     const tx = Transaction.from(bytes);
     const signed = await adapter.signTransaction(tx);
-    const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC ?? 'http://127.0.0.1:8899';
+    const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC?.trim();
+    if (!rpc) {
+      throw new Error('NEXT_PUBLIC_SOLANA_RPC is required for this wallet transaction flow.');
+    }
     const connection = new Connection(rpc, 'confirmed');
     const signature = await connection.sendRawTransaction(signed.serialize(), {
       skipPreflight: false,

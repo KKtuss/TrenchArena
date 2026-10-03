@@ -206,6 +206,11 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, [client, handleMessage]);
 
+  useEffect(() => {
+    const unsubscribe = client.onConnectionState(setConnectionState);
+    return unsubscribe;
+  }, [client]);
+
   const resetMatchState = useCallback(() => {
     setActiveMatchId(null);
     client.rememberSubscriptions([]);

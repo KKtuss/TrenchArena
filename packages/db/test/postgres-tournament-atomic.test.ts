@@ -106,6 +106,32 @@ test('postgres tournament registration, capacity, restart, and match idempotency
   assert.equal(await economics.getBalance(duplicate.id), balanceBefore);
   assert.equal((await economics.getHold(`tournament:${tournament.id}:${duplicate.id}`))?.status, 'reserved');
 
+  const leaver = loaded!.players[1]!;
+  const leaveBalance = await economics.getBalance(leaver.id);
+  const withdrawnTournament = await store.getTournament(tournament.id);
+  assert.ok(withdrawnTournament);
+  const withdrawnPlayer = withdrawnTournament.players.find(player => player.id === leaver.id);
+  assert.ok(withdrawnPlayer);
+  withdrawnPlayer.status = 'withdrawn';
+  withdrawnPlayer.teamLocked = false;
+  withdrawnPlayer.burnFeePaid = false;
+  withdrawnTournament.updatedAt = Date.now();
+  await store.saveTournament(withdrawnTournament);
+  await economics.release(`tournament:${tournament.id}:${leaver.id}`);
+  assert.equal(await economics.getBalance(leaver.id), leaveBalance + 50_000);
+  assert.equal((await economics.getHold(`tournament:${tournament.id}:${leaver.id}`))?.status, 'released');
+
+  const rejoined = await store.registerPlayer({
+    tournamentId: tournament.id,
+    playerId: leaver.id,
+    displayName: 'Back Again',
+    team: 'team-rejoin',
+  });
+  assert.equal(rejoined.status, 'registered');
+  assert.equal(rejoined.displayName, 'Back Again');
+  assert.equal(await economics.getBalance(leaver.id), leaveBalance);
+  assert.equal((await economics.getHold(`tournament:${tournament.id}:${leaver.id}`))?.status, 'reserved');
+
   let failCommit = true;
   const rolling = new PostgresTournamentStore(pool, {
     beforeCommit: () => {

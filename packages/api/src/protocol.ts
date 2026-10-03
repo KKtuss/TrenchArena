@@ -76,8 +76,8 @@ export type ClientMessage =
       tournamentId: string;
       team?: string;
       slots?: number[];
-      playerPokeAta?: string;
     }
+  | { type: 'tournament.payBurnFee'; requestId: string; tournamentId: string; playerPokeAta?: string }
   | {
       type: 'tournament.select';
       requestId: string;
@@ -132,6 +132,11 @@ export interface TournamentSummary {
   status: string;
   playerCount: number;
   entryFee: number;
+  entryAtoms?: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  burnFeeAtoms?: number;
+  paymentEndsAt?: number;
+  prizeLamports?: number;
   economics: TournamentEconomicsPreview;
   winner?: string;
 }
@@ -495,16 +500,21 @@ export function parseClientMessage(raw: string): ClientMessage {
       };
     case 'tournament.join':
       requireString(value, 'tournamentId');
-      if (value.playerPokeAta !== undefined) requireString(value, 'playerPokeAta');
       return {
         type: 'tournament.join',
         requestId: value.requestId as string,
         tournamentId: value.tournamentId as string,
-        ...(value.playerPokeAta !== undefined
-          ? { playerPokeAta: value.playerPokeAta as string }
-          : {}),
         ...optionalTeam(value),
         ...optionalSlots(value),
+      };
+    case 'tournament.payBurnFee':
+      requireString(value, 'tournamentId');
+      if (value.playerPokeAta !== undefined) requireString(value, 'playerPokeAta');
+      return {
+        type: 'tournament.payBurnFee',
+        requestId: value.requestId as string,
+        tournamentId: value.tournamentId as string,
+        ...(value.playerPokeAta !== undefined ? { playerPokeAta: value.playerPokeAta as string } : {}),
       };
     case 'tournament.select': {
       requireString(value, 'matchId');

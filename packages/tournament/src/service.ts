@@ -31,6 +31,9 @@ import {
 } from './tournament-store';
 import {
   TEAM_FINALIZATION_MS,
+  BURN_PAYMENT_WINDOW_MS,
+  CHAIN_TOURNAMENT_MAX_PLAYERS,
+  TOURNAMENT_BURN_FEE_ATOMS,
   type BattleInstanceId,
   type CreateTournamentInput,
   type RegisterPlayerInput,
@@ -86,6 +89,12 @@ export class TournamentService {
     if (!input.title.trim()) throw new TournamentError('Tournament title is required.');
     if (![4, 8, 16, 32].includes(input.maxPlayers)) {
       throw new TournamentError('maxPlayers must be 4, 8, 16, or 32.');
+    }
+    if (input.rail === 'sol_chain' && input.maxPlayers !== CHAIN_TOURNAMENT_MAX_PLAYERS) {
+      throw new TournamentError('Chain tournaments use a fixed 32-player field.');
+    }
+    if (input.rail === 'sol_chain' && input.entryAtoms !== TOURNAMENT_BURN_FEE_ATOMS) {
+      throw new TournamentError(`Chain tournament burn fee must be exactly ${TOURNAMENT_BURN_FEE_ATOMS} atoms.`);
     }
     if (
       input.matchTimeoutMs !== undefined &&
@@ -156,14 +165,17 @@ export class TournamentService {
       throw new RegistrationClosedError();
     }
     const player = tournament.players.find(candidate => candidate.id === playerId);
-    if (!player || player.status !== 'registered') {
+    if (!player || (player.status !== 'registered' && player.status !== 'waitlisted')) {
       throw new TournamentError(`Player is not registered: ${playerId}`);
     }
     player.status = 'withdrawn';
     player.teamLocked = false;
+    player.burnFeePaid = false;
     const stillRegistered = tournament.players.filter(candidate => candidate.status === 'registered').length;
     if (!options?.keepFinalization && stillRegistered < tournament.maxPlayers) {
       delete tournament.finalizesAt;
+      delete tournament.paymentEndsAt;
+      delete tournament.paymentPlayerId;
     }
     tournament.updatedAt = this.now();
     await this.repository.saveTournament(tournament);
@@ -185,10 +197,117 @@ export class TournamentService {
       throw new TournamentError('Team finalization starts when the field is full.');
     }
     const timestamp = this.now();
-    tournament.finalizesAt = timestamp + TEAM_FINALIZATION_MS;
+    tournament.finalizesAt = timestamp + (
+      tournament.rail === 'sol_chain' ? BURN_PAYMENT_WINDOW_MS : TEAM_FINALIZATION_MS
+    );
+    if (tournament.rail === 'sol_chain') {
+      tournament.paymentEndsAt = tournament.finalizesAt;
+      delete tournament.paymentPlayerId;
+      for (const player of registered) player.burnFeePaid = false;
+    }
     tournament.updatedAt = timestamp;
     await this.repository.saveTournament(tournament);
     return this.requireTournament(tournamentId);
+  }
+
+  async markBurnFeePaid(
+    tournamentId: TournamentId,
+    playerId: TournamentPlayerId,
+  ): Promise<Tournament> {
+    const tournament = await this.requireTournament(tournamentId);
+    if (
+      tournament.rail !== 'sol_chain'
+      || tournament.status !== 'registration'
+      || tournament.finalizesAt === undefined
+    ) {
+      throw new TournamentError('The POKE burn-fee payment window is not open.');
+    }
+    if (this.now() >= tournament.finalizesAt) {
+      throw new TournamentError('The POKE burn-fee payment window has closed.');
+    }
+    const player = this.requireRegisteredPlayer(tournament, playerId);
+    if (
+      tournament.paymentPlayerId !== undefined
+      && tournament.paymentPlayerId !== playerId
+    ) {
+      throw new TournamentError('This player is not the active replacement.');
+    }
+    player.burnFeePaid = true;
+    tournament.updatedAt = this.now();
+    await this.repository.saveTournament(tournament);
+    return this.requireTournament(tournamentId);
+  }
+
+  async advanceBurnFeeWindow(tournamentId: TournamentId): Promise<{
+    tournament: Tournament;
+    removedPlayerIds: TournamentPlayerId[];
+    promotedPlayerId?: TournamentPlayerId;
+    readyToFinalize: boolean;
+  }> {
+    const tournament = await this.requireTournament(tournamentId);
+    if (tournament.rail !== 'sol_chain' || tournament.finalizesAt === undefined) {
+      return { tournament, removedPlayerIds: [], readyToFinalize: false };
+    }
+    if (this.now() < tournament.finalizesAt) {
+      return { tournament, removedPlayerIds: [], readyToFinalize: false };
+    }
+
+    const removedPlayerIds: TournamentPlayerId[] = [];
+    if (tournament.paymentPlayerId !== undefined) {
+      const current = tournament.players.find(player => player.id === tournament.paymentPlayerId);
+      if (current?.status === 'registered' && !current.burnFeePaid) {
+        current.status = 'withdrawn';
+        current.teamLocked = false;
+        removedPlayerIds.push(current.id);
+      }
+    } else {
+      for (const player of tournament.players) {
+        if (player.status === 'registered' && !player.burnFeePaid) {
+          player.status = 'withdrawn';
+          player.teamLocked = false;
+          removedPlayerIds.push(player.id);
+        }
+      }
+    }
+
+    const registered = tournament.players.filter(player => player.status === 'registered');
+    if (registered.length < tournament.maxPlayers) {
+      const replacement = tournament.players
+        .filter(player => player.status === 'waitlisted' && player.eligible)
+        .sort((a, b) => a.registrationOrder - b.registrationOrder)[0];
+      if (replacement) {
+        replacement.status = 'registered';
+        replacement.burnFeePaid = false;
+        tournament.paymentPlayerId = replacement.id;
+        tournament.paymentEndsAt = this.now() + BURN_PAYMENT_WINDOW_MS;
+        tournament.finalizesAt = tournament.paymentEndsAt;
+        tournament.updatedAt = this.now();
+        await this.repository.saveTournament(tournament);
+        return {
+          tournament: await this.requireTournament(tournamentId),
+          removedPlayerIds,
+          promotedPlayerId: replacement.id,
+          readyToFinalize: false,
+        };
+      }
+    }
+
+    delete tournament.paymentPlayerId;
+    delete tournament.paymentEndsAt;
+    // Keep the expired deadline as a durable roster-lock marker. The API can
+    // retry prize reservation/burns after a transient chain failure without
+    // reopening payment or allowing cancellation.
+    tournament.updatedAt = this.now();
+    await this.repository.saveTournament(tournament);
+    return {
+      tournament: await this.requireTournament(tournamentId),
+      removedPlayerIds,
+      readyToFinalize: tournament.players.filter(player => player.status === 'registered').length
+        === tournament.maxPlayers
+        && tournament.players
+          .filter(player => player.status === 'registered')
+          .every(player => player.burnFeePaid === true),
+    };
   }
 
   async updateRegisteredTeam(
@@ -260,6 +379,16 @@ export class TournamentService {
   ): Promise<Tournament> {
     let tournament = await this.requireTournament(tournamentId);
     if (tournament.status === 'in-progress') return tournament;
+    if (tournament.rail === 'sol_chain') {
+      const registered = tournament.players.filter(player => player.status === 'registered');
+      if (
+        (tournament.finalizesAt !== undefined && this.now() < tournament.finalizesAt)
+        || registered.length !== tournament.maxPlayers
+        || registered.some(player => player.burnFeePaid !== true)
+      ) {
+        throw new TournamentError('Chain tournament payment finalization is incomplete.');
+      }
+    }
     if (!options.ignoreFinalization && tournament.finalizesAt !== undefined && this.now() < tournament.finalizesAt) {
       throw new TournamentError('Team finalization is still open.');
     }
@@ -298,6 +427,9 @@ export class TournamentService {
       throw new InvalidTournamentStateTransitionError(tournament.status, 'cancel tournament');
     }
     tournament.status = 'cancelled';
+    delete tournament.finalizesAt;
+    delete tournament.paymentEndsAt;
+    delete tournament.paymentPlayerId;
     tournament.updatedAt = this.now();
     await this.repository.saveTournament(tournament);
     return tournament;

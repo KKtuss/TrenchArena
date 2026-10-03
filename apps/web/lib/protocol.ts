@@ -108,10 +108,15 @@ export interface TournamentSummary {
   ruleset?: string;
   createdAt?: number;
   finalizesAt?: number;
+  paymentEndsAt?: number;
   maxPlayers: number;
   status: string;
   playerCount: number;
   entryFee: number;
+  rail?: 'legacy_poke' | 'sol_chain';
+  entryAtoms?: number;
+  burnFeeAtoms?: number;
+  prizeLamports?: number;
   economics: TournamentEconomicsPreview;
   winner?: string;
 }
@@ -370,6 +375,7 @@ export type ClientMessage =
   | { type: 'passport.status' }
   | { type: 'treasury.snapshot' }
   | { type: 'tx.confirm'; intentId: string; signature: string }
+  | { type: 'tournament.payBurnFee'; tournamentId: string; playerPokeAta?: string }
   | {
       type: 'casual.create';
       roomType: 'private' | 'open';
@@ -393,7 +399,7 @@ export type ClientMessage =
   | { type: 'casual.preview'; collateral: number; stake?: 'mock' | 'real' }
   | { type: 'tournament.create'; title?: string; maxPlayers?: 4 | 8 | 16 | 32; entryFee?: number; ruleset?: string }
   | { type: 'tournament.list' }
-  | { type: 'tournament.join'; tournamentId: string; team?: string; slots?: number[]; playerPokeAta?: string }
+  | { type: 'tournament.join'; tournamentId: string; team?: string; slots?: number[] }
   | { type: 'tournament.select'; matchId: string; slots: number[]; confirm?: boolean }
   | { type: 'tournament.updateTeam'; tournamentId: string; team: string }
   | { type: 'tournament.lockTeam'; tournamentId: string }

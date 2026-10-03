@@ -11,10 +11,12 @@ import { MatchDetailDialog, TournamentBracket } from '@/components/tournament-br
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
+import { sendSerializedTransaction } from '@/lib/solana-tx';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
 import { formatById } from '@/lib/tournament-formats';
 import {
   TOURNAMENT_ENTRY_POKE,
+  TOURNAMENT_BURN_FEE_POKE,
   TOURNAMENT_FIELD_SIZE,
   formatCountdown,
   previewTreasuryPrize,
@@ -72,7 +74,7 @@ function PlayerStatusCopy({
 function SignupIcon({
   name,
 }: {
-  name: 'trophy' | 'coins' | 'users' | 'check' | 'clipboard' | 'clock' | 'play';
+  name: 'trophy' | 'coins' | 'users' | 'check' | 'clipboard' | 'clock';
 }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -117,7 +119,6 @@ function SignupIcon({
           <path d="M12 7.5V12l3.2 2" />
         </>
       ) : null}
-      {name === 'play' ? <path d="M8.4 6.4v11.2L18.2 12 8.4 6.4Z" fill="currentColor" stroke="none" /> : null}
     </svg>
   );
 }
@@ -125,7 +126,15 @@ function SignupIcon({
 export default function TournamentDetailPage() {
   const params = useParams<{ id: string }>();
   const tournamentId = params?.id ?? '';
-  const { client, playerId, connected, walletConnected, connectInjectedWallet, connectingWallet } = useArena();
+  const {
+    client,
+    playerId,
+    connected,
+    walletConnected,
+    walletAdapter,
+    connectInjectedWallet,
+    connectingWallet,
+  } = useArena();
   const [tournament, setTournament] = useState<TournamentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -178,9 +187,14 @@ export default function TournamentDetailPage() {
   };
 
   const players = registeredPlayers(tournament);
-  const registered = players.some(player => player.id === playerId);
+  const me = tournament?.players?.find(player => player.id === playerId);
+  const registered = me?.status === 'registered';
+  const waitlisted = me?.status === 'waitlisted';
   const maxPlayers = tournament?.maxPlayers ?? TOURNAMENT_FIELD_SIZE;
-  const entryFee = tournament?.entryFee ?? TOURNAMENT_ENTRY_POKE;
+  const burnFee = tournament?.burnFeeAtoms ?? TOURNAMENT_BURN_FEE_POKE;
+  const entryFee = tournament?.rail === 'sol_chain'
+    ? burnFee
+    : (tournament?.entryFee ?? TOURNAMENT_ENTRY_POKE);
   const matches = useMemo(
     () => (tournament ? visibleBracket(tournament) : []),
     [tournament],
@@ -212,9 +226,10 @@ export default function TournamentDetailPage() {
   const prizePool = badge === 'UPCOMING'
     ? projectedPrize
     : (tournament?.economics?.prizePool ?? projectedPrize);
-  const prizeLabel = tournament?.prizeLamports
+  const chainPrize = tournament?.rail === 'sol_chain' && tournament.prizeLamports !== undefined
     ? formatSolLamports(tournament.prizeLamports)
-    : formatPoke(prizePool);
+    : undefined;
+  const prizeLabel = chainPrize ?? formatPoke(prizePool);
   const myAction = myMatch ? matchActionLabel(myMatch, playerId) : null;
   const description = tournament
     ? `${formatCard?.title ?? formatName(rulesetId)} · ${formatCard?.region ?? 'Format'} · ${formatCard?.restriction ?? 'Legal'}. ${formatCard?.teamModeLabel ?? 'Custom team'}. ${maxPlayers} trainers. Best of 1.`
@@ -239,6 +254,22 @@ export default function TournamentDetailPage() {
     }
   });
 
+  const payBurnFee = () => void act(async () => {
+    if (!walletAdapter) throw new Error('Connect a wallet before paying the burn fee.');
+    const response = await client.request({ type: 'tournament.payBurnFee', tournamentId });
+    if (response.type !== 'tx.intent' || !response.intent.serializedTx) {
+      throw new Error('The tournament did not return a burn-fee transaction.');
+    }
+    const signature = await sendSerializedTransaction(walletAdapter, response.intent.serializedTx);
+    await client.request({
+      type: 'tx.confirm',
+      intentId: response.intent.intentId,
+      signature,
+    });
+    const state = await client.request({ type: 'tournament.subscribe', tournamentId });
+    if (state.type === 'tournament.state') setTournament(state.tournament as TournamentDetail);
+  });
+
   const pushTeam = () => void act(async () => {
     if (!saved?.validated || !saved.paste.trim()) {
       throw new Error('Save a legal team for this format before updating your entry.');
@@ -261,21 +292,19 @@ export default function TournamentDetailPage() {
     if (response.type === 'tournament.state') setTournament(response.tournament as TournamentDetail);
   });
 
-  const startCup = () => void act(async () => {
-    const response = await client.request({ type: 'tournament.start', tournamentId });
-    if (response.type === 'tournament.state') {
-      setTournament(response.tournament as TournamentDetail);
-    }
-  });
-
   if (tournament && canRegister) {
     const signupEconomics = previewTreasuryPrize(
       entryFee,
       tournament.economics?.playerCount ?? Math.max(players.length, 1),
     );
     const finalizing = tournament.finalizesAt != null && (now == null || now < tournament.finalizesAt);
-    const me = players.find(player => player.id === playerId);
     const teamLocked = Boolean(me?.teamLocked);
+    const paymentOpen = tournament.rail === 'sol_chain'
+      && tournament.finalizesAt != null
+      && (now == null || now < tournament.finalizesAt);
+    const needsBurnFee = tournament.rail === 'sol_chain'
+      && me?.status === 'registered'
+      && !me.burnFeePaid;
     const statusLabel = finalizing ? 'FINALIZING' : tournament.status.toUpperCase();
     const lockLabel = tournament.finalizesAt == null || now == null
       ? '--:--'
@@ -314,7 +343,7 @@ export default function TournamentDetailPage() {
                 <div className="pa-signup-stat">
                   <span className="pa-signup-stat-icon"><SignupIcon name="coins" /></span>
                   <div>
-                    <span>Entry</span>
+                    <span>{tournament.rail === 'sol_chain' ? 'Burn fee after field fills' : 'Entry'}</span>
                     <strong>{formatPoke(entryFee)}</strong>
                   </div>
                 </div>
@@ -322,7 +351,7 @@ export default function TournamentDetailPage() {
                   <span className="pa-signup-stat-icon"><SignupIcon name="trophy" /></span>
                   <div>
                     <span>Projected prize</span>
-                    <strong>{formatPoke(signupEconomics.prizePool)}</strong>
+                    <strong>{chainPrize ?? formatPoke(signupEconomics.prizePool)}</strong>
                   </div>
                 </div>
                 <div className="pa-signup-stat">
@@ -347,23 +376,34 @@ export default function TournamentDetailPage() {
                   >
                     {connectingWallet ? 'Connecting…' : 'Connect wallet'}
                   </button>
-                ) : !registered && canJoinTournament ? (
+                ) : !registered && !waitlisted && canJoinTournament ? (
                   <button
                     type="button"
                     className="pa-btn pa-btn-primary"
                     disabled={busy}
                     onClick={joinCup}
                   >
-                    Join tournament · {formatPoke(entryFee)}
+                    Join tournament
                   </button>
-                ) : !registered && !isCasualPreset ? (
+                ) : !registered && !waitlisted && !isCasualPreset ? (
                   <Link className="pa-btn pa-btn-primary" href={`/teams/builder?ruleset=${rulesetId}`}>
                     {rulesetId === 'gen9ou' ? 'Build Gen 9 OU Team' : `Build Gen ${formatCard?.generation ?? ''} Team`}
                   </Link>
-                ) : !registered ? (
+                ) : !registered && !waitlisted ? (
                   <button type="button" className="pa-btn pa-btn-primary" disabled>
                     Choose 3 from the shared six
                   </button>
+                ) : null}
+                {waitlisted ? (
+                  <p className="pa-cup-note">You are on the waitlist and will be promoted in registration order.</p>
+                ) : null}
+                {needsBurnFee && paymentOpen ? (
+                  <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={payBurnFee}>
+                    Pay burn fee · {formatPoke(burnFee)}
+                  </button>
+                ) : null}
+                {tournament.rail === 'sol_chain' && registered && me?.burnFeePaid ? (
+                  <p className="pa-cup-note">Burn fee paid. Your spot is secured while the roster finalizes.</p>
                 ) : null}
                 {registered && finalizing && !isCasualPreset ? (
                   <>
@@ -393,20 +433,9 @@ export default function TournamentDetailPage() {
                     Leave tournament
                   </button>
                 ) : null}
-                {registered && finalizing ? (
+                {registered && finalizing && tournament.rail !== 'sol_chain' ? (
                   <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
                     Leave before lock
-                  </button>
-                ) : null}
-                {playerId && tournament.hostId === playerId && !finalizing ? (
-                  <button
-                    type="button"
-                    className="pa-btn pa-btn-gold"
-                    disabled={busy}
-                    onClick={startCup}
-                  >
-                    <SignupIcon name="play" />
-                    Start tournament
                   </button>
                 ) : null}
                 {!registered && walletConnected && isCasualPreset ? (
@@ -438,7 +467,9 @@ export default function TournamentDetailPage() {
                         {isCasualPreset
                           ? 'Same 6 for both players • Choose 3. Your three stay hidden until the match starts.'
                           : finalizing
-                            ? 'The field is full. Five minutes to edit a legal team. Opponent teams stay hidden. The bracket starts when the timer ends.'
+                            ? tournament.rail === 'sol_chain'
+                              ? `The field is full. Pay the ${formatPoke(burnFee)} burn fee before the timer ends. Unpaid players are replaced from the waitlist.`
+                              : 'The field is full. Five minutes to edit a legal team. Opponent teams stay hidden. The bracket starts when the timer ends.'
                             : `Each match is one ${formatCard?.title ?? formatName(rulesetId)} singles battle. A legal team is required before you can join.`}
                       </span>
                     </li>
@@ -448,7 +479,11 @@ export default function TournamentDetailPage() {
                     </li>
                     <li>
                       <strong><SignupIcon name="coins" /> Entry</strong>
-                      <span>The {formatPoke(entryFee)} entry is burned when the bracket locks.</span>
+                      <span>
+                        {tournament.rail === 'sol_chain'
+                          ? `A fixed ${formatPoke(burnFee)} burn fee is paid after the field fills and burned when the final roster locks.`
+                          : `The ${formatPoke(entryFee)} entry is held at join and settles into the champion prize (90%) when the cup completes.`}
+                      </span>
                     </li>
                   </ul>
                 </div>
@@ -530,17 +565,7 @@ export default function TournamentDetailPage() {
               disabled={busy}
               onClick={joinCup}
             >
-              Join · {formatPoke(entryFee)}
-            </button>
-          ) : null}
-          {playerId && tournament?.hostId === playerId && (tournament.status === 'registration' || tournament.status === 'ready') ? (
-            <button
-              type="button"
-              className="pa-btn pa-btn-gold"
-              disabled={busy}
-              onClick={startCup}
-            >
-              Start tournament
+              {tournament?.rail === 'sol_chain' ? 'Join tournament' : `Join · ${formatPoke(entryFee)}`}
             </button>
           ) : null}
           {myMatch && myAction ? (

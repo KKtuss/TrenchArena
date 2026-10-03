@@ -47,6 +47,17 @@ pnpm --filter @pokearena/web dev
 - Optional treasury seed deposit (90/10) simulating realized creator rewards
 - Writes `scripts/solana/.local.env` (gitignored) with all addresses
 
+## Pinocchio parity experiment
+
+The parallel Pinocchio program lives in `programs/arena-escrow-pinocchio` and
+does **not** replace Anchor. To exercise it under the same Program ID and client:
+
+```bash
+./scripts/solana/run-pinocchio-parity.sh
+```
+
+Offline ABI fixtures: `packages/solana-client/test/pinocchio-abi-parity.test.ts`.
+
 ## Promotion
 
 | Stage | RPC | Secrets |

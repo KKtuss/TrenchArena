@@ -10,7 +10,7 @@ import { BattleIntro } from '@/components/motion';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatRoomAmount } from '@/lib/api-client';
+import { formatRoomAmount, formatTournamentPrize } from '@/lib/api-client';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
@@ -139,7 +139,7 @@ export default function BattlePage() {
         </div>
         <div className="pa-battle-bar-meta">
           {match?.tournamentId ? (
-            <span>Prize <strong>{tournament ? formatPoke(tournament.economics.prizePool) : '—'}</strong></span>
+            <span>Prize <strong>{formatTournamentPrize(tournament)}</strong></span>
           ) : (
             <>
               <span>Stake <strong>{casualRoom ? formatRoomAmount(casualRoom.collateral, casualRoom.rail) : '—'}</strong></span>

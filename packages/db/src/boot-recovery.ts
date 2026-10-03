@@ -290,6 +290,7 @@ async function settleCompletedTournaments(input: {
   for (const tournament of input.tournaments) {
     if (tournament.status === 'cancelled') continue;
     if (tournament.status !== 'completed' || !tournament.winner) continue;
+    if (tournament.rail === 'sol_chain') continue;
     const settlementKey = `${TOURNAMENT_SETTLEMENT_PREFIX}${tournament.id}`;
     const alreadySettled = Boolean(await input.economics.getSettlement(settlementKey));
     const registered = tournament.players.filter(player => player.status === 'registered');

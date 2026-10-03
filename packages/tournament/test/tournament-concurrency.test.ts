@@ -13,7 +13,7 @@ import { TEAM_ONE, TEAM_TWO } from './fixtures';
 const PLAYERS = ['player-1', 'player-2', 'player-3', 'player-4', 'player-5']
   .map(createTournamentPlayerId);
 
-test('concurrent registration cannot exceed capacity or double-reserve a player', async () => {
+test('concurrent registration keeps capacity and puts overflow on the waitlist', async () => {
   const holds = new Map<string, number>();
   const ledger = {
     async reserve(holdKey: string, _playerId: string, amount: number): Promise<boolean> {
@@ -48,13 +48,13 @@ test('concurrent registration cannot exceed capacity or double-reserve a player'
   )));
   const fulfilled = results.filter(result => result.status === 'fulfilled');
   const rejected = results.filter(result => result.status === 'rejected');
-  assert.equal(fulfilled.length, 4);
-  assert.equal(rejected.length, 1);
-  assert.match(String((rejected[0] as PromiseRejectedResult).reason), /player limit/);
+  assert.equal(fulfilled.length, 5);
+  assert.equal(rejected.length, 0);
   assert.equal(holds.size, 4);
 
   const loaded = await service.getTournament(tournament.id);
   assert.equal(loaded.players.filter(player => player.status === 'registered').length, 4);
+  assert.equal(loaded.players.filter(player => player.status === 'waitlisted').length, 1);
 
   await assert.rejects(
     () => service.registerPlayer(tournament.id, {

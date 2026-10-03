@@ -112,7 +112,10 @@ echo "Source it with: set -a; source $OUT; set +a"
 cat "$OUT"
 
 # Build client + initialize on-chain config (and optional treasury seed).
-if [[ -f "$PROGRAM_SO" ]]; then
+# Host/WSL hybrid runners can set POKEARENA_SKIP_INIT=1 and run init-config on the host.
+if [[ "${POKEARENA_SKIP_INIT:-}" == "1" ]]; then
+  echo "Skipping initialize_config (POKEARENA_SKIP_INIT=1)."
+elif [[ -f "$PROGRAM_SO" ]]; then
   (
     cd "$ROOT/packages/solana-client"
     npm run build >/dev/null

@@ -65,6 +65,12 @@ if [ "$DO_BUILD" -eq 1 ]; then
 		echo "See deploy/env/web.build.env.example." >&2
 		exit 1
 	fi
+	if [ -z "${NEXT_PUBLIC_SOLANA_RPC:-}" ]; then
+		echo "NEXT_PUBLIC_SOLANA_RPC is unset. Wallets that expose only" >&2
+		echo "signTransaction cannot submit production transactions. Aborting." >&2
+		echo "See deploy/env/web.build.env.example." >&2
+		exit 1
+	fi
 	pnpm --dir "$ROOT" install --frozen-lockfile
 	# Workspace packages emit types to dist/; typecheck after build.
 	pnpm --dir "$ROOT" --filter "./packages/**" --filter @pokearena/web build

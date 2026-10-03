@@ -155,6 +155,10 @@ function toDurableTournament(tournament: Tournament): DurableTournament {
     status: tournament.status,
     hostId: tournament.hostId,
     entryFee: tournament.entryFee,
+    ...(tournament.rail === undefined ? {} : { rail: tournament.rail }),
+    ...(tournament.entryAtoms === undefined ? {} : { entryAtoms: tournament.entryAtoms }),
+    ...(tournament.entryQuoteId === undefined ? {} : { entryQuoteId: tournament.entryQuoteId }),
+    ...(tournament.prizeLamports === undefined ? {} : { prizeLamports: tournament.prizeLamports }),
     players: tournament.players.map(toDurablePlayer),
     matchIds: [...tournament.matchIds],
     ...(tournament.winner ? { winner: tournament.winner } : {}),
@@ -163,6 +167,8 @@ function toDurableTournament(tournament: Tournament): DurableTournament {
     ...(tournament.startedAt === undefined ? {} : { startedAt: tournament.startedAt }),
     ...(tournament.completedAt === undefined ? {} : { completedAt: tournament.completedAt }),
     ...(tournament.finalizesAt === undefined ? {} : { finalizesAt: tournament.finalizesAt }),
+    ...(tournament.paymentEndsAt === undefined ? {} : { paymentEndsAt: tournament.paymentEndsAt }),
+    ...(tournament.paymentPlayerId === undefined ? {} : { paymentPlayerId: tournament.paymentPlayerId }),
   };
 }
 
@@ -178,6 +184,10 @@ function fromDurableTournament(tournament: DurableTournament): Tournament {
     status: tournament.status as TournamentStatus,
     hostId: tournament.hostId,
     entryFee: tournament.entryFee,
+    ...(tournament.rail === undefined ? {} : { rail: tournament.rail }),
+    ...(tournament.entryAtoms === undefined ? {} : { entryAtoms: tournament.entryAtoms }),
+    ...(tournament.entryQuoteId === undefined ? {} : { entryQuoteId: tournament.entryQuoteId }),
+    ...(tournament.prizeLamports === undefined ? {} : { prizeLamports: tournament.prizeLamports }),
     players: tournament.players.map(fromDurablePlayer),
     matchIds: tournament.matchIds.map(id => id as TournamentMatchId),
     ...(tournament.winner ? { winner: tournament.winner as TournamentPlayerId } : {}),
@@ -186,6 +196,8 @@ function fromDurableTournament(tournament: DurableTournament): Tournament {
     ...(tournament.startedAt === undefined ? {} : { startedAt: tournament.startedAt }),
     ...(tournament.completedAt === undefined ? {} : { completedAt: tournament.completedAt }),
     ...(tournament.finalizesAt === undefined ? {} : { finalizesAt: tournament.finalizesAt }),
+    ...(tournament.paymentEndsAt === undefined ? {} : { paymentEndsAt: tournament.paymentEndsAt }),
+    ...(tournament.paymentPlayerId === undefined ? {} : { paymentPlayerId: tournament.paymentPlayerId as TournamentPlayerId }),
   };
 }
 
@@ -198,6 +210,7 @@ function toDurablePlayer(player: TournamentPlayer): DurableTournamentPlayer {
     status: player.status,
     registrationOrder: player.registrationOrder,
     ...(player.teamLocked ? { teamLocked: true } : {}),
+    ...(player.burnFeePaid ? { burnFeePaid: true } : {}),
   };
 }
 
@@ -210,6 +223,7 @@ function fromDurablePlayer(player: DurableTournamentPlayer): TournamentPlayer {
     status: player.status,
     registrationOrder: player.registrationOrder,
     ...(player.teamLocked ? { teamLocked: true } : {}),
+    ...(player.burnFeePaid ? { burnFeePaid: true } : {}),
   };
 }
 

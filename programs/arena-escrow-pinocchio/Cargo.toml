@@ -1,0 +1,19 @@
+[package]
+name = "arena-escrow-pinocchio"
+version = "0.1.0"
+description = "Pinocchio parity implementation of arena_escrow (experiment)"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "arena_escrow_pinocchio"
+
+[features]
+default = ["bpf-entrypoint"]
+bpf-entrypoint = []
+no-entrypoint = []
+
+[dependencies]
+pinocchio = "0.8.4"
+pinocchio-system = "0.2.3"
+pinocchio-token = "0.3.0"

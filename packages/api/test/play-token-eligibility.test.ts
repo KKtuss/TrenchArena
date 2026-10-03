@@ -437,7 +437,7 @@ test('the debug route is absent unless explicitly enabled, including in producti
     nodeEnv: 'development',
   });
   const production = new ApiServer({
-    allowDemoAuth: true,
+    allowDemoAuth: false,
     originMode: 'development',
     allowedOrigins: ['http://localhost'],
     playToken: service,

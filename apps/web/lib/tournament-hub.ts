@@ -31,6 +31,7 @@ export type TournamentPlayer = {
   displayName?: string;
   team?: string;
   teamLocked?: boolean;
+  burnFeePaid?: boolean;
 };
 
 export type TournamentDetail = {
@@ -50,6 +51,10 @@ export type TournamentDetail = {
   entryFee?: number;
   hostId?: string;
   finalizesAt?: number;
+  paymentEndsAt?: number;
+  paymentPlayerId?: string;
+  entryAtoms?: number;
+  burnFeeAtoms?: number;
   matchTimeoutMs?: number;
   prizeLamports?: number;
   rail?: string;

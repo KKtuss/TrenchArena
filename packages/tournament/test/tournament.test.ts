@@ -238,6 +238,45 @@ test('withdraws before start and rejects insufficient players', async () => {
   await assert.rejects(() => service.startTournament(tournament.id), InsufficientPlayersError);
 });
 
+test('a withdrawn player can rejoin while registration is still open', async () => {
+  const service = createService();
+  const tournament = await service.createTournament({
+    title: 'Rejoin Cup',
+    format: 'gen9ou',
+    maxPlayers: 4,
+  });
+  await service.openRegistration(tournament.id);
+  await service.registerPlayer(tournament.id, {
+    playerId: PLAYER_IDS[0],
+    displayName: 'Player 1',
+    team: TEAM_ONE,
+  });
+  await service.registerPlayer(tournament.id, {
+    playerId: PLAYER_IDS[1],
+    displayName: 'Player 2',
+    team: TEAM_TWO,
+  });
+  await service.withdrawPlayer(tournament.id, PLAYER_IDS[1]);
+  const rejoined = await service.registerPlayer(tournament.id, {
+    playerId: PLAYER_IDS[1],
+    displayName: 'Player 2 Again',
+    team: TEAM_TWO,
+  });
+  assert.equal(rejoined.status, 'registered');
+  assert.equal(rejoined.displayName, 'Player 2 Again');
+  const loaded = await service.getTournament(tournament.id);
+  assert.equal(loaded.players.filter(player => player.status === 'registered').length, 2);
+  assert.equal(loaded.players.find(player => player.id === PLAYER_IDS[1])?.status, 'registered');
+  await assert.rejects(
+    () => service.registerPlayer(tournament.id, {
+      playerId: PLAYER_IDS[1],
+      displayName: 'Player 2',
+      team: TEAM_TWO,
+    }),
+    DuplicateRegistrationError,
+  );
+});
+
 test('rejects invalid tournament state transitions and invalid match results', async () => {
   const service = createService();
   const tournament = await service.createTournament({

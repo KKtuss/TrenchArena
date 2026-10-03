@@ -30,6 +30,7 @@ import {
   type PassportStatus,
   type PokeUsdQuote,
   type SolCasualPreview,
+  TOURNAMENT_BURN_FEE_ATOMS,
   uuidToBytes,
 } from '@pokearena/solana-client';
 import type { ChainIntentRow, DurableCasualRoom, EconomicsStore, PostgresChainStore } from '@pokearena/db';
@@ -45,6 +46,7 @@ export class ChainEconomyService {
   readonly config: ArenaChainConfig;
   readonly client: ArenaChainClient | null;
   private readonly chainStore: PostgresChainStore | null;
+  private readonly env: NodeJS.ProcessEnv;
   private readonly injectedKeeper?: Keypair;
   private readonly submitKeeperOverride?: (
     instructions: TransactionInstruction[],
@@ -59,13 +61,17 @@ export class ChainEconomyService {
       instructions: TransactionInstruction[],
     ) => Promise<SentTransaction>;
   } = {}) {
-    this.config = loadChainConfig(options.env ?? process.env);
+    this.env = options.env ?? process.env;
+    this.config = loadChainConfig(this.env);
+    this.injectedKeeper = options.keeper;
+    this.submitKeeperOverride = options.submitKeeper;
+    if (this.config.chainEconomyEnabled && !this.keeperKeypair().publicKey.equals(this.config.keeper)) {
+      throw new Error('POKEARENA_KEEPER_KEYPAIR does not match POKEARENA_KEEPER.');
+    }
     this.client = options.client !== undefined
       ? options.client
       : (this.config.chainEconomyEnabled ? new ArenaChainClient(this.config) : null);
     this.chainStore = options.chainStore ?? null;
-    this.injectedKeeper = options.keeper;
-    this.submitKeeperOverride = options.submitKeeper;
   }
 
   get enabled(): boolean {
@@ -223,10 +229,11 @@ export class ChainEconomyService {
   async createPokeEntryDepositIntent(input: {
     tournamentId: string;
     playerId: string;
-    playerPokeAta: string;
+    playerPokeAta?: string;
     team?: string;
     entryAtoms?: number;
     quoteId?: string;
+    fixedBurnFee?: boolean;
   }): Promise<{
     intentId: string;
     serializedTx: number[];
@@ -238,21 +245,28 @@ export class ChainEconomyService {
     if (!this.chainStore) throw new Error('Chain store is required for POKE entries.');
     const quote = this.resolveQuote();
     await this.persistQuote(quote);
-    const entryAtoms = input.entryAtoms !== undefined
+    const entryAtoms = input.fixedBurnFee
+      ? BigInt(TOURNAMENT_BURN_FEE_ATOMS)
+      : input.entryAtoms !== undefined
       ? BigInt(input.entryAtoms)
       : tournamentEntryAtoms(quote);
     const quoteId = input.quoteId ?? quote.quoteId;
     const passportRequired = passportAtoms(quote);
     const owner = new PublicKey(input.playerId);
-    const liquid = await this.client!.getPokeBalance(owner);
-    const held = BigInt(await this.chainStore.sumReservedEntryAtoms(input.playerId));
-    const afterEntry = liquid > entryAtoms ? liquid - entryAtoms : 0n;
-    const qualifyingAfter = afterEntry > held ? afterEntry - held : 0n;
-    if (qualifyingAfter < passportRequired) {
-      throw new Error(
-        'Entering this cup would drop your POKE passport below $20. Hold enough POKE for entry plus the passport.',
-      );
+    if (!input.fixedBurnFee) {
+      const liquid = await this.client!.getPokeBalance(owner);
+      const held = BigInt(await this.chainStore.sumReservedEntryAtoms(input.playerId));
+      const afterEntry = liquid > entryAtoms ? liquid - entryAtoms : 0n;
+      const qualifyingAfter = afterEntry > held ? afterEntry - held : 0n;
+      if (qualifyingAfter < passportRequired) {
+        throw new Error(
+          'Entering this cup would drop your POKE passport below $20. Hold enough POKE for entry plus the passport.',
+        );
+      }
     }
+    const playerPokeAta = input.playerPokeAta
+      ? new PublicKey(input.playerPokeAta)
+      : await this.client!.getPokeAta(owner);
 
     const scopeId = `${input.tournamentId}:${input.playerId}`;
     const quoteIdBytes = sha256Key([quoteId]);
@@ -266,8 +280,9 @@ export class ChainEconomyService {
       idempotencyKey: `poke_entry_deposit:${scopeId}`,
       tournamentId: input.tournamentId,
       metadata: {
-        playerPokeAta: input.playerPokeAta,
+        playerPokeAta: playerPokeAta.toBase58(),
         ...(input.team ? { team: input.team } : {}),
+        ...(input.fixedBurnFee ? { fixedBurnFee: true } : {}),
         expected: {
           signer: owner.toBase58(),
           program: this.config.programId.toBase58(),
@@ -283,7 +298,7 @@ export class ChainEconomyService {
       player: owner,
       config: this.client!.configAddress,
       pokeMint: this.config.pokeMint,
-      playerPoke: new PublicKey(input.playerPokeAta),
+      playerPoke: playerPokeAta,
       tournamentId: uuidToBytes(input.tournamentId),
       amount: entryAtoms,
       quoteId: quoteIdBytes,
@@ -343,6 +358,9 @@ export class ChainEconomyService {
       if (deposit?.status !== 'confirmed') {
         throw new Error(`POKE entry deposit is not confirmed for ${playerId}.`);
       }
+      if (deposit.amount !== TOURNAMENT_BURN_FEE_ATOMS) {
+        throw new Error(`POKE burn fee must be exactly ${TOURNAMENT_BURN_FEE_ATOMS} atoms for ${playerId}.`);
+      }
       const entryState = await this.client!.getEntryEscrowState(
         uuidToBytes(input.tournamentId),
         new PublicKey(playerId),
@@ -365,7 +383,7 @@ export class ChainEconomyService {
       }
       instructions.push(burnPokeEntryIx({
         programId: this.config.programId,
-        authority: this.config.authority,
+        authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
         pokeMint: this.config.pokeMint,
         tournamentId: uuidToBytes(input.tournamentId),
@@ -383,6 +401,7 @@ export class ChainEconomyService {
   }): Promise<void> {
     this.requireEnabled();
     if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
+    const entryStates = new Map<string, number>();
     for (const playerId of input.playerIds) {
       const deposit = await this.chainStore.getIntentByScope(
         'poke_entry_deposit',
@@ -390,6 +409,35 @@ export class ChainEconomyService {
       );
       if (deposit?.status !== 'confirmed') {
         throw new Error(`POKE entry deposit is not confirmed for ${playerId}.`);
+      }
+      if (deposit.amount !== TOURNAMENT_BURN_FEE_ATOMS) {
+        throw new Error(`POKE burn fee must be exactly ${TOURNAMENT_BURN_FEE_ATOMS} atoms for ${playerId}.`);
+      }
+      const state = await this.client!.getEntryEscrowState(
+        uuidToBytes(input.tournamentId),
+        new PublicKey(playerId),
+      );
+      if (state.status !== 0 && state.status !== 1) {
+        throw new Error(`POKE entry is not burnable for ${playerId}.`);
+      }
+      entryStates.set(playerId, state.status);
+    }
+    const hasBurned = [...entryStates.values()].some(status => status === 1);
+    const hasReserved = [...entryStates.values()].some(status => status === 0);
+    if (hasBurned && hasReserved) {
+      throw new Error('Tournament has a partial POKE burn and requires operator reconciliation.');
+    }
+    await this.reserveTournamentPrize(input);
+    for (const playerId of input.playerIds) {
+      const deposit = await this.chainStore.getIntentByScope(
+        'poke_entry_deposit',
+        `${input.tournamentId}:${playerId}`,
+      );
+      if (deposit?.status !== 'confirmed') {
+        throw new Error(`POKE entry deposit is not confirmed for ${playerId}.`);
+      }
+      if (deposit.amount !== TOURNAMENT_BURN_FEE_ATOMS) {
+        throw new Error(`POKE burn fee must be exactly ${TOURNAMENT_BURN_FEE_ATOMS} atoms for ${playerId}.`);
       }
       const entryState = await this.client!.getEntryEscrowState(
         uuidToBytes(input.tournamentId),
@@ -420,7 +468,7 @@ export class ChainEconomyService {
       const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
         burnPokeEntryIx({
           programId: this.config.programId,
-          authority: this.config.authority,
+          authority: this.keeperPublicKey(),
           config: this.client!.configAddress,
           pokeMint: this.config.pokeMint,
           tournamentId: uuidToBytes(input.tournamentId),
@@ -448,6 +496,13 @@ export class ChainEconomyService {
       await this.chainStore.markEntryBurned(input.tournamentId, playerId);
     }
 
+  }
+
+  private async reserveTournamentPrize(input: {
+    tournamentId: string;
+    prizeLamports: number;
+  }): Promise<void> {
+    if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
     const reserve = await this.chainStore.createIntent({
       kind: 'prize_reserve',
       scopeId: input.tournamentId,
@@ -461,36 +516,30 @@ export class ChainEconomyService {
         .catch(() => undefined);
       if (existingReserve?.status === 0 && existingReserve.amount === BigInt(input.prizeLamports)) {
         await this.chainStore.setIntentStatus(reserve.id, 'confirmed');
-        await this.chainStore.recordPrizeReserve({
-          tournamentId: input.tournamentId,
-          amountLamports: input.prizeLamports,
-          status: 'reserved',
-          reserveIntentId: reserve.id,
-        });
-        return;
-      }
-      const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
-        this.buildReservePrizeIx({
-          tournamentId: input.tournamentId,
-          amountLamports: input.prizeLamports,
-        }),
-      ]);
-      if (result.status !== 'confirmed') {
-        await this.chainStore.setIntentStatus(reserve.id, result.status, {
-          signature: result.signature || undefined,
+      } else {
+        const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
+          this.buildReservePrizeIx({
+            tournamentId: input.tournamentId,
+            amountLamports: input.prizeLamports,
+          }),
+        ]);
+        if (result.status !== 'confirmed') {
+          await this.chainStore.setIntentStatus(reserve.id, result.status, {
+            signature: result.signature || undefined,
+            slot: result.slot,
+            error: result.error,
+          });
+          throw new Error(result.error ?? 'Prize reserve failed.');
+        }
+        const state = await this.client!.getPrizeReserveState(uuidToBytes(input.tournamentId));
+        if (state.status !== 0 || state.amount !== BigInt(input.prizeLamports)) {
+          throw new Error('Prize reserve was not reflected on-chain.');
+        }
+        await this.chainStore.setIntentStatus(reserve.id, 'confirmed', {
+          signature: result.signature,
           slot: result.slot,
-          error: result.error,
         });
-        throw new Error(result.error ?? 'Prize reserve failed.');
       }
-      const state = await this.client!.getPrizeReserveState(uuidToBytes(input.tournamentId));
-      if (state.status !== 0 || state.amount !== BigInt(input.prizeLamports)) {
-        throw new Error('Prize reserve was not reflected on-chain.');
-      }
-      await this.chainStore.setIntentStatus(reserve.id, 'confirmed', {
-        signature: result.signature,
-        slot: result.slot,
-      });
     }
     await this.chainStore.recordPrizeReserve({
       tournamentId: input.tournamentId,
@@ -529,7 +578,7 @@ export class ChainEconomyService {
     const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
       refundPokeEntryIx({
         programId: this.config.programId,
-        authority: this.config.authority,
+        authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
         pokeMint: this.config.pokeMint,
         playerPoke: new PublicKey(input.playerPokeAta),
@@ -587,14 +636,14 @@ export class ChainEconomyService {
       const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
         setPrizeWinnerIx({
           programId: this.config.programId,
-          authority: this.config.authority,
+          authority: this.keeperPublicKey(),
           config: this.client!.configAddress,
           winner: new PublicKey(input.winnerId),
           tournamentId: tournamentBytes,
         }),
         payPrizeIx({
           programId: this.config.programId,
-          authority: this.config.authority,
+          authority: this.keeperPublicKey(),
           config: this.client!.configAddress,
           winner: new PublicKey(input.winnerId),
           tournamentId: tournamentBytes,
@@ -639,12 +688,15 @@ export class ChainEconomyService {
     };
   }
 
-  /** Optional keeper helper when a local authority keypair is supplied via env path. */
+  /** Submit a keeper-signed transaction using the configured keeper account. */
   async submitKeeperTransaction(
     authority: Keypair,
     instructions: Parameters<ArenaChainClient['buildTransaction']>[1],
   ): Promise<SentTransaction> {
     this.requireEnabled();
+    if (!authority.publicKey.equals(this.config.keeper)) {
+      throw new Error('Keeper transaction signer does not match POKEARENA_KEEPER.');
+    }
     if (this.submitKeeperOverride) return this.submitKeeperOverride(instructions);
     const tx = await this.client!.buildTransaction(authority.publicKey, instructions);
     return this.client!.sendAndConfirm(tx, [authority]);
@@ -773,7 +825,7 @@ export class ChainEconomyService {
       const instruction = isTie
         ? settleMatchTieIx({
             programId: this.config.programId,
-            authority: this.config.authority,
+            authority: this.keeperPublicKey(),
             config: this.client!.configAddress,
             creator: new PublicKey(input.creatorId),
             opponent: new PublicKey(input.opponentId),
@@ -782,7 +834,7 @@ export class ChainEconomyService {
           })
         : settleMatchWinIx({
             programId: this.config.programId,
-            authority: this.config.authority,
+            authority: this.keeperPublicKey(),
             config: this.client!.configAddress,
             winner: new PublicKey(input.winnerId!),
             roomId: roomBytes,
@@ -875,7 +927,7 @@ export class ChainEconomyService {
       const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
         refundSolWagerIx({
           programId: this.config.programId,
-          authority: this.config.authority,
+          authority: this.keeperPublicKey(),
           config: this.client!.configAddress,
           recipient: new PublicKey(side.playerId),
           roomId: roomBytes,
@@ -920,7 +972,7 @@ export class ChainEconomyService {
     const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
       seatMatchOpponentIx({
         programId: this.config.programId,
-        authority: this.config.authority,
+        authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
         opponent,
         roomId: roomBytes,
@@ -991,7 +1043,7 @@ export class ChainEconomyService {
     this.requireEnabled();
     return chargeMatchFeeIx({
       programId: this.config.programId,
-      authority: this.config.authority,
+      authority: this.keeperPublicKey(),
       config: this.client!.configAddress,
       feeVault: this.config.feeVault,
       roomId: uuidToBytes(roomId),
@@ -1005,7 +1057,7 @@ export class ChainEconomyService {
       settlementKey,
       instruction: settleMatchWinIx({
         programId: this.config.programId,
-        authority: this.config.authority,
+        authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
         winner: new PublicKey(input.winner),
         roomId: uuidToBytes(input.roomId),
@@ -1026,7 +1078,7 @@ export class ChainEconomyService {
       settlementKey,
       instruction: settleMatchTieIx({
         programId: this.config.programId,
-        authority: this.config.authority,
+        authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
         creator: new PublicKey(input.creator),
         opponent: new PublicKey(input.opponent),
@@ -1040,7 +1092,7 @@ export class ChainEconomyService {
     this.requireEnabled();
     return reservePrizeIx({
       programId: this.config.programId,
-      authority: this.config.authority,
+      authority: this.keeperPublicKey(),
       config: this.client!.configAddress,
       treasuryVault: this.config.treasuryVault,
       tournamentId: uuidToBytes(input.tournamentId),
@@ -1055,7 +1107,7 @@ export class ChainEconomyService {
       settlementKey,
       instruction: payPrizeIx({
         programId: this.config.programId,
-        authority: this.config.authority,
+        authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
         winner: new PublicKey(input.winner),
         tournamentId: uuidToBytes(input.tournamentId),
@@ -1073,9 +1125,13 @@ export class ChainEconomyService {
 
   private keeperKeypair(): Keypair {
     if (this.injectedKeeper) return this.injectedKeeper;
-    const path = process.env.POKEARENA_KEEPER_KEYPAIR ?? process.env.POKEARENA_AUTHORITY_KEYPAIR;
+    const path = this.env.POKEARENA_KEEPER_KEYPAIR ?? this.env.POKEARENA_AUTHORITY_KEYPAIR;
     if (!path) throw new Error('POKEARENA_KEEPER_KEYPAIR is required for chain settlement.');
     return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, 'utf8'))));
+  }
+
+  private keeperPublicKey(): PublicKey {
+    return this.keeperKeypair().publicKey;
   }
 
   private expectedVerification(intent: ChainIntentRow): IntentVerification | undefined {

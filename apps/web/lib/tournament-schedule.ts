@@ -5,6 +5,8 @@ export const GEN1_CUP_TITLE = 'GEN 1 CUP';
 export const GEN1_CUP_THEME = 'GENERATION 1 POKÉMON';
 /** Legacy display fallback when chain economy is off. */
 export const TOURNAMENT_ENTRY_POKE = 50_000;
+/** Fixed chain burn fee per tournament player. */
+export const TOURNAMENT_BURN_FEE_POKE = 10_000;
 /** Approximate USD entry when chain economy quotes POKE. */
 export const TOURNAMENT_ENTRY_USD = 5;
 export const TOURNAMENT_FIELD_SIZE = 32;

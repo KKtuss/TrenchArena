@@ -18,6 +18,7 @@ import {
 } from '@pokearena/tournament';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { RawData } from 'ws';
+import { TOURNAMENT_BURN_FEE_ATOMS } from '@pokearena/solana-client';
 
 import {
   previewCasual,
@@ -230,6 +231,7 @@ export class ApiServer {
   private readonly tournamentSelections = new Map<string, TournamentSelectionState>();
   private readonly tournamentSelectionTimers = new Map<string, NodeJS.Timeout>();
   private readonly startingTournamentMatches = new Set<string>();
+  private readonly tournamentMutationLocks = new Map<string, Promise<void>>();
   private shuttingDown = false;
   private economicsPool: Pool | undefined;
 
@@ -259,6 +261,15 @@ export class ApiServer {
     this.network = resolveNetworkPolicy(options);
     this.bindHost = this.network.bindHost;
     this.rateLimiter = new ProtocolRateLimiter(resolveRateLimitConfig(options.rateLimits));
+    this.nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? 'development';
+    if (
+      this.nodeEnv === 'production'
+      && (this.allowDemoAuth || this.localTestMode || this.devFaucet)
+    ) {
+      throw new Error(
+        'Demo auth, local test mode, and the development faucet must be disabled in production.',
+      );
+    }
     if (this.network.originMode === 'strict' && this.network.allowedOrigins.length === 0) {
       throw new Error('POKEARENA_ALLOWED_ORIGINS is required when origin validation is strict.');
     }
@@ -276,7 +287,6 @@ export class ApiServer {
     this.tournaments = injectedTournaments ?? new TournamentService({ repository });
     this.chainEconomy = options.chainEconomy
       ?? new ChainEconomyService({ chainStore: options.chainStore ?? null });
-    this.nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? 'development';
     this.playTokenDebug = options.playTokenDebug ?? envFlag(process.env.PLAY_TOKEN_ELIGIBILITY_DEBUG);
     this.playToken = options.playToken ?? createPlayTokenEligibilityService({
       env: process.env,
@@ -658,12 +668,13 @@ export class ApiServer {
         }, message.requestId);
         if (result.status === 'confirmed' && intent.kind === 'poke_entry_deposit') {
           try {
-            await this.tournaments.registerPlayer(intent.tournamentId as TournamentId, {
-              playerId: playerId as TournamentPlayerId,
-              displayName: playerId,
-              team: String(intent.metadata.team ?? ''),
-            });
-            await this.maybeBeginFinalization(intent.tournamentId as TournamentId);
+            if (!intent.tournamentId) throw new Error('Tournament payment intent is missing its tournament.');
+            await this.withTournamentMutationLock(intent.tournamentId, () => (
+              this.tournaments.markBurnFeePaid(
+                intent.tournamentId as TournamentId,
+                playerId as TournamentPlayerId,
+              )
+            ));
           } catch (error) {
             await this.chainEconomy.refundPokeEntry({
               tournamentId: intent.tournamentId!,
@@ -905,10 +916,13 @@ export class ApiServer {
         let chainEntryAtoms: number | undefined;
         let chainQuoteId: string | undefined;
         if (this.chainEconomy.enabled) {
-          const quoted = this.chainEconomy.quotedEntryAtoms();
-          await this.chainEconomy.persistQuote(quoted.quote);
-          chainEntryAtoms = Number(quoted.atoms);
-          chainQuoteId = quoted.quote.quoteId;
+          if ((message.maxPlayers ?? 32) !== 32) {
+            throw new Error('Chain tournaments use a fixed 32-player field.');
+          }
+          const quote = this.chainEconomy.resolveQuote();
+          await this.chainEconomy.persistQuote(quote);
+          chainEntryAtoms = TOURNAMENT_BURN_FEE_ATOMS;
+          chainQuoteId = quote.quoteId;
           entryFee = 0;
         }
         const rulesetId = message.ruleset ?? 'gen9ou';
@@ -917,7 +931,7 @@ export class ApiServer {
           title: message.title ?? 'PokeArena Open',
           format: 'gen9ou',
           ruleset: rulesetId,
-          maxPlayers: message.maxPlayers ?? 4,
+          maxPlayers: this.chainEconomy.enabled ? 32 : (message.maxPlayers ?? 4),
           matchTimeoutMs: 300_000,
           hostId: playerId,
           entryFee,
@@ -945,9 +959,56 @@ export class ApiServer {
           tournaments: await this.listTournamentSummaries(),
         }, message.requestId);
         return;
+      case 'tournament.payBurnFee': {
+        if (!this.chainEconomy.enabled) throw new Error('Chain economy is not enabled.');
+        const tournamentId = message.tournamentId as TournamentId;
+        const tournament = await this.tournaments.getTournament(tournamentId);
+        if (
+          tournament.rail !== 'sol_chain'
+          || tournament.status !== 'registration'
+          || tournament.finalizesAt === undefined
+        ) {
+          throw new Error('The POKE burn-fee payment window is not open.');
+        }
+        const player = tournament.players.find(candidate => candidate.id === playerId);
+        if (!player || player.status !== 'registered') {
+          throw new Error('Only a registered tournament player can pay the burn fee.');
+        }
+        if (player.burnFeePaid) {
+          this.send(connection, {
+            type: 'tournament.state',
+            tournament: await this.serializeTournament(tournamentId, playerId),
+          }, message.requestId);
+          return;
+        }
+        const entry = await this.chainEconomy.createPokeEntryDepositIntent({
+          tournamentId,
+          playerId,
+          ...(message.playerPokeAta ? { playerPokeAta: message.playerPokeAta } : {}),
+          team: player.team,
+          entryAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+          ...(tournament.entryQuoteId ? { quoteId: tournament.entryQuoteId } : {}),
+          fixedBurnFee: true,
+        });
+        this.send(connection, {
+          type: 'tx.intent',
+          intent: {
+            intentId: entry.intentId,
+            serializedTx: entry.serializedTx,
+            kind: 'poke_entry_deposit',
+            entryAtoms: entry.entryAtoms,
+            quote: entry.quote,
+            passport: entry.passport,
+          },
+        }, message.requestId);
+        return;
+      }
       case 'tournament.join': {
         const tournamentId = message.tournamentId as TournamentId;
         const targetTournament = await this.tournaments.getTournament(tournamentId);
+        if (this.chainEconomy.enabled && targetTournament.rail === 'sol_chain' && targetTournament.maxPlayers !== 32) {
+          throw new Error('Chain tournaments must use a 32-player field.');
+        }
         const ruleset = getRuleset(targetTournament.ruleset);
         const team = ruleset.teamMode === 'preset-6-choose-3'
           ? this.presetTeamForJoin(ruleset.presetId)
@@ -955,41 +1016,13 @@ export class ApiServer {
         validateRulesetTeam(team, ruleset.id);
         if (this.chainEconomy.enabled) {
           await this.chainEconomy.assertCanPlay(playerId);
-          if (!message.playerPokeAta) {
-            throw new Error('playerPokeAta is required for chain tournament entry.');
-          }
-          const entry = await this.chainEconomy.createPokeEntryDepositIntent({
-            tournamentId,
-            playerId,
-            playerPokeAta: message.playerPokeAta,
-            team,
-            ...(targetTournament.entryAtoms !== undefined
-              ? { entryAtoms: targetTournament.entryAtoms }
-              : {}),
-            ...(targetTournament.entryQuoteId
-              ? { quoteId: targetTournament.entryQuoteId }
-              : {}),
-          });
-          this.send(connection, {
-            type: 'tx.intent',
-            intent: {
-              intentId: entry.intentId,
-              serializedTx: entry.serializedTx,
-              kind: 'poke_entry_deposit',
-              entryAtoms: entry.entryAtoms,
-              quote: entry.quote,
-              passport: entry.passport,
-            },
-          }, message.requestId);
         }
-        if (!this.chainEconomy.enabled) {
-          await this.tournaments.registerPlayer(tournamentId, {
-            playerId,
-            displayName: playerId,
-            team,
-          });
-          await this.maybeBeginFinalization(tournamentId);
-        }
+        await this.tournaments.registerPlayer(tournamentId, {
+          playerId,
+          displayName: playerId,
+          team,
+        });
+        await this.maybeBeginFinalization(tournamentId);
         connection.tournamentIds.add(tournamentId);
         this.send(connection, {
           type: 'tournament.state',
@@ -1045,6 +1078,17 @@ export class ApiServer {
         if (tournament.finalizesAt !== undefined && Date.now() >= tournament.finalizesAt) {
           throw new Error('Team finalization has already closed.');
         }
+        const participant = tournament.players.find(candidate => candidate.id === playerId);
+        if (
+          tournament.rail === 'sol_chain'
+          && participant?.status === 'registered'
+          && tournament.finalizesAt !== undefined
+        ) {
+          throw new Error('Players cannot leave while the burn-fee roster is finalizing.');
+        }
+        if (tournament.rail === 'sol_chain' && participant?.burnFeePaid) {
+          await this.refundChainBurnFee(tournamentId, playerId);
+        }
         await this.tournaments.withdrawPlayer(tournamentId, playerId);
         await this.releaseTournamentEntry(tournament, playerId);
         this.send(connection, {
@@ -1063,14 +1107,16 @@ export class ApiServer {
           throw new Error('Team finalization is still open.');
         }
         if (this.chainEconomy.enabled) {
-          const registered = beforeStart.players
-            .filter(player => player.status === 'registered')
-            .map(player => player.id);
-          await this.chainEconomy.lockTournament({
-            tournamentId,
-            playerIds: registered,
-            prizeLamports: Number(process.env.POKEARENA_TOURNAMENT_PRIZE_LAMPORTS ?? 100_000_000),
-          });
+          if (beforeStart.rail !== 'sol_chain' || beforeStart.finalizesAt === undefined) {
+            throw new Error('Chain tournaments start only after the full payment window has closed.');
+          }
+          await this.sealFinalization(tournamentId);
+          const current = await this.tournaments.getTournament(tournamentId);
+          this.send(connection, {
+            type: 'tournament.state',
+            tournament: await this.serializeTournament(current.id, playerId),
+          }, message.requestId);
+          return;
         }
         const tournament = await this.tournaments.startTournament(tournamentId, {
           ignoreFinalization: this.localTestMode,
@@ -1087,20 +1133,15 @@ export class ApiServer {
         const tournamentId = message.tournamentId as TournamentId;
         await this.requireTournamentHost(playerId, tournamentId);
         const tournament = await this.tournaments.getTournament(tournamentId);
-        if (this.chainEconomy.enabled) {
-          for (const participant of tournament.players.filter(candidate => candidate.status === 'registered')) {
-            const intent = await this.chainEconomy.getIntentByScope(
-              'poke_entry_deposit',
-              `${tournamentId}:${participant.id}`,
-            );
-            if (intent?.status === 'confirmed') {
-              await this.chainEconomy.refundPokeEntry({
-                tournamentId,
-                playerId: participant.id,
-                playerPokeAta: String(intent.metadata.playerPokeAta),
-              });
-            }
-          }
+        if (tournament.rail === 'sol_chain') {
+          await this.cancelChainTournament(tournamentId);
+          this.send(connection, {
+            type: 'tournament.state',
+            tournament: await this.serializeTournament(tournamentId, playerId),
+          }, message.requestId);
+          this.broadcastTournament(tournamentId);
+          void this.broadcastArenaSnapshots();
+          return;
         }
         const cancelled = await this.tournaments.cancelTournament(tournamentId);
         this.send(connection, {
@@ -1351,6 +1392,20 @@ export class ApiServer {
         status: tournament.status,
         playerCount,
         entryFee: tournament.entryFee,
+        ...(tournament.rail ? { rail: tournament.rail } : {}),
+        ...(tournament.entryAtoms !== undefined ? { entryAtoms: tournament.entryAtoms } : {}),
+        ...(tournament.prizeLamports !== undefined ? { prizeLamports: tournament.prizeLamports } : {}),
+        ...(tournament.rail === 'sol_chain'
+          ? {
+              burnFeeAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+              ...(tournament.prizeLamports !== undefined
+                ? { prizeLamports: tournament.prizeLamports }
+                : {}),
+              ...(tournament.paymentEndsAt !== undefined
+                ? { paymentEndsAt: tournament.paymentEndsAt }
+                : {}),
+            }
+          : {}),
         economics: previewTournament(tournament.entryFee, Math.max(playerCount, tournament.maxPlayers)),
         ...(tournament.winner ? { winner: tournament.winner } : {}),
       };
@@ -1500,7 +1555,7 @@ export class ApiServer {
   private async maybeBeginFinalization(tournamentId: TournamentId): Promise<void> {
     const tournament = await this.tournaments.getTournament(tournamentId);
     const ruleset = getRuleset(tournament.ruleset);
-    if (ruleset.teamMode !== 'custom') return;
+    if (ruleset.teamMode !== 'custom' && tournament.rail !== 'sol_chain') return;
     const registered = tournament.players.filter(player => player.status === 'registered').length;
     if (registered !== tournament.maxPlayers || tournament.finalizesAt !== undefined) return;
     await this.tournaments.beginTeamFinalization(tournamentId);
@@ -1543,10 +1598,20 @@ export class ApiServer {
           if (!player.teamLocked) await this.tournaments.lockRegisteredTeam(tournamentId, player.id);
         } catch {
           await this.tournaments.withdrawPlayer(tournamentId, player.id, { keepFinalization: true });
-          await this.releaseTournamentEntry(tournament, player.id);
+          if (tournament.rail === 'sol_chain' && player.burnFeePaid) {
+            await this.refundChainBurnFee(tournamentId, player.id);
+          } else {
+            await this.releaseTournamentEntry(tournament, player.id);
+          }
         }
       }
       tournament = await this.tournaments.getTournament(tournamentId);
+
+      if (tournament.rail === 'sol_chain') {
+        await this.finalizeChainTournament(tournamentId);
+        return;
+      }
+
       const registered = tournament.players.filter(player => player.status === 'registered');
       const count = registered.length;
       const playable = count >= 2 && (count & (count - 1)) === 0;
@@ -1586,6 +1651,98 @@ export class ApiServer {
     await this.economics.release(`tournament:${tournament.id}:${playerId}`);
   }
 
+  private async refundChainBurnFee(tournamentId: string, playerId: string): Promise<void> {
+    const intent = await this.chainEconomy.getIntentByScope(
+      'poke_entry_deposit',
+      `${tournamentId}:${playerId}`,
+    );
+    if (intent?.status !== 'confirmed') return;
+    await this.chainEconomy.refundPokeEntry({
+      tournamentId,
+      playerId,
+      playerPokeAta: String(intent.metadata.playerPokeAta),
+    });
+  }
+
+  private async refundChainBurnFees(tournament: {
+    id: string;
+    players: Array<{ id: string; status: string; burnFeePaid?: boolean }>;
+  }): Promise<void> {
+    for (const player of tournament.players) {
+      if (player.status === 'registered' && player.burnFeePaid) {
+        await this.refundChainBurnFee(tournament.id, player.id);
+      }
+    }
+  }
+
+  private async cancelChainTournament(tournamentId: TournamentId) {
+    return this.withTournamentMutationLock(tournamentId, async () => {
+      const tournament = await this.tournaments.getTournament(tournamentId);
+      if (tournament.status !== 'registration') {
+        throw new Error('Chain tournaments cannot be cancelled after roster finalization.');
+      }
+      if (tournament.finalizesAt !== undefined) {
+        throw new Error('Chain tournament finalization has already begun.');
+      }
+      for (const participant of tournament.players.filter(candidate => candidate.status === 'registered')) {
+        await this.refundChainBurnFee(tournamentId, participant.id);
+      }
+      return this.tournaments.cancelTournament(tournamentId);
+    });
+  }
+
+  private async finalizeChainTournament(tournamentId: TournamentId): Promise<void> {
+    await this.withTournamentMutationLock(tournamentId, async () => {
+      const advanced = await this.tournaments.advanceBurnFeeWindow(tournamentId);
+      if (advanced.promotedPlayerId) {
+        await this.broadcastTournament(tournamentId);
+        return;
+      }
+      if (!advanced.readyToFinalize) {
+        await this.refundChainBurnFees(advanced.tournament);
+        await this.tournaments.cancelTournament(tournamentId);
+        await this.broadcastTournament(tournamentId);
+        return;
+      }
+      const registered = advanced.tournament.players
+        .filter(player => player.status === 'registered')
+        .map(player => player.id);
+      if (advanced.tournament.prizeLamports === undefined) {
+        throw new Error('Chain tournament prize is not configured.');
+      }
+      await this.chainEconomy.lockTournament({
+        tournamentId,
+        playerIds: registered,
+        prizeLamports: advanced.tournament.prizeLamports,
+      });
+      const started = await this.tournaments.startTournament(tournamentId);
+      await this.startReadyMatches(started.id);
+      await this.broadcastTournament(started.id);
+    });
+  }
+
+  private async withTournamentMutationLock<T>(
+    tournamentId: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.tournamentMutationLocks.get(tournamentId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const queued = previous.then(() => current);
+    this.tournamentMutationLocks.set(tournamentId, queued);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.tournamentMutationLocks.get(tournamentId) === queued) {
+        this.tournamentMutationLocks.delete(tournamentId);
+      }
+    }
+  }
+
   private async serializeTournament(tournamentId: TournamentId, viewerId: string): Promise<unknown> {
     const tournament = await this.tournaments.getTournament(tournamentId);
     const playerCount = tournament.players.filter(player => player.status === 'registered').length;
@@ -1596,6 +1753,16 @@ export class ApiServer {
       hostId: tournament.hostId,
       bracket: await this.tournaments.getBracket(tournamentId),
       entryFee: tournament.entryFee,
+      ...(tournament.rail ? { rail: tournament.rail } : {}),
+      ...(tournament.entryAtoms !== undefined ? { entryAtoms: tournament.entryAtoms } : {}),
+      ...(tournament.rail === 'sol_chain'
+        ? {
+            burnFeeAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+            ...(tournament.paymentEndsAt !== undefined
+              ? { paymentEndsAt: tournament.paymentEndsAt }
+              : {}),
+          }
+        : {}),
       economics: previewTournament(tournament.entryFee, Math.max(playerCount, 1)),
       payout: this.tournamentPayouts.get(tournamentId)
         ?? await this.economics.getSettlement(`tournament:${tournamentId}`),

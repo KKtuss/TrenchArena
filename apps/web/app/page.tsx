@@ -8,7 +8,13 @@ import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatRoomAmount } from '@/lib/api-client';
+import {
+  formatPoke,
+  formatRoomAmount,
+  formatSolLamports,
+  formatTournamentEntry,
+  formatTournamentPrize,
+} from '@/lib/api-client';
 import type { BattleView, CasualRoom, LiveFight, TournamentSummary } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
@@ -96,18 +102,35 @@ export default function LandingPage() {
   const tournaments = snapshot?.tournaments ?? [];
   const flagship = tournaments.find(item => item.status !== 'completed') ?? tournaments[0];
   const minors = tournaments.filter(item => item.id !== flagship?.id).slice(0, 3);
-  const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => sum + (room.payout?.amount ?? 0), 0);
+  const chain = Boolean(snapshot?.chainEconomyEnabled);
+  const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => {
+    if (chain && room.rail !== 'sol_chain') return sum;
+    if (!chain && room.rail === 'sol_chain') return sum;
+    return sum + (room.payout?.amount ?? 0);
+  }, 0);
+  const paidOutLabel = paidOut
+    ? (chain ? formatSolLamports(paidOut) : formatPoke(paidOut))
+    : '—';
+  const flagshipPrize = formatTournamentPrize(flagship);
   const liveFight = live?.fight;
   const liveView = live?.view;
   const liveActive = Boolean(liveFight && liveView && (liveFight.status === 'active' || liveFight.status === 'battling'));
 
-  const flywheel = [
-    { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards', copy: 'Token trading activity generates creator and developer rewards for the project.' },
-    { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Tournament Treasury', copy: 'Ninety percent of those rewards fund the Tournament Treasury that banks competition prizes.' },
-    { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw from the Treasury so players compete for substantial prizes without large collateral.' },
-    { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Low-entry tournaments put Gen 9 OU brackets on the stadium calendar.' },
-    { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: 'Champions take Treasury-funded prizes. Casual fights stay separate and player-funded.' },
-  ];
+  const flywheel = chain
+    ? [
+      { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards', copy: 'Token trading activity generates creator and developer rewards for the project.' },
+      { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Tournament Treasury', copy: 'Ninety percent of those rewards fund the Tournament Treasury that banks competition prizes.' },
+      { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw SOL from the Treasury so players compete without large collateral.' },
+      { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Fixed POKE burn after fill. Gen brackets on the stadium calendar.' },
+      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: 'Champions take Treasury-funded SOL prizes. Casual fights stay separate and player-funded.' },
+    ]
+    : [
+      { n: '01', tone: 'cyan', kicker: 'Source', title: 'Entry holds', copy: 'Players post POKE entry fees when they register for a cup.' },
+      { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Prize pool', copy: 'Ninety percent of held entries fund the champion payout.' },
+      { n: '03', tone: 'amber', kicker: 'Fund', title: 'Field prize', copy: 'The prize grows with the field — it is not a separate vault balance.' },
+      { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Low-entry tournaments put Gen brackets on the stadium calendar.' },
+      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: 'Champions take the field prize. Casual fights stay separate and player-funded.' },
+    ];
 
   return (
     <div className="pa-home">
@@ -123,8 +146,10 @@ export default function LandingPage() {
         <h1>POKEARENA</h1>
         <p className="pa-tag">Battle. Compete. Climb.</p>
         <p className="pa-lead">
-          <span className="pa-lead-intro">Hold POKE to enter.</span>{' '}
-          Wager SOL in the arena, or enter a tournament and fight for the creator rewards treasury.
+          <span className="pa-lead-intro">{chain ? 'Hold POKE to enter.' : 'Connect and compete.'}</span>{' '}
+          {chain
+            ? 'Wager SOL in the arena, or enter a tournament and fight for Treasury-funded SOL prizes.'
+            : 'Wager POKE in the arena, or enter a tournament and fight for a prize funded by the field.'}
         </p>
         {saved?.species.some(Boolean) ? (
           <div className="pa-protocol">
@@ -211,20 +236,32 @@ export default function LandingPage() {
         <header>
           <div>
             <h2><span>◆</span> Two competitive paths</h2>
-            <p>Casual fights wager SOL. Tournaments burn a small POKE entry and pay SOL from the Treasury.</p>
+            <p>
+              {chain
+                ? 'Casual fights wager SOL. Tournaments burn a fixed POKE fee after fill and pay SOL from the Treasury.'
+                : 'Casual fights wager POKE. Tournaments hold entry fees and pay the champion from the field pool.'}
+            </p>
           </div>
-          <span className="pa-live-pill"><i /> POKE passport · SOL wagers</span>
+          <span className="pa-live-pill">
+            <i /> {chain ? 'POKE passport · SOL wagers' : 'Mock ledger · POKE stakes'}
+          </span>
         </header>
-        <CompetitivePaths />
+        <CompetitivePaths chain={chain} />
       </section>
 
       <section className="pa-fly" id="treasury">
         <header>
           <div>
             <h2><span>◆</span> Tournament flywheel</h2>
-            <p>Creator and developer rewards fund cups. Casual collateral never enters this loop.</p>
+            <p>
+              {chain
+                ? 'Creator and developer rewards fund cups. Casual collateral never enters this loop.'
+                : 'Held entry fees fund the champion. Casual collateral never enters this loop.'}
+            </p>
           </div>
-          <span className="pa-live-pill"><i /> 90% Treasury · 10% project</span>
+          <span className="pa-live-pill">
+            <i /> {chain ? '90% Treasury · 10% project' : '90% prize · 10% ops'}
+          </span>
         </header>
         <div className="pa-fly-grid">
           {flywheel.map(item => (
@@ -236,7 +273,8 @@ export default function LandingPage() {
           ))}
         </div>
         <p className="pa-econ-note" style={{ marginTop: '0.85rem' }}>
-          Separate track: casual fights take one 2% protocol fee from the gross player-funded pool at match start. No withdrawal tax.
+          Separate track: casual fights take one 2% protocol fee from the gross player-funded pool
+          {chain ? ' at match start' : ' at settlement'}. No withdrawal tax.
         </p>
       </section>
 
@@ -270,29 +308,39 @@ export default function LandingPage() {
         <div id="treasury-audit">
           <header>
             <h2>Funding snapshot</h2>
-            <span className="ok">Mock ledger</span>
+            <span className="ok">{chain ? 'Chain rail' : 'Mock ledger'}</span>
           </header>
           <div className="pa-vault">
             <div className="pa-vault-grid">
               <div>
-                <small>Treasury prize targets</small>
-                <strong>{flagship ? formatPoke(flagship.economics.prizePool) : '—'}</strong>
-                <span>Mock cup estimate · not a live vault balance</span>
+                <small>{chain ? 'Flagship treasury prize' : 'Flagship prize pool'}</small>
+                <strong>{flagship ? flagshipPrize : '—'}</strong>
+                <span>
+                  {chain
+                    ? (snapshot?.solBalances
+                      ? `Live vault ${formatSolLamports(snapshot.solBalances.treasuryLamports)}`
+                      : 'Configured SOL prize for the open cup')
+                    : '90% of held entries · provisional until settle'}
+                </span>
               </div>
               <div>
                 <small>Recent casual payouts</small>
-                <strong className="ok">{paidOut ? formatPoke(paidOut) : '—'}</strong>
-                <span>Player-funded wins after start fee</span>
+                <strong className="ok">{paidOutLabel}</strong>
+                <span>Player-funded wins after protocol fee</span>
               </div>
             </div>
             <div className="pa-legend">
-              <span><i className="escrow" /> Tournament Treasury 90%</span>
-              <span><i className="ops" /> Project funds 10%</span>
+              <span><i className="escrow" /> {chain ? 'Tournament Treasury 90%' : 'Champion prize 90%'}</span>
+              <span><i className="ops" /> {chain ? 'Project funds 10%' : 'Ops share 10%'}</span>
               <span><i className="vault" /> Casual pools stay player-funded</span>
             </div>
             <div className="pa-contract">
-              <span>Casual fee 2% at match start · no withdrawal tax</span>
-              <span>Mock ledger</span>
+              <span>
+                Casual fee 2%
+                {chain ? ' at match start' : ' at settlement'}
+                {' · no withdrawal tax'}
+              </span>
+              <span>{chain ? 'SOL prizes · POKE burn' : 'Mock ledger'}</span>
             </div>
             <Link href="/treasury">Open Treasury map</Link>
           </div>
@@ -303,7 +351,11 @@ export default function LandingPage() {
         <header>
           <div>
             <h2><span>◆</span> Tournament radar</h2>
-            <p>Low entry. Large competitive prize from the Tournament Treasury.</p>
+            <p>
+              {chain
+                ? 'Fixed POKE burn. Competitive SOL prize from the Tournament Treasury.'
+                : 'Entry held at join. Competitive prize from the field pool.'}
+            </p>
           </div>
           <Link href="/tournaments">View complete calendar →</Link>
         </header>
@@ -323,11 +375,7 @@ export default function LandingPage() {
                   ))}
                 </div>
               ) : null}
-              <TournamentEconomicsBlock
-                economics={flagship.economics}
-                entryFee={flagship.entryFee}
-                compact
-              />
+              <TournamentEconomicsBlock tournament={flagship} economics={flagship.economics} compact />
               <div className="pa-flag-actions">
                 {flagship.status === 'registration' ? (
                   <Link className="pa-btn pa-btn-primary" href={`/tournament/${flagship.id}`}>Register now</Link>
@@ -343,9 +391,12 @@ export default function LandingPage() {
                   <small>{formatLabel(event.format)}</small>
                   <h4>{event.title}</h4>
                   <p>{eventStatus(event)}{event.winner ? ` · ${event.winner}` : ''}</p>
-                  <strong>Entry {formatPoke(event.entryFee)}</strong>
+                  <strong>
+                    {event.rail === 'sol_chain' ? 'Burn' : 'Entry'}{' '}
+                    {formatTournamentEntry(event)}
+                  </strong>
                   <span style={{ display: 'block', color: '#8ea0c0', fontSize: '0.7rem' }}>
-                    Treasury prize {formatPoke(event.economics.prizePool)}
+                    Prize {formatTournamentPrize(event)}
                   </span>
                   <Link href={`/tournament/${event.id}`}>{event.status === 'registration' ? 'Join tier' : 'Watch'}</Link>
                 </article>

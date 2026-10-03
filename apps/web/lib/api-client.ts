@@ -2,6 +2,7 @@ import { isDemoAuthEnabled } from './demo-auth';
 import type { ClientMessage, ServerMessage } from './protocol';
 
 type MessageHandler = (message: ServerMessage) => void;
+export type ArenaConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 type WalletAuthHandlers = {
   address: string;
@@ -28,6 +29,7 @@ export class ArenaApiClient {
   private socket: WebSocket | null = null;
   private opening: Promise<void> | null = null;
   private readonly handlers = new Set<MessageHandler>();
+  private readonly connectionStateHandlers = new Set<(state: ArenaConnectionState) => void>();
   private readonly pending = new Map<string, {
     resolve: (message: ServerMessage) => void;
     reject: (error: Error) => void;
@@ -38,13 +40,19 @@ export class ArenaApiClient {
   private authMode: 'demo' | 'wallet' | null = null;
   private walletAuth: WalletAuthHandlers | null = null;
   private resubscribeIds: string[] = [];
-  connectionState: 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' = 'idle';
+  connectionState: ArenaConnectionState = 'idle';
 
   constructor(private readonly url = getDefaultWsUrl()) {}
 
   onMessage(handler: MessageHandler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  onConnectionState(handler: (state: ArenaConnectionState) => void): () => void {
+    this.connectionStateHandlers.add(handler);
+    handler(this.connectionState);
+    return () => this.connectionStateHandlers.delete(handler);
   }
 
   getIdentity(): string | null {
@@ -94,7 +102,11 @@ export class ArenaApiClient {
   }
 
   async request(message: ClientMessage): Promise<ServerMessage> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    return this.sendRequest(message, true);
+  }
+
+  private async sendRequest(message: ClientMessage, waitForReady: boolean): Promise<ServerMessage> {
+    if (waitForReady && (this.opening || !this.socket || this.socket.readyState !== WebSocket.OPEN)) {
       await this.openSocket();
     }
     const requestId = createRequestId();
@@ -117,41 +129,54 @@ export class ArenaApiClient {
   close(): void {
     this.intentionallyClosed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.rejectPending(new Error('WebSocket closed by client.'));
     this.socket?.close();
     this.socket = null;
-    this.connectionState = 'closed';
+    this.setConnectionState('closed');
   }
 
-  private async runWalletAuth(handlers: WalletAuthHandlers): Promise<ServerMessage> {
-    const challenge = await this.request({ type: 'auth.challenge', address: handlers.address });
+  private async runWalletAuth(
+    handlers: WalletAuthHandlers,
+    waitForReady = true,
+  ): Promise<ServerMessage> {
+    const challenge = await this.sendRequest(
+      { type: 'auth.challenge', address: handlers.address },
+      waitForReady,
+    );
     if (challenge.type !== 'auth.challenge') {
       throw new Error('Server did not return an authentication challenge.');
     }
     const signature = await handlers.signMessage(challenge.message);
-    return this.request({
+    return this.sendRequest({
       type: 'auth.verify',
       address: handlers.address,
       signature,
       nonce: challenge.nonce,
-    });
+    }, waitForReady);
   }
 
   private openSocket(options: { restore?: boolean } = {}): Promise<void> {
+    if (this.opening) return this.opening;
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
-    if (this.opening) return this.opening;
 
     const shouldRestore = options.restore !== false;
-    this.connectionState = this.connectionState === 'open' ? 'reconnecting' : 'connecting';
+    this.setConnectionState(this.connectionState === 'open' ? 'reconnecting' : 'connecting');
     this.opening = new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url);
       this.socket = socket;
-      socket.onopen = () => {
-        this.connectionState = 'open';
-        this.opening = null;
-        resolve();
-        if (shouldRestore) void this.restoreSession();
+      socket.onopen = async () => {
+        try {
+          if (shouldRestore) await this.restoreSession();
+          this.setConnectionState('open');
+          this.opening = null;
+          resolve();
+        } catch (error) {
+          this.opening = null;
+          reject(error instanceof Error ? error : new Error(String(error)));
+          socket.close();
+        }
       };
       socket.onerror = () => {
         this.opening = null;
@@ -159,7 +184,8 @@ export class ArenaApiClient {
       };
       socket.onclose = () => {
         this.opening = null;
-        this.connectionState = this.intentionallyClosed ? 'closed' : 'reconnecting';
+        this.rejectPending(new Error('WebSocket connection closed.'));
+        this.setConnectionState(this.intentionallyClosed ? 'closed' : 'reconnecting');
         if (!this.intentionallyClosed) this.scheduleReconnect();
       };
       socket.onmessage = event => {
@@ -190,20 +216,26 @@ export class ArenaApiClient {
 
   private async restoreSession(): Promise<void> {
     if (!this.identity) return;
-    try {
-      if (this.authMode === 'wallet' && this.walletAuth) {
-        await this.runWalletAuth(this.walletAuth);
-      } else if (this.authMode === 'demo') {
-        await this.request({ type: 'identify', playerId: this.identity });
-      } else {
-        return;
-      }
-      for (const matchId of this.resubscribeIds) {
-        await this.request({ type: 'match.subscribe', matchId });
-      }
-    } catch {
-      // Reconnect restoration is best-effort; UI surfaces connection state.
+    if (this.authMode === 'wallet' && this.walletAuth) {
+      await this.runWalletAuth(this.walletAuth, false);
+    } else if (this.authMode === 'demo') {
+      await this.sendRequest({ type: 'identify', playerId: this.identity }, false);
+    } else {
+      return;
     }
+    for (const matchId of this.resubscribeIds) {
+      await this.sendRequest({ type: 'match.subscribe', matchId }, false);
+    }
+  }
+
+  private setConnectionState(state: ArenaConnectionState): void {
+    this.connectionState = state;
+    for (const handler of this.connectionStateHandlers) handler(state);
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
   }
 }
 
@@ -220,6 +252,38 @@ export function formatSolLamports(lamports: number | string): string {
   const value = typeof lamports === 'string' ? Number(lamports) : lamports;
   if (!Number.isFinite(value)) return '— SOL';
   return `${(value / 1e9).toLocaleString('en-US', { maximumFractionDigits: 9 })} SOL`;
+}
+
+/** Fields needed to show cup prize/entry without mixing rails. */
+export type TournamentMoneyFields = {
+  rail?: 'legacy_poke' | 'sol_chain' | null;
+  entryFee?: number;
+  entryAtoms?: number;
+  burnFeeAtoms?: number;
+  prizeLamports?: number;
+  economics?: { prizePool?: number; entryFee?: number } | null;
+};
+
+/** Chain cups pay SOL from the treasury; legacy cups derive POKE from entry holds. */
+export function formatTournamentPrize(tournament: TournamentMoneyFields | null | undefined): string {
+  if (!tournament) return '—';
+  if (tournament.rail === 'sol_chain') {
+    if (tournament.prizeLamports === undefined) return '—';
+    return formatSolLamports(tournament.prizeLamports);
+  }
+  const pool = tournament.economics?.prizePool;
+  return pool !== undefined ? formatPoke(pool) : '—';
+}
+
+/** Chain cups charge a fixed POKE burn after fill; legacy cups hold entryFee at join. */
+export function formatTournamentEntry(tournament: TournamentMoneyFields | null | undefined): string {
+  if (!tournament) return '—';
+  if (tournament.rail === 'sol_chain') {
+    const burn = tournament.burnFeeAtoms ?? tournament.entryAtoms;
+    return burn !== undefined ? formatPoke(burn) : '—';
+  }
+  const fee = tournament.entryFee ?? tournament.economics?.entryFee;
+  return fee !== undefined ? formatPoke(fee) : '—';
 }
 
 export function formatUsdCents(cents: number): string {

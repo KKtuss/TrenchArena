@@ -65,24 +65,33 @@ export class InMemoryTournamentStore implements TournamentStore {
       if (tournament.status !== 'registration') {
         throw new Error('Tournament registration is closed.');
       }
-      if (tournament.players.some(player => player.id === input.playerId)) {
+      const existing = tournament.players.find(player => player.id === input.playerId);
+      if (existing && existing.status !== 'withdrawn') {
         throw new Error(`Player is already registered: ${input.playerId}`);
       }
-      if (tournament.players.filter(player => player.status === 'registered').length >= tournament.maxPlayers) {
-        throw new Error('Tournament player limit has been reached.');
-      }
+      const isFull = tournament.players.filter(player => player.status === 'registered').length >= tournament.maxPlayers;
       if (!input.displayName.trim() || !input.team.trim()) {
         throw new Error('Player display name and team are required.');
       }
+      const registrationOrder = tournament.players.reduce(
+        (max, player) => Math.max(max, player.registrationOrder),
+        -1,
+      ) + 1;
       const player: DurableTournamentPlayer = {
         id: input.playerId,
         displayName: input.displayName,
         team: input.team,
         eligible: true,
-        status: 'registered',
-        registrationOrder: tournament.players.length,
+        status: isFull ? 'waitlisted' : 'registered',
+        registrationOrder,
+        teamLocked: false,
+        burnFeePaid: false,
       };
-      tournament.players.push(player);
+      if (existing) {
+        Object.assign(existing, player);
+      } else {
+        tournament.players.push(player);
+      }
       tournament.updatedAt = Date.now();
       return structuredClone(player);
     });

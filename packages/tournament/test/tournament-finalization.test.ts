@@ -1,10 +1,39 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createTournamentPlayerId, TEAM_FINALIZATION_MS, TournamentService } from '../src';
+import {
+  BURN_PAYMENT_WINDOW_MS,
+  createTournamentPlayerId,
+  TEAM_FINALIZATION_MS,
+  TournamentService,
+} from '../src';
 import { TEAM_ONE, TEAM_TWO } from './fixtures';
 
 const PLAYERS = ['player-1', 'player-2', 'player-3', 'player-4'].map(createTournamentPlayerId);
+
+test('chain tournaments require the fixed 32-player field and burn fee', async () => {
+  const service = new TournamentService();
+  await assert.rejects(
+    () => service.createTournament({
+      title: 'Invalid Chain Cup',
+      format: 'gen9ou',
+      maxPlayers: 4,
+      rail: 'sol_chain',
+      entryAtoms: 10_000,
+    }),
+    /fixed 32-player field/i,
+  );
+  await assert.rejects(
+    () => service.createTournament({
+      title: 'Invalid Fee Cup',
+      format: 'gen9ou',
+      maxPlayers: 32,
+      rail: 'sol_chain',
+      entryAtoms: 9_999,
+    }),
+    /exactly 10000 atoms/i,
+  );
+});
 
 test('a full custom field opens one shared 5-minute finalization and then starts', async () => {
   let now = 1_000_000;
@@ -85,4 +114,67 @@ test('leaving before the deadline reopens registration and releases the shared t
     () => service.startTournament(left.id),
     /power of two/i,
   );
+});
+
+test('chain payment finalization replaces unpaid players sequentially before the roster locks', async () => {
+  let now = 20_000;
+  const service = new TournamentService({ now: () => now });
+  const tournament = await service.createTournament({
+    title: 'Chain Cup',
+    format: 'gen9ou',
+    ruleset: 'gen9cup',
+    maxPlayers: 32,
+    rail: 'sol_chain',
+    entryAtoms: 10_000,
+    prizeLamports: 100,
+  });
+  await service.openRegistration(tournament.id);
+  const players = [
+    ...Array.from({ length: 32 }, (_, index) => `chain-${index + 1}`),
+    'wait-1',
+  ].map(createTournamentPlayerId);
+  for (const [index, playerId] of players.entries()) {
+    await service.registerPlayer(tournament.id, {
+      playerId,
+      displayName: playerId,
+      team: index % 2 === 0 ? TEAM_ONE : TEAM_TWO,
+    });
+  }
+
+  const opened = await service.beginTeamFinalization(tournament.id);
+  assert.equal(opened.finalizesAt, now + BURN_PAYMENT_WINDOW_MS);
+  await assert.rejects(
+    () => service.startTournament(tournament.id),
+    /payment finalization is incomplete/i,
+  );
+  for (const playerId of players.slice(0, 31)) {
+    await service.markBurnFeePaid(tournament.id, playerId!);
+  }
+
+  now = opened.finalizesAt!;
+  const replacement = await service.advanceBurnFeeWindow(tournament.id);
+  assert.equal(replacement.promotedPlayerId, players[32]);
+  assert.equal(replacement.readyToFinalize, false);
+  assert.equal(
+    replacement.tournament.players.find(player => player.id === players[31])?.status,
+    'withdrawn',
+  );
+  assert.equal(
+    replacement.tournament.players.find(player => player.id === players[32])?.status,
+    'registered',
+  );
+
+  await service.markBurnFeePaid(tournament.id, players[32]!);
+  now = replacement.tournament.finalizesAt!;
+  const finalized = await service.advanceBurnFeeWindow(tournament.id);
+  assert.equal(finalized.readyToFinalize, true);
+  assert.equal(finalized.tournament.finalizesAt, now);
+  assert.equal(
+    finalized.tournament.players
+      .filter(player => player.status === 'registered')
+      .every(player => player.burnFeePaid === true),
+    true,
+  );
+  const started = await service.startTournament(tournament.id);
+  assert.equal(started.status, 'in-progress');
 });

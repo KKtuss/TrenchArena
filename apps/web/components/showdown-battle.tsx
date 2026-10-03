@@ -399,6 +399,7 @@ export function ShowdownBattle({
   const [choiceLocked, setChoiceLocked] = useState(false);
   const [retainedChoices, setRetainedChoices] = useState<FightChoice[]>([]);
   const [retainedTeraType, setRetainedTeraType] = useState<string>();
+  const [showBattleLog, setShowBattleLog] = useState(false);
   const watching = mode === 'watch';
   const backgroundName = SHOWDOWN_BATTLE_BACKGROUNDS[
     stableHash(matchId) % SHOWDOWN_BATTLE_BACKGROUNDS.length
@@ -615,6 +616,12 @@ export function ShowdownBattle({
     setTeraArmed(false);
   }, [request?.rqid, teraType]);
 
+  useEffect(() => {
+    setShowBattleLog(false);
+  }, [matchId]);
+
+  const battleLogId = `showdown-log-${stableHash(matchId)}`;
+
   return (
     <section
       className={`showdown-battle-root dark${watching ? ' is-watch' : ''}${battleView?.result ? ` is-settled is-${battleView.result.status}` : ''}`}
@@ -638,13 +645,15 @@ export function ShowdownBattle({
             watching={watching}
           />
         </div>
-        <div
-          ref={logRef}
-          className="battle-log"
-          data-testid="showdown-log"
-          hidden={watching}
-          aria-hidden={watching}
-        />
+        <div className={`showdown-battle-log-drawer${showBattleLog ? ' is-open' : ''}`}>
+          <div
+            ref={logRef}
+            id={battleLogId}
+            className="battle-log"
+            data-testid="showdown-log"
+            aria-hidden={!showBattleLog || watching}
+          />
+        </div>
       </div>
       {watching ? (
       <div className="showdown-battle-controls is-idle">
@@ -657,7 +666,20 @@ export function ShowdownBattle({
       <div className={`showdown-battle-controls${visibleChoices.length ? '' : ' is-idle'}${controlsLocked ? ' is-choice-locked' : ''} is-${phaseKey}`}>
         <div className="showdown-battle-controls-header">
           <span className="showdown-controls-label">Fight controls</span>
-          <span className="showdown-phase">{phaseLabel}</span>
+          <div className="showdown-battle-controls-status">
+            <span className="showdown-phase">{phaseLabel}</span>
+            <button
+              type="button"
+              className="showdown-log-toggle"
+              aria-controls={battleLogId}
+              aria-expanded={showBattleLog}
+              aria-label={showBattleLog ? 'Hide battle log' : 'Show battle log'}
+              onClick={() => setShowBattleLog(current => !current)}
+            >
+              <span aria-hidden="true">{showBattleLog ? '⌄' : '⌃'}</span>
+              <span>Battle log</span>
+            </button>
+          </div>
         </div>
         {visibleChoices.length ? (
           <div className="fight-dock">

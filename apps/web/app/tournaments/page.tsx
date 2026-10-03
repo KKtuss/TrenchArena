@@ -6,14 +6,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke } from '@/lib/api-client';
+import { formatPoke, formatTournamentEntry, formatTournamentPrize } from '@/lib/api-client';
 import { isLocalTestMode } from '@/lib/local-test-mode';
 import {
   TOURNAMENT_ENTRY_POKE,
+  TOURNAMENT_BURN_FEE_POKE,
   TOURNAMENT_FIELD_SIZE,
   buildTournamentSchedule,
   formatCountdown,
-  previewTreasuryPrize,
   scheduleCtaLabel,
   scheduleStatusLabel,
   type ScheduleSlot,
@@ -40,6 +40,7 @@ export default function TournamentsPage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const chain = Boolean(snapshot?.chainEconomyEnabled);
   const schedule = useMemo(
     () => buildTournamentSchedule(snapshot?.tournaments ?? [], now ?? Date.now(), {
       allAvailable: localTestMode,
@@ -115,6 +116,7 @@ export default function TournamentsPage() {
               slot={slot}
               now={now}
               busy={busy}
+              chain={chain}
               teamReady={slot.format.teamMode === 'custom'
                 ? Boolean(playerId && readSavedTeam(playerId, slot.rulesetId)?.validated
                   && readSavedTeam(playerId, slot.rulesetId)?.paste.trim())
@@ -166,21 +168,25 @@ export default function TournamentsPage() {
             </div>
             <span>Collateral</span>
           </header>
-          <p>Each side posts collateral. Large stakes possible. One 2% fee from the gross pool at match start.</p>
+          <p>
+            {chain
+              ? 'Each side posts SOL collateral. One 2% fee from the gross pool at match start.'
+              : 'Each side posts POKE collateral. One 2% fee from the gross pool at settlement.'}
+          </p>
           <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/arena">Open arena</Link>
         </article>
         <article className="pa-mode-panel cup">
           <header>
             <div>
               <small>Tournament</small>
-              <h3>Treasury-funded</h3>
+              <h3>{chain ? 'Treasury-funded' : 'Field-funded'}</h3>
             </div>
-            <span>Low entry</span>
+            <span>{chain ? 'Burn fee' : 'Entry hold'}</span>
           </header>
           <p>
-            About $5 of POKE is burned at bracket lock. The prize is SOL from the Tournament Treasury,
-            not player collateral.
-            {snapshot?.chainEconomyEnabled ? '' : ` (Legacy mock entry ${formatPoke(TOURNAMENT_ENTRY_POKE)}.)`}
+            {chain
+              ? `${formatPoke(TOURNAMENT_BURN_FEE_POKE)} of POKE is paid after the field fills and burned at roster lock. The prize is SOL from the Tournament Treasury, not player collateral.`
+              : `${formatPoke(TOURNAMENT_ENTRY_POKE)} POKE is held at join. The champion prize is 90% of held entries — not a separate treasury vault.`}
           </p>
           <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/treasury">See funding</Link>
         </article>
@@ -203,19 +209,19 @@ function ScheduleCard({
   slot,
   now,
   busy,
+  chain,
   teamReady,
   onJoin,
 }: {
   slot: ScheduleSlot;
   now: number | null;
   busy: boolean;
+  chain: boolean;
   teamReady: boolean | null;
   onJoin: () => void;
 }) {
   const joinable = slot.when === 'CURRENT';
-  const prizeKnown = joinable;
-  const economics = slot.tournament?.economics
-    ?? previewTreasuryPrize(TOURNAMENT_ENTRY_POKE, TOURNAMENT_FIELD_SIZE);
+  const prizeKnown = joinable && Boolean(slot.tournament);
   const players = slot.tournament?.playerCount ?? 0;
   const maxPlayers = slot.tournament?.maxPlayers ?? TOURNAMENT_FIELD_SIZE;
   const status = scheduleStatusLabel(slot);
@@ -229,7 +235,13 @@ function ScheduleCard({
   const countdownLabel = locking ? 'Locks in' : now != null && now >= slot.startsAt ? 'Window' : 'Starts in';
   const href = joinable && slot.tournament ? `/tournament/${slot.tournament.id}` : undefined;
   const isGen1Cup = slot.format.id === 'gen1cup';
-  const prize = prizeKnown ? economics.prizePool.toLocaleString('en-US') : 'TBD';
+  const isChain = slot.tournament?.rail === 'sol_chain' || (!slot.tournament && chain);
+  const prize = prizeKnown
+    ? formatTournamentPrize(slot.tournament)
+    : 'TBD';
+  const entry = slot.tournament
+    ? formatTournamentEntry(slot.tournament)
+    : formatPoke(isChain ? TOURNAMENT_BURN_FEE_POKE : TOURNAMENT_ENTRY_POKE);
 
   return (
     <article className={`pa-schedule-card ${slot.kind} is-format is-${slot.format.accent}${isGen1Cup ? ' is-gen1' : ''}${joinable ? '' : ' is-upcoming'}`}>
@@ -255,16 +267,15 @@ function ScheduleCard({
 
       <div className="pa-schedule-card-close">
         <div className="pa-schedule-prize">
-          <small>Treasury prize</small>
+          <small>{isChain ? 'Treasury prize' : 'Prize pool'}</small>
           <strong>
             <em>{prize}</em>
-            {prizeKnown ? <span>POKE</span> : null}
           </strong>
         </div>
         <dl className="pa-schedule-facts">
           <div>
-            <dt>Entry</dt>
-            <dd>{formatPoke(TOURNAMENT_ENTRY_POKE)}</dd>
+            <dt>{isChain ? 'Burn fee' : 'Entry'}</dt>
+            <dd>{entry}</dd>
           </div>
           <div>
             <dt>Status</dt>

@@ -36,10 +36,13 @@ export type TournamentMatchStatus =
   | 'tied'
   | 'interrupted';
 
-export type RegisteredPlayerStatus = 'registered' | 'withdrawn';
+export type RegisteredPlayerStatus = 'registered' | 'withdrawn' | 'waitlisted';
 
 /** Shared window after a custom field fills, before the bracket is built. */
 export const TEAM_FINALIZATION_MS = 5 * 60 * 1000;
+export const BURN_PAYMENT_WINDOW_MS = 2 * 60 * 1000;
+export const CHAIN_TOURNAMENT_MAX_PLAYERS = 32;
+export const TOURNAMENT_BURN_FEE_ATOMS = 10_000;
 
 export interface TournamentPlayer {
   id: TournamentPlayerId;
@@ -50,6 +53,7 @@ export interface TournamentPlayer {
   registrationOrder: number;
   /** Set when the player locks early, or when the shared deadline locks everyone. */
   teamLocked?: boolean;
+  burnFeePaid?: boolean;
 }
 
 export interface BattleMatchResult {
@@ -109,6 +113,8 @@ export interface Tournament {
    * The bracket is built when this instant is reached, not when the lobby fills.
    */
   finalizesAt?: number;
+  paymentEndsAt?: number;
+  paymentPlayerId?: TournamentPlayerId;
 }
 
 export interface CreateTournamentInput {

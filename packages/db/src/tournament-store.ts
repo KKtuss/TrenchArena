@@ -3,9 +3,10 @@ export interface DurableTournamentPlayer {
   displayName: string;
   team: string;
   eligible: true;
-  status: 'registered' | 'withdrawn';
+  status: 'registered' | 'withdrawn' | 'waitlisted';
   registrationOrder: number;
   teamLocked?: boolean;
+  burnFeePaid?: boolean;
 }
 
 export interface DurableTournamentMatch {
@@ -48,6 +49,8 @@ export interface DurableTournament {
   startedAt?: number;
   completedAt?: number;
   finalizesAt?: number;
+  paymentEndsAt?: number;
+  paymentPlayerId?: string;
 }
 
 export interface RegisterTournamentPlayerInput {

@@ -16,6 +16,7 @@ export function publicTournamentPlayer(
     status: player.status,
     registrationOrder: player.registrationOrder,
     ...(player.teamLocked ? { teamLocked: true } : {}),
+    ...(player.burnFeePaid ? { burnFeePaid: true } : {}),
   };
   if (player.id === viewerId) return { ...visible, team: player.team };
   return visible;

@@ -281,6 +281,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arena-escrow-pinocchio"
+version = "0.1.0"
+dependencies = [
+ "pinocchio",
+ "pinocchio-system",
+ "pinocchio-token",
+]
+
+[[package]]
 name = "ark-bn254"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1046,6 +1055,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "five8_const"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26dec3da8bc3ef08f2c04f61eab298c3ab334523e55f076354d6d6f613799a7b"
+dependencies = [
+ "five8_core",
+]
+
+[[package]]
+name = "five8_core"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2551bf44bc5f776c15044b9b94153a00198be06743e262afaaa61f11ac7523a5"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1541,6 +1565,42 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pinocchio"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c33b58567c11b07749cefbb8320ac023f3387c57807aeb8e3b1262501b6e9f0"
+
+[[package]]
+name = "pinocchio-pubkey"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c6b20fcebc172c3cd3f54114b0241b48fa8e30893ced2eb4927aaba5e3a0ba5"
+dependencies = [
+ "five8_const",
+ "pinocchio",
+]
+
+[[package]]
+name = "pinocchio-system"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f75423420ae70aa748cf611cab14cfd00af08d0d2d3d258cb0cf5e2880ec19c"
+dependencies = [
+ "pinocchio",
+ "pinocchio-pubkey",
+]
+
+[[package]]
+name = "pinocchio-token"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d037f645db5ed4df9163362f1716932feb987a82f70caf15d0259cfeef82f4c"
+dependencies = [
+ "pinocchio",
+ "pinocchio-pubkey",
+]
 
 [[package]]
 name = "polyval"

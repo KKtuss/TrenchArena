@@ -4,7 +4,12 @@ import Link from 'next/link';
 
 import { TrainerName } from '@/components/profile-trainer';
 import { Badge, Panel } from '@/components/shell';
-import { formatPoke, formatRoomAmount } from '@/lib/api-client';
+import {
+  formatPoke,
+  formatRoomAmount,
+  formatTournamentEntry,
+  formatTournamentPrize,
+} from '@/lib/api-client';
 import type {
   CasualEconomicsPreview,
   CasualRoom,
@@ -228,11 +233,11 @@ export function TournamentCard({ tournament }: { tournament: TournamentSummary }
         </div>
         <div>
           <dt>Treasury prize</dt>
-          <dd>{formatPoke(tournament.economics.prizePool)}</dd>
+          <dd>{formatTournamentPrize(tournament)}</dd>
         </div>
         <div>
-          <dt>Entry</dt>
-          <dd>{formatPoke(tournament.entryFee)}</dd>
+          <dt>{tournament.rail === 'sol_chain' ? 'Burn fee' : 'Entry'}</dt>
+          <dd>{formatTournamentEntry(tournament)}</dd>
         </div>
       </dl>
       <Badge tone={statusTone(tournament.status)}>{eventStatusLabel(tournament)}</Badge>
@@ -306,11 +311,15 @@ export function TournamentEvent({
           </div>
           <div>
             <dt>Treasury prize</dt>
-            <dd>{formatPoke(tournament.economics.prizePool)}</dd>
+            <dd>{formatTournamentPrize(tournament)}</dd>
           </div>
           <div>
-            <dt>{settled ? 'Entry was' : 'Entry fee'}</dt>
-            <dd>{formatPoke(tournament.entryFee)}</dd>
+            <dt>
+              {tournament.rail === 'sol_chain'
+                ? (settled ? 'Burn was' : 'Burn fee')
+                : (settled ? 'Entry was' : 'Entry fee')}
+            </dt>
+            <dd>{formatTournamentEntry(tournament)}</dd>
           </div>
           <div>
             <dt>Status</dt>
@@ -355,19 +364,27 @@ export function EconomyBreakdown({ economics }: { economics: CasualEconomicsPrev
   );
 }
 
-export function CompetitivePaths() {
+export function CompetitivePaths({ chain = false }: { chain?: boolean }) {
   return (
     <div className="pa-paths">
       <article className="pa-path casual">
         <small>Casual</small>
-        <strong>Wager SOL</strong>
-        <p>Ready up, wait for the countdown, then pick three from a random curated six — or bring your own Gen 9 OU team. Each side posts SOL collateral; one 2% fee comes off the gross pool at match start.</p>
+        <strong>{chain ? 'Wager SOL' : 'Wager POKE'}</strong>
+        <p>
+          {chain
+            ? 'Ready up, wait for the countdown, then pick three from a random curated six — or bring your own Gen 9 OU team. Each side posts SOL collateral; one 2% fee comes off the gross pool at match start.'
+            : 'Ready up, wait for the countdown, then pick three from a random curated six — or bring your own Gen 9 OU team. Each side posts POKE collateral; one 2% fee comes off the gross pool at settlement.'}
+        </p>
         <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Find a fight</Link>
       </article>
       <article className="pa-path cup">
         <small>Tournament</small>
-        <strong>Low entry. Treasury prizes.</strong>
-        <p>Compete for prizes funded by the Tournament Treasury, not by large player collateral.</p>
+        <strong>{chain ? 'Burn fee. Treasury prizes.' : 'Entry hold. Prize from the field.'}</strong>
+        <p>
+          {chain
+            ? 'Compete for SOL prizes funded by the Tournament Treasury. A fixed POKE burn is paid after the field fills.'
+            : 'Compete for a POKE prize funded by held entry fees (90% to the champion). Casual collateral never enters this loop.'}
+        </p>
         <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/tournaments">Browse cups</Link>
       </article>
     </div>
@@ -375,29 +392,46 @@ export function CompetitivePaths() {
 }
 
 export function TournamentEconomicsBlock({
+  tournament,
   economics,
   entryFee,
   compact = false,
 }: {
+  tournament?: TournamentSummary | null;
   economics?: TournamentEconomicsPreview | null;
   entryFee?: number;
   compact?: boolean;
 }) {
-  const entry = entryFee ?? economics?.entryFee;
+  const money = tournament ?? {
+    rail: undefined,
+    entryFee,
+    economics: economics ?? null,
+  };
+  const chain = money.rail === 'sol_chain';
   return (
     <div className={`pa-cup-econ${compact ? ' compact' : ''}`}>
-      <div><span>Entry fee</span><strong>{entry !== undefined ? formatPoke(entry) : '—'}</strong></div>
-      <div><span>Treasury-funded prize</span><strong>{economics ? formatPoke(economics.prizePool) : '—'}</strong></div>
+      <div>
+        <span>{chain ? 'Burn fee' : 'Entry fee'}</span>
+        <strong>{formatTournamentEntry(money)}</strong>
+      </div>
+      <div>
+        <span>{chain ? 'Treasury prize' : 'Prize pool'}</span>
+        <strong>{formatTournamentPrize(money)}</strong>
+      </div>
       {!compact ? (
         <>
           <div><span>Field size</span><strong>{economics ? `${economics.playerCount} trainers` : '—'}</strong></div>
           <div><span>Prize distribution</span><strong>Champion payout</strong></div>
           <p className="economy-note">
-            Intended funding: Tournament Treasury from creator/dev rewards. Displayed prize is a mock estimate — not an immediately withdrawable balance.
+            {chain
+              ? 'Prize is SOL reserved from the Tournament Treasury. Burn fee is separate and not the prize source.'
+              : 'Prize is 90% of held entry fees paid to the champion. Displayed figure is provisional until the field settles.'}
           </p>
         </>
       ) : (
-        <p className="economy-note">Low entry. Treasury-funded prize. Mock estimate.</p>
+        <p className="economy-note">
+          {chain ? 'Fixed POKE burn. SOL prize from Treasury.' : 'Entry held at join. Prize from the field.'}
+        </p>
       )}
     </div>
   );

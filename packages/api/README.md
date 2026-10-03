@@ -41,6 +41,25 @@ validated before reaching the tournament service; raw Showdown commands are
 not part of the protocol. Responses to requests carry the originating
 `requestId`; broadcast updates are correlated by match event sequence.
 
+## Chain tournament payment lifecycle
+
+Chain tournaments are fixed 32-player fields. `tournament.join` only creates a
+database registration (or waitlist entry); it never transfers POKE. When the
+field reaches 32 registered players, the server opens a two-minute payment
+window. Each registered player separately sends:
+
+```json
+{"type":"tournament.payBurnFee","requestId":"req-5","tournamentId":"..."}
+```
+
+The returned transaction deposits exactly 10,000 POKE into the escrow. Unpaid
+players are removed at the deadline and eligible waitlisted players are
+promoted in registration order, each with a fresh two-minute window. Only
+after a complete, fully paid final roster exists does the keeper reserve the
+SOL prize and burn the 32 POKE entries. An unexpected partial on-chain burn
+fails closed and requires operator reconciliation; the server does not
+compensate partial burns from the treasury.
+
 Server messages include:
 
 - `ready`

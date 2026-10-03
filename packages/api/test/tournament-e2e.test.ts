@@ -468,7 +468,7 @@ test('Casual 1v1 room flow with mocked battle + payout; 2v2 remains unsupported'
 
   report.info(
     'ui-wiring',
-    'Known visual-only / incomplete UI paths: bracket preview (buildMockTournament), NEXT/LATER schedule cards, chain tournament join missing playerPokeAta, Casual 2v2 Coming soon.',
+    'Known visual-only / incomplete UI paths: bracket preview (buildMockTournament), NEXT/LATER schedule cards, Casual 2v2 Coming soon. Chain tournament registration is database-only; payment is a separate fixed-fee flow.',
   );
   report.assertAllPassed('Casual 1v1 E2E + unsupported 2v2');
 });
@@ -581,7 +581,7 @@ test('ApiServer settlement triggers once for a completed cup (mocked battles, de
 
   report.info(
     'ui-wiring',
-    'Chain-backed tournament.join from web UI does not send playerPokeAta / handle tx.intent — mock/legacy join is wired; chain entry is not end-to-end from UI.',
+    'Chain-backed tournament.join is intentionally database-only. The web UI starts the separate fixed-fee payment intent after the 32-player field fills.',
   );
   report.assertAllPassed('ApiServer tournament settlement E2E');
 });

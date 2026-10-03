@@ -128,7 +128,10 @@ test('invalid, duplicate, and premature Casual selections are rejected', async (
   );
 
   const room = await openFullCasualRoom(casual);
-  assert.throws(() => casual.selectTeam(room.id, 'demo-player-1', [0, 1, 2], true), /countdown before team selection/);
+  assert.throws(
+    () => casual.selectTeam(room.id, 'demo-player-1', [0, 1, 2], true),
+    /Waiting for both players to ready up before team selection/,
+  );
   assert.throws(
     () => casual.setReady(room.id, 'demo-player-1', true, 'Charizard\nAbility: Blaze\n- Flamethrower'),
     CasualCustomTeamRejectedError,

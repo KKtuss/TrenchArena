@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/arena-escrow"]
+members = ["programs/arena-escrow", "programs/arena-escrow-pinocchio"]
 resolver = "2"
 
 [profile.release]

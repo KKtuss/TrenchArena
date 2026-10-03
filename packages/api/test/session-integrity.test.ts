@@ -282,7 +282,10 @@ test('a second socket for the same wallet replaces the first session', async () 
       message.type === 'casual.state' && message.room.status === 'cancelled'
     ));
     assert.equal(cancelled.room.status, 'cancelled');
-    assert.equal(await server.economics.getBalance(keypair.address), DEFAULT_DEV_BALANCE_POKE);
+    assert.equal(
+      await server.economics.getBalance(keypair.address),
+      DEFAULT_DEV_BALANCE_POKE + 1_000,
+    );
   } finally {
     await Promise.all([first.close(), second.close(), other.close()]);
     await server.close();

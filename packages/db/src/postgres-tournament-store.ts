@@ -108,13 +108,13 @@ export class PostgresTournamentStore implements TournamentStore {
       if (tournament.status !== 'registration') {
         throw new Error('Tournament registration is closed.');
       }
-      const existing = await client.query(
-        `SELECT player_id FROM tournament_players
+      const existing = await client.query<{ status: string }>(
+        `SELECT status FROM tournament_players
          WHERE tournament_id = $1 AND player_id = $2
          FOR UPDATE`,
         [input.tournamentId, input.playerId],
       );
-      if (existing.rows[0]) {
+      if (existing.rows[0] && existing.rows[0].status !== 'withdrawn') {
         throw new Error(`Player is already registered: ${input.playerId}`);
       }
       const registered = await client.query<{ count: string }>(
@@ -122,45 +122,76 @@ export class PostgresTournamentStore implements TournamentStore {
          WHERE tournament_id = $1 AND status = 'registered'`,
         [input.tournamentId],
       );
-      if (Number(registered.rows[0]?.count ?? 0) >= tournament.maxPlayers) {
-        throw new Error('Tournament player limit has been reached.');
-      }
+      const isFull = Number(registered.rows[0]?.count ?? 0) >= tournament.maxPlayers;
       if (!input.displayName.trim() || !input.team.trim()) {
         throw new Error('Player display name and team are required.');
       }
 
-      const order = await client.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM tournament_players WHERE tournament_id = $1`,
+      const order = await client.query<{ max: string | null }>(
+        `SELECT MAX(registration_order)::text AS max FROM tournament_players WHERE tournament_id = $1`,
         [input.tournamentId],
       );
-      const registrationOrder = Number(order.rows[0]?.count ?? 0);
+      const registrationOrder = Number(order.rows[0]?.max ?? -1) + 1;
       await this.ensureWallet(client, input.playerId);
 
-      if (tournament.rail !== 'sol_chain' && tournament.entryFee > 0) {
+      if (!isFull && tournament.rail !== 'sol_chain' && tournament.entryFee > 0) {
         const holdKey = `tournament:${input.tournamentId}:${input.playerId}`;
-        await this.debit(client, input.playerId, tournament.entryFee);
-        await client.query(
-          `INSERT INTO holds (
-             hold_key, player_id, amount, purpose, status, tournament_id
-           ) VALUES ($1, $2, $3::bigint, 'tournament_entry', 'reserved', $4)`,
-          [holdKey, input.playerId, pokeToPg(tournament.entryFee), input.tournamentId],
+        await this.reserveTournamentEntryHold(
+          client,
+          holdKey,
+          input.playerId,
+          tournament.entryFee,
+          input.tournamentId,
         );
       }
 
+      const status: DurableTournamentPlayer['status'] = isFull ? 'waitlisted' : 'registered';
       const player: DurableTournamentPlayer = {
         id: input.playerId,
         displayName: input.displayName,
         team: input.team,
         eligible: true,
-        status: 'registered',
+        status,
         registrationOrder,
+        teamLocked: false,
+        burnFeePaid: false,
       };
-      await client.query(
-        `INSERT INTO tournament_players (
-           tournament_id, player_id, display_name, team, eligible, status, registration_order
-         ) VALUES ($1, $2, $3, $4, TRUE, 'registered', $5)`,
-        [input.tournamentId, input.playerId, input.displayName, input.team, registrationOrder],
-      );
+      if (existing.rows[0]) {
+        await client.query(
+          `UPDATE tournament_players
+           SET display_name = $3,
+               team = $4,
+               eligible = TRUE,
+               status = $5,
+               registration_order = $6,
+               team_locked = FALSE,
+               burn_fee_paid = FALSE
+           WHERE tournament_id = $1 AND player_id = $2`,
+          [
+            input.tournamentId,
+            input.playerId,
+            input.displayName,
+            input.team,
+            status,
+            registrationOrder,
+          ],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO tournament_players (
+             tournament_id, player_id, display_name, team, eligible, status, registration_order,
+             team_locked, burn_fee_paid
+           ) VALUES ($1, $2, $3, $4, TRUE, $5, $6, FALSE, FALSE)`,
+          [
+            input.tournamentId,
+            input.playerId,
+            input.displayName,
+            input.team,
+            status,
+            registrationOrder,
+          ],
+        );
+      }
       await client.query(
         `UPDATE tournaments SET updated_at = now() WHERE id = $1`,
         [input.tournamentId],
@@ -342,10 +373,11 @@ export class PostgresTournamentStore implements TournamentStore {
       `INSERT INTO tournaments (
          id, title, format, max_players, bracket_seed, match_timeout_ms, status,
          host_id, entry_fee, rail, entry_atoms, entry_quote_id, prize_lamports,
-         winner_id, created_at, updated_at, started_at, completed_at, ruleset, finalizes_at
+         winner_id, created_at, updated_at, started_at, completed_at, ruleset, finalizes_at,
+         payment_ends_at, payment_player_id
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, $10, $11, $12,
-         $13::bigint, $14, $15, $16, $17, $18, $19, $20
+         $13::bigint, $14, $15, $16, $17, $18, $19, $20, $21, $22
        )
        ON CONFLICT (id) DO UPDATE SET
          title = EXCLUDED.title,
@@ -358,7 +390,9 @@ export class PostgresTournamentStore implements TournamentStore {
          updated_at = EXCLUDED.updated_at,
          started_at = EXCLUDED.started_at,
          completed_at = EXCLUDED.completed_at,
-         finalizes_at = EXCLUDED.finalizes_at`,
+         finalizes_at = EXCLUDED.finalizes_at,
+         payment_ends_at = EXCLUDED.payment_ends_at,
+         payment_player_id = EXCLUDED.payment_player_id`,
       [
         tournament.id,
         tournament.title,
@@ -380,6 +414,8 @@ export class PostgresTournamentStore implements TournamentStore {
         tournament.completedAt === undefined ? null : new Date(tournament.completedAt),
         tournament.ruleset ?? 'gen9ou',
         tournament.finalizesAt === undefined ? null : new Date(tournament.finalizesAt),
+        tournament.paymentEndsAt === undefined ? null : new Date(tournament.paymentEndsAt),
+        tournament.paymentPlayerId ?? null,
       ],
     );
   }
@@ -391,14 +427,16 @@ export class PostgresTournamentStore implements TournamentStore {
   ): Promise<void> {
     await client.query(
       `INSERT INTO tournament_players (
-         tournament_id, player_id, display_name, team, eligible, status, registration_order, team_locked
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         tournament_id, player_id, display_name, team, eligible, status, registration_order, team_locked,
+         burn_fee_paid
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (tournament_id, player_id) DO UPDATE SET
          display_name = EXCLUDED.display_name,
          team = EXCLUDED.team,
          eligible = EXCLUDED.eligible,
          status = EXCLUDED.status,
-         team_locked = EXCLUDED.team_locked`,
+         team_locked = EXCLUDED.team_locked,
+         burn_fee_paid = EXCLUDED.burn_fee_paid`,
       [
         tournamentId,
         player.id,
@@ -408,6 +446,7 @@ export class PostgresTournamentStore implements TournamentStore {
         player.status,
         player.registrationOrder,
         player.teamLocked === true,
+        player.burnFeePaid === true,
       ],
     );
   }
@@ -491,6 +530,43 @@ export class PostgresTournamentStore implements TournamentStore {
     }
   }
 
+  private async reserveTournamentEntryHold(
+    client: PoolClient,
+    holdKey: string,
+    playerId: string,
+    amount: number,
+    tournamentId: string,
+  ): Promise<void> {
+    const existing = await client.query<{ status: string }>(
+      'SELECT status FROM holds WHERE hold_key = $1 FOR UPDATE',
+      [holdKey],
+    );
+    if (existing.rows[0] && existing.rows[0].status !== 'released') {
+      throw new Error('Collateral hold already exists.');
+    }
+    await this.debit(client, playerId, amount);
+    if (existing.rows[0]) {
+      await client.query(
+        `UPDATE holds
+         SET player_id = $2,
+             amount = $3::bigint,
+             purpose = 'tournament_entry',
+             status = 'reserved',
+             tournament_id = $4,
+             terminal_at = NULL
+         WHERE hold_key = $1`,
+        [holdKey, playerId, pokeToPg(amount), tournamentId],
+      );
+      return;
+    }
+    await client.query(
+      `INSERT INTO holds (
+         hold_key, player_id, amount, purpose, status, tournament_id
+       ) VALUES ($1, $2, $3::bigint, 'tournament_entry', 'reserved', $4)`,
+      [holdKey, playerId, pokeToPg(amount), tournamentId],
+    );
+  }
+
   private mapTournament(
     row: Record<string, unknown>,
     playerRows: Record<string, unknown>[],
@@ -523,6 +599,7 @@ export class PostgresTournamentStore implements TournamentStore {
         status: player.status as DurableTournamentPlayer['status'],
         registrationOrder: Number(player.registration_order),
         ...(player.team_locked === true ? { teamLocked: true } : {}),
+        ...(player.burn_fee_paid === true ? { burnFeePaid: true } : {}),
       })),
       matchIds: matches.map(match => match.id),
       ...(row.winner_id ? { winner: String(row.winner_id) } : {}),
@@ -537,6 +614,10 @@ export class PostgresTournamentStore implements TournamentStore {
       ...(epoch(row.finalizes_at as Date | null) === undefined
         ? {}
         : { finalizesAt: epoch(row.finalizes_at as Date) }),
+      ...(epoch(row.payment_ends_at as Date | null) === undefined
+        ? {}
+        : { paymentEndsAt: epoch(row.payment_ends_at as Date) }),
+      ...(row.payment_player_id ? { paymentPlayerId: String(row.payment_player_id) } : {}),
     };
   }
 
