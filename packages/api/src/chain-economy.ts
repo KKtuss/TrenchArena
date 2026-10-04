@@ -24,6 +24,7 @@ import {
   previewTreasurySplit,
   sha256Key,
   IX,
+  isRetryableRpcError,
   tournamentEntryAtoms,
   type ArenaChainConfig,
   type IntentVerification,
@@ -79,6 +80,19 @@ export class ChainEconomyDisabledError extends Error {
   constructor() {
     super('Chain economy is not enabled. Set POKEARENA_CHAIN_ECONOMY=true.');
     this.name = 'ChainEconomyDisabledError';
+  }
+}
+
+/**
+ * The settlement transaction may have landed, but the RPC could not say so.
+ * This is not a failed settlement and must not be retried with a new transaction.
+ */
+export class SettlementUnknownError extends Error {
+  readonly retryInMs = 8_000;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'SettlementUnknownError';
   }
 }
 
@@ -887,6 +901,7 @@ export class ChainEconomyService {
       if (!loserId || loserId === win!.playerId) {
         throw new Error('Settled win is missing the opposing player.');
       }
+      await this.markSettlementConfirmed(win);
       await economics.completeCasualWin({
         roomId: room.id,
         winnerId: win!.playerId!,
@@ -895,6 +910,9 @@ export class ChainEconomyService {
         reason: 'casual-win',
       });
       return;
+    }
+    if (tie && tie.status !== 'confirmed' && tie.status !== 'cancelled') {
+      await this.markSettlementConfirmed(tie);
     }
     const opponentId = room.opponentId;
     if (!opponentId) {
@@ -960,9 +978,7 @@ export class ChainEconomyService {
         after => after.status === 3 && after.feeCharged,
       );
     } catch (error) {
-      const latest = await Promise.resolve(
-        this.client!.getMatchEscrowState(roomBytes, 'confirmed'),
-      ).catch(() => undefined);
+      const latest = await this.readEscrow(roomBytes).catch(() => undefined);
       if (!(latest?.status === 3 && latest.feeCharged)) throw error;
     }
   }
@@ -972,6 +988,8 @@ export class ChainEconomyService {
     creatorId: string;
     opponentId: string;
     winnerId?: string;
+    /** Confirm an already-submitted settlement. Never send another transaction. */
+    observeOnly?: boolean;
   }): Promise<import('./mock-economics').ChainPayoutResult> {
     this.requireEnabled();
     if (!this.chainStore) throw new Error('Chain store is required for SOL wagers.');
@@ -996,17 +1014,52 @@ export class ChainEconomyService {
       ...(input.winnerId ? { winnerId: input.winnerId } : {}),
     });
     const roomBytes = uuidToBytes(input.roomId);
-    let state = await this.client!.getMatchEscrowState(roomBytes);
+    const storedSignature = typeof intent.metadata.signature === 'string' ? intent.metadata.signature : '';
+    const phase = String(intent.metadata.settlementPhase ?? '');
+    let state = await this.readSettlementEscrow(input.roomId, intent.id, roomBytes, storedSignature, phase);
+    let resubmitFailedSignature = false;
+    if (state.status !== 4 && phase === 'submitted' && storedSignature) {
+      const outcome = await this.signatureOutcome(storedSignature, input.roomId, intent.id);
+      if (outcome === 'failed') {
+        resubmitFailedSignature = !input.observeOnly;
+        await this.markSettlementRetryable(
+          intent.id,
+          'Settlement signature failed on-chain.',
+          storedSignature,
+        );
+      } else if (outcome === 'confirmed') {
+        state = { ...state, status: 4, feeCharged: state.feeCharged || !isTie };
+      } else {
+        this.logSettlementUnknown({
+          roomId: input.roomId,
+          intentId: intent.id,
+          signature: storedSignature,
+          operation: 'readSignatureOutcome',
+          message: 'Settlement signature is not confirmed yet.',
+        });
+        throw new SettlementUnknownError('Settlement signature is not confirmed yet.');
+      }
+    }
     if (state.status === 4) {
       await this.assertRecordedSettlementAgrees(input.roomId, isTie);
-      if (intent.status !== 'confirmed') {
-        await this.chainStore.setIntentStatus(intent.id, 'confirmed');
-      }
-      await this.rememberIntent(intent.id, { settlementPhase: 'confirmed' });
+      const signature = await this.signatureForSettledEscrow(input.roomId, storedSignature);
+      await this.markSettlementConfirmed(intent, signature);
+    } else if (
+      input.observeOnly
+      || (!resubmitFailedSignature && phase === 'submitted' && storedSignature)
+    ) {
+      this.logSettlementUnknown({
+        roomId: input.roomId,
+        intentId: intent.id,
+        signature: storedSignature,
+        operation: 'observeSettlement',
+        message: 'Submitted settlement is not on the escrow yet.',
+      });
+      throw new SettlementUnknownError('Submitted settlement is not on the escrow yet.');
     } else {
       if (!isTie && state.status === 2 && !state.feeCharged) {
         await this.prepareCasualStart(input.roomId);
-        state = await this.client!.getMatchEscrowState(roomBytes);
+        state = await this.readSettlementEscrow(input.roomId, intent.id, roomBytes, storedSignature, phase);
       }
       if (state.status !== 4) {
         const compatible = isTie
@@ -1038,19 +1091,68 @@ export class ChainEconomyService {
               roomId: roomBytes,
               settlementKey,
             });
-        await this.rememberIntent(intent.id, { settlementPhase: 'submitted' });
-        const result = await this.submitKeeperTransaction(this.keeperKeypair(), [instruction]);
-        if (result.status !== 'confirmed') {
-          const landed = await Promise.resolve(this.client!.getMatchEscrowState(roomBytes)).catch(() => undefined);
+        await this.rememberIntent(intent.id, {
+          settlementPhase: 'submitted',
+          submittedAt: Date.now(),
+        });
+        let result: SentTransaction;
+        try {
+          result = await this.submitKeeperTransaction(this.keeperKeypair(), [instruction]);
+        } catch (error) {
+          if (isRetryableRpcError(error)) {
+            this.logSettlementUnknown({
+              roomId: input.roomId,
+              intentId: intent.id,
+              operation: 'submitSettlement',
+              message: error instanceof Error ? error.message : String(error),
+            });
+            throw new SettlementUnknownError(
+              error instanceof Error ? error.message : 'Settlement submission outcome is unknown.',
+            );
+          }
+          throw error;
+        }
+        if (result.signature) {
+          await this.rememberIntent(intent.id, { signature: result.signature });
+        }
+        if (submissionOutcomeUnknown(result)) {
+          if (intent.status !== 'confirmed') {
+            await this.chainStore.setIntentStatus(intent.id, 'pending', {
+              ...(result.signature ? { signature: result.signature } : {}),
+              error: result.error,
+            });
+          }
+          await this.rememberIntent(intent.id, {
+            settlementPhase: 'submitted',
+            ...(result.signature ? { signature: result.signature } : {}),
+            lastError: result.error ?? 'Settlement outcome unknown.',
+          });
+          const landed = await this.readEscrow(roomBytes).catch(error => {
+            if (isRetryableRpcError(error)) return undefined;
+            throw error;
+          });
+          if (landed?.status !== 4) {
+            this.logSettlementUnknown({
+              roomId: input.roomId,
+              intentId: intent.id,
+              signature: result.signature,
+              operation: 'confirmSettlement',
+              message: result.error ?? 'Settlement outcome unknown.',
+            });
+            throw new SettlementUnknownError(result.error ?? 'Settlement outcome is unknown.');
+          }
+          state = landed;
+          await this.markSettlementConfirmed(intent, result.signature);
+        } else if (result.status !== 'confirmed') {
+          const landed = await this.readEscrow(roomBytes).catch(error => {
+            if (isRetryableRpcError(error)) return undefined;
+            throw error;
+          });
           if (landed?.status === 4) {
-            await this.assertRecordedSettlementAgrees(input.roomId, isTie);
-            if (intent.status !== 'confirmed') {
-              await this.chainStore.setIntentStatus(intent.id, 'confirmed', {
-                signature: result.signature || undefined,
-                error: result.error,
-              });
-            }
-            await this.rememberIntent(intent.id, { settlementPhase: 'confirmed' });
+            state = landed;
+            await this.markSettlementConfirmed(intent, result.signature);
+          } else if (!landed && isRetryableRpcError(result.error ?? '')) {
+            throw new SettlementUnknownError(result.error ?? 'Settlement outcome is unknown.');
           } else {
             await this.markSettlementRetryable(
               intent.id,
@@ -1059,15 +1161,9 @@ export class ChainEconomyService {
             );
             throw new Error(result.error ?? 'SOL match settlement failed.');
           }
+        } else {
+          await this.markSettlementConfirmed(intent, result.signature);
         }
-        await this.chainStore.setIntentStatus(intent.id, 'confirmed', {
-          signature: result.signature,
-          slot: result.slot,
-        });
-        await this.rememberIntent(intent.id, {
-          settlementPhase: 'confirmed',
-          signature: result.signature,
-        });
       }
     }
     // The keeper transaction is already confirmed. `finalized` account reads
@@ -1080,9 +1176,7 @@ export class ChainEconomyService {
         { commitment: 'confirmed', attempts: 8 },
       );
     } catch (error) {
-      const latest = await Promise.resolve(
-        this.client!.getMatchEscrowState(roomBytes, 'confirmed'),
-      ).catch(() => undefined);
+      const latest = await this.readEscrow(roomBytes).catch(() => undefined);
       if (latest?.status === 4) {
         after = latest;
       } else {
@@ -1226,9 +1320,7 @@ export class ChainEconomyService {
         after => after.opponent.equals(opponent),
       );
     } catch (error) {
-      const latest = await Promise.resolve(
-        this.client!.getMatchEscrowState(roomBytes, 'confirmed'),
-      ).catch(() => undefined);
+      const latest = await this.readEscrow(roomBytes).catch(() => undefined);
       if (!latest?.opponent.equals(opponent)) throw error;
     }
   }
@@ -1584,7 +1676,17 @@ export class ChainEconomyService {
         await this.solDepositResolved?.(current, { status: outcome.status, signature });
       }
       return { status: outcome.status };
-    })().finally(() => {
+    })().catch(error => {
+      console.error('[pokearena-rpc]', {
+        operation: 'depositWatcher',
+        intentId: intent.id,
+        ...(intent.roomId ? { roomId: intent.roomId } : {}),
+        signature,
+        classified: isRetryableRpcError(error) ? 'retryable' : 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { status: 'pending' as const };
+    }).finally(() => {
       this.depositWatchers.delete(intent.id);
     });
     this.depositWatchers.set(intent.id, job);
@@ -1627,6 +1729,155 @@ export class ChainEconomyService {
     }
     const win = await this.chainStore.getIntentByScope('sol_match_win', roomId);
     if (win?.status === 'confirmed') throw new Error('Match was already settled as a win.');
+  }
+
+  /**
+   * A settlement intent that is not confirmed yet. Reconciliation uses this
+   * to avoid another escrow read once the intent has already converged.
+   */
+  async unconfirmedSettlement(roomId: string): Promise<{ winnerId?: string } | undefined> {
+    if (!this.chainStore) return undefined;
+    const win = await this.chainStore.getIntentByScope('sol_match_win', roomId);
+    const tie = await this.chainStore.getIntentByScope('sol_match_tie', roomId);
+    const open = (intent?: ChainIntentRow) => Boolean(
+      intent && intent.status !== 'confirmed' && intent.status !== 'cancelled',
+    );
+    if (open(win)) return win?.playerId ? { winnerId: win.playerId } : {};
+    if (open(tie)) return {};
+    return undefined;
+  }
+
+  /** Catches a synchronous throw and a rejected read the same way. */
+  private readEscrow(
+    roomBytes: Uint8Array,
+    commitment: 'processed' | 'confirmed' | 'finalized' = 'confirmed',
+  ): Promise<MatchEscrowState> {
+    return Promise.resolve().then(() => this.client!.getMatchEscrowState(roomBytes, commitment));
+  }
+
+  private async readSettlementEscrow(
+    roomId: string,
+    intentId: string,
+    roomBytes: Uint8Array,
+    signature: string,
+    _phase: string,
+  ): Promise<MatchEscrowState> {
+    try {
+      return await this.client!.getMatchEscrowState(roomBytes, 'confirmed');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isRetryableRpcError(error)) {
+        this.logSettlementUnknown({
+          roomId,
+          intentId,
+          signature,
+          operation: 'getMatchEscrowState',
+          message,
+        });
+        throw new SettlementUnknownError(message);
+      }
+      throw error;
+    }
+  }
+
+  private async signatureOutcome(
+    signature: string,
+    roomId: string,
+    intentId: string,
+  ): Promise<'confirmed' | 'failed' | 'pending' | 'unknown'> {
+    const reader = this.client as (ArenaChainClient & {
+      readSignatureOutcome?: (value: string) => Promise<'confirmed' | 'failed' | 'pending'>;
+    }) | null;
+    if (!reader || typeof reader.readSignatureOutcome !== 'function') return 'unknown';
+    try {
+      return await reader.readSignatureOutcome(signature);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isRetryableRpcError(error)) {
+        this.logSettlementUnknown({
+          roomId,
+          intentId,
+          signature,
+          operation: 'readSignatureOutcome',
+          message,
+        });
+        return 'unknown';
+      }
+      throw error;
+    }
+  }
+
+  private async signatureForSettledEscrow(roomId: string, stored: string): Promise<string> {
+    if (stored) return stored;
+    const lookup = this.client as (ArenaChainClient & {
+      latestSuccessfulSignature?: (address: PublicKey) => Promise<string | undefined>;
+    }) | null;
+    if (!lookup || typeof lookup.latestSuccessfulSignature !== 'function') return '';
+    try {
+      return await lookup.latestSuccessfulSignature(
+        matchEscrowAddress(this.config.programId, roomId),
+      ) ?? '';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isRetryableRpcError(error)) {
+        this.logSettlementUnknown({
+          roomId,
+          operation: 'latestSuccessfulSignature',
+          message,
+        });
+        return '';
+      }
+      throw error;
+    }
+  }
+
+  private async markSettlementConfirmed(
+    intent: ChainIntentRow | undefined,
+    signature?: string,
+  ): Promise<void> {
+    if (!intent || !this.chainStore || intent.status === 'confirmed') {
+      if (intent && signature) {
+        await this.rememberIntent(intent.id, { settlementPhase: 'confirmed', signature });
+      }
+      return;
+    }
+    let retained = signature || (typeof intent.metadata.signature === 'string' ? intent.metadata.signature : '');
+    if (!retained && intent.roomId) {
+      retained = await this.signatureForSettledEscrow(intent.roomId, '');
+    }
+    await this.chainStore.setIntentStatus(intent.id, 'confirmed', {
+      ...(retained ? { signature: retained } : {}),
+    });
+    intent.status = 'confirmed';
+    await this.rememberIntent(intent.id, {
+      settlementPhase: 'confirmed',
+      ...(retained ? { signature: retained } : {}),
+    });
+  }
+
+  private logSettlementUnknown(detail: {
+    roomId: string;
+    intentId?: string;
+    signature?: string;
+    operation: string;
+    message: string;
+  }): void {
+    let escrow = '';
+    try {
+      escrow = matchEscrowAddress(this.config.programId, detail.roomId).toBase58();
+    } catch {
+      escrow = '';
+    }
+    console.info('[pokearena-settlement]', {
+      roomId: detail.roomId,
+      ...(escrow ? { escrow } : {}),
+      ...(detail.intentId ? { intentId: detail.intentId } : {}),
+      ...(detail.signature ? { signature: detail.signature } : {}),
+      operation: detail.operation,
+      classified: 'retryable',
+      retryInMs: 8_000,
+      message: detail.message,
+    });
   }
 
   private async markSettlementRetryable(
@@ -1721,6 +1972,11 @@ async function releaseSolRoomRecord(economics: EconomicsStore, room: DurableCasu
     return;
   }
   await economics.cancelCasualRoom(room.id);
+}
+
+function submissionOutcomeUnknown(result: SentTransaction): boolean {
+  if (result.status === 'pending' || result.status === 'expired') return true;
+  return result.status === 'failed' && isRetryableRpcError(result.error ?? '');
 }
 
 function matchEscrowAddress(programId: PublicKey, roomId: string): PublicKey {

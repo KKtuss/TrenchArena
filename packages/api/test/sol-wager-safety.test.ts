@@ -18,7 +18,9 @@ import {
 } from '@pokearena/db';
 import {
   IX,
+  classifySubmissionError,
   configPda,
+  isRetryableRpcError,
   depositSolWagerIx,
   feeVaultPda,
   matchEscrowPda,
@@ -31,7 +33,8 @@ import {
 } from '@pokearena/solana-client';
 
 import { CasualRoomService } from '../src/casual-service';
-import { ChainEconomyService } from '../src/chain-economy';
+import { ChainEconomyService, SettlementUnknownError } from '../src/chain-economy';
+import { handleProcessRpcError, installRpcProcessGuard } from '../src/rpc-guard';
 import { InMemoryEconomicsStore } from '../src/memory-economics-store';
 import { bothConfirmCasual } from './casual-flow';
 
@@ -393,6 +396,8 @@ function harness(options: {
   readMatchEscrowState?: (roomId: Uint8Array, ledger: SolLedger) => ReturnType<SolLedger['view']>;
   settledReadLags?: boolean;
   laggingConfirmedReads?: boolean;
+  unknownSettlement?: '429' | 'timeout' | 'reset';
+  settlementReadErrors?: string[];
 } = {}) {
   const keeper = Keypair.generate();
   const creator = Keypair.generate();
@@ -417,9 +422,14 @@ function harness(options: {
     chainStore: chainStore as unknown as PostgresChainStore,
     client: {
       configAddress: configPda(programId)[0],
-      getMatchEscrowState: (roomId: Uint8Array) => (
-        options.readMatchEscrowState?.(roomId, ledger) ?? ledger.view(roomId)
-      ),
+      getMatchEscrowState: (roomId: Uint8Array) => {
+        const view = options.readMatchEscrowState?.(roomId, ledger) ?? ledger.view(roomId);
+        if (view.status === 4 && options.settlementReadErrors?.length) {
+          const message = options.settlementReadErrors.shift();
+          if (message) throw new Error(message);
+        }
+        return view;
+      },
       ...(options.laggingConfirmedReads
         ? {
           waitForMatchEscrowState: async (
@@ -460,7 +470,20 @@ function harness(options: {
       },
     } as unknown as ArenaChainClient,
     keeper,
-    submitKeeper: instructions => ledger.submit(instructions),
+    submitKeeper: async instructions => {
+      const result = await ledger.submit(instructions);
+      const disc = Buffer.from(instructions[0]?.data ?? []).subarray(0, 8);
+      const settlement = disc.equals(IX.settleMatchWin) || disc.equals(IX.settleMatchTie);
+      if (!settlement || !options.unknownSettlement) return result;
+      const kind = options.unknownSettlement;
+      options.unknownSettlement = undefined;
+      const error = kind === '429'
+        ? '429 Too Many Requests: {"jsonrpc":"2.0","error":{"code":429,"message":"Too many requests for a specific RPC call"}}'
+        : kind === 'timeout'
+          ? 'failed to get info: request timed out'
+          : 'fetch failed: read ECONNRESET';
+      return { signature: result.signature, status: 'pending' as const, error };
+    },
   });
   const economics = new InMemoryEconomicsStore();
   const opened = ledger.total();
@@ -1451,4 +1474,161 @@ test('a lagging confirmed read still seats the opponent and charges the fee', as
   assert.equal(ledger.escrow(roomId).feeCharged, true);
   assert.equal(ledger.applied.filter(name => name === 'charge_match_fee').length, 1);
   assert.equal(ledger.total(), opened);
+});
+
+async function fundActiveMatch(options: {
+  unknownSettlement?: '429' | 'timeout' | 'reset';
+  settlementReadErrors?: string[];
+} = {}) {
+  const harnessed = harness(options);
+  const { ledger, economy, chainStore, programId, creator, opponent } = harnessed;
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await economy.prepareCasualStart(roomId);
+  return { ...harnessed, roomId, creatorId, opponentId };
+}
+
+for (const [kind, lookupError] of [
+  ['429', '429 Too Many Requests'],
+  ['timeout', 'failed to get info: request timed out'],
+  ['reset', 'fetch failed: read ECONNRESET'],
+] as const) {
+  test(`a ${kind} after settlement submission stays retryable and then confirms once`, async () => {
+    const { ledger, economy, chainStore, economics, creator, opponent, roomId, creatorId, opponentId, opened } = await fundActiveMatch({
+      unknownSettlement: kind,
+      settlementReadErrors: [lookupError],
+    });
+    await assert.rejects(
+      () => economy.settleCasual({ roomId, creatorId, opponentId, winnerId: opponentId }),
+      (error: unknown) => error instanceof SettlementUnknownError,
+    );
+    const pending = await chainStore.getIntentByScope('sol_match_win', roomId);
+    assert.equal(pending?.status, 'pending');
+    assert.equal(pending?.metadata.settlementPhase, 'submitted');
+    assert.equal(typeof pending?.metadata.signature, 'string');
+    assert.equal(String(pending?.metadata.signature).length > 0, true);
+    assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+    assert.equal(ledger.escrow(roomId).status, 4);
+
+    const payout = await economy.settleCasual({ roomId, creatorId, opponentId, winnerId: opponentId });
+    assert.equal(payout.amount, Number(COLLATERAL * 2n - FEE));
+    const confirmed = await chainStore.getIntentByScope('sol_match_win', roomId);
+    assert.equal(confirmed?.status, 'confirmed');
+    assert.equal(confirmed?.metadata.settlementPhase, 'confirmed');
+    assert.equal(confirmed?.metadata.signature, pending?.metadata.signature);
+    assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+
+    await persistRoom(economics, roomId, creatorId, 'battling', opponentId);
+    await economics.completeCasualWin({
+      roomId,
+      winnerId: opponentId,
+      loserId: creatorId,
+      collateral: Number(COLLATERAL),
+      reason: 'casual-win',
+    });
+    assert.equal((await economics.getCasualRoom(roomId))?.status, 'completed');
+    const again = await economy.settleCasual({
+      roomId,
+      creatorId,
+      opponentId,
+      winnerId: opponentId,
+      observeOnly: true,
+    });
+    assert.equal(again.amount, payout.amount);
+    await economics.completeCasualWin({
+      roomId,
+      winnerId: opponentId,
+      loserId: creatorId,
+      collateral: Number(COLLATERAL),
+      reason: 'casual-win',
+    });
+    assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+    assert.equal(ledger.replays.size, 1);
+    assert.equal(ledger.balance(opponent.publicKey), START - COLLATERAL + (COLLATERAL * 2n - FEE));
+    assert.equal((await economics.getCasualRoom(roomId))?.status, 'completed');
+    assert.equal(ledger.total(), opened);
+  });
+}
+
+test('a settled escrow confirms a submitted intent that lost its signature', async () => {
+  const { ledger, economy, chainStore, roomId, creatorId, opponentId } = await fundActiveMatch({
+    unknownSettlement: '429',
+    settlementReadErrors: ['429 Too Many Requests'],
+  });
+  await assert.rejects(
+    () => economy.settleCasual({ roomId, creatorId, opponentId, winnerId: opponentId }),
+    (error: unknown) => error instanceof SettlementUnknownError,
+  );
+  const pending = await chainStore.getIntentByScope('sol_match_win', roomId);
+  assert.ok(pending);
+  await chainStore.setIntentStatus(pending.id, 'created');
+  await chainStore.mergeIntentMetadata(pending.id, { signature: '', settlementPhase: 'submitted' });
+  await economy.settleCasual({
+    roomId,
+    creatorId,
+    opponentId,
+    winnerId: opponentId,
+    observeOnly: true,
+  });
+  const confirmed = await chainStore.getIntentByScope('sol_match_win', roomId);
+  assert.equal(confirmed?.status, 'confirmed');
+  assert.equal(confirmed?.metadata.settlementPhase, 'confirmed');
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+  assert.equal(ledger.replays.size, 1);
+});
+
+test('definitive settlement failure stays retryable', async () => {
+  const { ledger, economy, chainStore, roomId, creatorId, opponentId } = await fundActiveMatch();
+  ledger.failNext = true;
+  await assert.rejects(
+    () => economy.settleCasual({ roomId, creatorId, opponentId, winnerId: opponentId }),
+    /Simulated keeper/,
+  );
+  const failed = await chainStore.getIntentByScope('sol_match_win', roomId);
+  assert.equal(failed?.status, 'pending');
+  assert.equal(failed?.metadata.settlementPhase, 'retryable');
+  assert.equal(ledger.escrow(roomId).status, 3);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 0);
+});
+
+test('retryable RPC failures do not terminate the process', () => {
+  assert.equal(isRetryableRpcError(new Error('429 Too Many Requests')), true);
+  assert.equal(isRetryableRpcError(new Error('failed to get info: request timed out')), true);
+  assert.equal(isRetryableRpcError(new Error('fetch failed: read ECONNRESET')), true);
+  assert.equal(isRetryableRpcError(new Error('503 Service Unavailable')), true);
+  assert.equal(handleProcessRpcError('unhandledRejection', new Error('429 Too Many Requests')), 'contained');
+  assert.equal(handleProcessRpcError('uncaughtException', new Error('connect ECONNRESET')), 'contained');
+  assert.equal(handleProcessRpcError('unhandledRejection', new Error('request timed out')), 'contained');
+  assert.equal(handleProcessRpcError('unhandledRejection', new Error('database exploded')), 'fatal');
+  const pending = classifySubmissionError(
+    'signature-kept',
+    new Error('429 Too Many Requests'),
+  );
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.signature, 'signature-kept');
+  const exits: Array<number | undefined> = [];
+  const exit = process.exit;
+  process.exit = ((code?: number) => {
+    exits.push(code);
+    return undefined as never;
+  }) as typeof process.exit;
+  try {
+    installRpcProcessGuard();
+    const onRejection = process.listeners('unhandledRejection').at(-1);
+    const onException = process.listeners('uncaughtException').at(-1);
+    onRejection?.(new Error('429 Too Many Requests'), Promise.resolve());
+    onException?.(new Error('socket hang up'), 'uncaughtException');
+    onRejection?.(new Error('request timed out'), Promise.resolve());
+    assert.deepEqual(exits, []);
+    onRejection?.(new Error('database exploded'), Promise.resolve());
+    assert.deepEqual(exits, [1]);
+  } finally {
+    process.exit = exit;
+  }
 });

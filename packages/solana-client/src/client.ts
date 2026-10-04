@@ -102,8 +102,9 @@ export class ArenaChainClient {
     transaction: Transaction,
     signers: Signer[],
   ): Promise<SentTransaction> {
+    let signature = '';
     try {
-      const signature = await this.connection.sendTransaction(transaction, signers, {
+      signature = await this.connection.sendTransaction(transaction, signers, {
         skipPreflight: false,
         preflightCommitment: this.config.commitment,
       });
@@ -129,11 +130,7 @@ export class ArenaChainClient {
         slot: status.value?.slot,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/block height exceeded|expired|not confirmed/i.test(message)) {
-        return { signature: '', status: 'expired', error: message };
-      }
-      return { signature: '', status: 'failed', error: message };
+      return classifySubmissionError(signature, error);
     }
   }
 
@@ -163,12 +160,37 @@ export class ArenaChainClient {
         slot: status.value[0]?.slot,
       };
     } catch (error) {
-      return {
-        signature,
-        status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-      };
+      return classifySubmissionError(signature, error);
     }
+  }
+
+  /**
+   * Read one signature without deciding that a missing status is failure.
+   * `pending` means the cluster has not reported a terminal outcome yet.
+   */
+  async readSignatureOutcome(signature: string): Promise<'confirmed' | 'failed' | 'pending'> {
+    const status = await this.withRpcRetry(
+      () => this.connection.getSignatureStatuses([signature]),
+    );
+    const value = status.value[0];
+    if (!value) return 'pending';
+    if (value.err) return 'failed';
+    if (
+      value.confirmationStatus === 'processed'
+      || value.confirmationStatus === 'confirmed'
+      || value.confirmationStatus === 'finalized'
+    ) {
+      return 'confirmed';
+    }
+    return 'pending';
+  }
+
+  /** Latest successful signature that touched an account, if the RPC answers. */
+  async latestSuccessfulSignature(address: PublicKey): Promise<string | undefined> {
+    const rows = await this.withRpcRetry(
+      () => this.connection.getSignaturesForAddress(address, { limit: 8 }),
+    );
+    return rows.find(row => !row.err)?.signature;
   }
 
   /**
@@ -532,7 +554,7 @@ export class ArenaChainClient {
     return this.withRpcRetry(() => this.connection.getAccountInfo(address, commitment));
   }
 
-  private async withRpcRetry<T>(read: () => Promise<T>, attempts = 3): Promise<T> {
+  private async withRpcRetry<T>(read: () => Promise<T>, attempts = 5): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
@@ -540,7 +562,7 @@ export class ArenaChainClient {
       } catch (error) {
         lastError = error;
         if (!isRetryableRpcError(error) || attempt + 1 >= attempts) throw error;
-        const delay = 200 * (2 ** attempt);
+        const delay = Math.min(4_000, 400 * (2 ** attempt));
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -816,7 +838,21 @@ function verifyIssuedSignedTransaction(input: {
   return { ok: true };
 }
 
-function isRetryableRpcError(error: unknown): boolean {
+export function isRetryableRpcError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /429|too many requests|rate limit|temporarily unavailable|timeout|timed out|fetch failed|network/i.test(message);
+  return /429|too many requests|rate limit|temporarily unavailable|timeout|timed out|fetch failed|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|ENOTFOUND|EPIPE|503|502|504|service unavailable|blockhash/i.test(message);
+}
+
+/**
+ * A signature that was already submitted is pending when the RPC cannot say
+ * whether it landed. Dropping the signature or labeling that `failed` makes
+ * the next attempt send a second transaction.
+ */
+export function classifySubmissionError(signature: string, error: unknown): SentTransaction {
+  const message = error instanceof Error ? error.message : String(error);
+  const unknown = isRetryableRpcError(error)
+    || /block height exceeded|expired|not confirmed/i.test(message);
+  if (signature && unknown) return { signature, status: 'pending', error: message };
+  if (unknown) return { signature: '', status: 'pending', error: message };
+  return { signature, status: 'failed', error: message };
 }

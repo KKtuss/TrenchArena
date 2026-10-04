@@ -40,7 +40,8 @@ import { CASUAL_SELECTION_MS, CASUAL_START_COUNTDOWN_MS, CasualRoomService } fro
 import { getGenerationPreset } from './generation-presets';
 import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor } from './fight-history';
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
-import { assessDepositEscrow, ChainEconomyService, depositEscrowFollowUp } from './chain-economy';
+import { assessDepositEscrow, ChainEconomyService, depositEscrowFollowUp, SettlementUnknownError } from './chain-economy';
+import { containRpc, installRpcProcessGuard } from './rpc-guard';
 import {
   createPlayTokenEligibilityService,
   type PlayTokenCheckResult,
@@ -236,6 +237,7 @@ export class ApiServer {
   private readonly rateLimiter: ProtocolRateLimiter;
   private readonly challengeCleanupTimer: NodeJS.Timeout;
   private readonly finalizationTimer: NodeJS.Timeout;
+  private readonly settlementTimer: NodeJS.Timeout;
   private readonly sealingTournaments = new Set<string>();
   private readonly tournamentSelections = new Map<string, TournamentSelectionState>();
   private readonly tournamentSelectionTimers = new Map<string, NodeJS.Timeout>();
@@ -322,7 +324,7 @@ export class ApiServer {
       if (outcome.status !== 'confirmed' || intent.kind !== 'sol_wager_deposit' || !intent.roomId) return;
       return this.applyConfirmedSolDeposit(intent, outcome.signature);
     });
-    void this.chainEconomy.resumePendingDeposits();
+    containRpc('resumePendingDeposits', this.chainEconomy.resumePendingDeposits());
     this.httpServer = createServer((request, response) => this.handleHttp(request, response));
     this.webSockets = new WebSocketServer({
       noServer: true,
@@ -352,9 +354,13 @@ export class ApiServer {
     );
     this.challengeCleanupTimer.unref?.();
     this.finalizationTimer = setInterval(() => {
-      void this.sealDueFinalizations();
+      containRpc('sealDueFinalizations', this.sealDueFinalizations());
     }, 1000);
     this.finalizationTimer.unref?.();
+    this.settlementTimer = setInterval(() => {
+      containRpc('reconcileSubmittedSettlements', this.reconcileSubmittedSettlements());
+    }, 8_000);
+    this.settlementTimer.unref?.();
   }
 
   attachEconomicsPool(pool: Pool): void {
@@ -448,6 +454,7 @@ export class ApiServer {
     this.shuttingDown = true;
     clearInterval(this.challengeCleanupTimer);
     clearInterval(this.finalizationTimer);
+    clearInterval(this.settlementTimer);
     this.rateLimiter.stop();
     for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
     this.disconnectTimers.clear();
@@ -791,7 +798,7 @@ export class ApiServer {
         return;
       }
       case 'casual.list':
-        void this.reconcileSolRoomsForPlayer(playerId);
+        containRpc('reconcileSolRoomsForPlayer', this.reconcileSolRoomsForPlayer(playerId));
         this.send(connection, {
           type: 'casual.list',
           rooms: this.casual.listOpenRooms(playerId),
@@ -941,7 +948,7 @@ export class ApiServer {
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
         this.send(connection, { type: 'casual.state', room: this.casual.getRoom(room.id, playerId) }, message.requestId);
-        void this.reconcileSolRoom(room.id);
+        containRpc('reconcileSolRoom', this.reconcileSolRoom(room.id), { roomId: room.id });
         const current = this.casual.getRoom(room.id);
         if (
           current.rail === 'sol_chain'
@@ -1353,7 +1360,7 @@ export class ApiServer {
   }
 
   private async buildArenaSnapshot(playerId: string, reconcile = true): Promise<ArenaSnapshot> {
-    if (reconcile) void this.reconcileSolRoomsForPlayer(playerId);
+    if (reconcile) containRpc('reconcileSolRoomsForPlayer', this.reconcileSolRoomsForPlayer(playerId));
     const base: ArenaSnapshot = {
       wallet: await this.economics.ensureWallet(playerId),
       tournaments: await this.listTournamentSummaries(),
@@ -1428,9 +1435,13 @@ export class ApiServer {
     const key = `${roomId}:${side}`;
     if (this.depositEscrowChecks.has(key)) return;
     this.depositEscrowChecks.add(key);
-    void this.readDepositEscrow(roomId, side, signature, 0).finally(() => {
-      this.depositEscrowChecks.delete(key);
-    });
+    containRpc(
+      'readDepositEscrow',
+      this.readDepositEscrow(roomId, side, signature, 0).finally(() => {
+        this.depositEscrowChecks.delete(key);
+      }),
+      { roomId, signature },
+    );
   }
 
   private async readDepositEscrow(
@@ -1854,6 +1865,42 @@ export class ApiServer {
     const registered = tournament.players.filter(player => player.status === 'registered').length;
     if (registered !== tournament.maxPlayers || tournament.finalizesAt !== undefined) return;
     await this.tournaments.beginTeamFinalization(tournamentId);
+  }
+
+  private async reconcileSubmittedSettlements(): Promise<void> {
+    if (this.shuttingDown || !this.chainEconomy.enabled) return;
+    for (const room of this.casual.solSettlementRooms()) {
+      if (!room.opponentId) continue;
+      let pending: { winnerId?: string } | undefined;
+      try {
+        pending = await this.chainEconomy.unconfirmedSettlement(room.id);
+      } catch (error) {
+        if (error instanceof SettlementUnknownError) continue;
+        throw error;
+      }
+      if (!pending) continue;
+      try {
+        if (room.status === 'battling') {
+          await this.casual.resumeSolSettlement(room.id);
+          continue;
+        }
+        await this.chainEconomy.settleCasual({
+          roomId: room.id,
+          creatorId: room.creatorId,
+          opponentId: room.opponentId,
+          ...(pending.winnerId ? { winnerId: pending.winnerId } : {}),
+          observeOnly: true,
+        });
+      } catch (error) {
+        if (error instanceof SettlementUnknownError) continue;
+        console.error('[pokearena-settlement]', {
+          roomId: room.id,
+          operation: 'reconcileSubmittedSettlements',
+          classified: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   private async sealDueFinalizations(): Promise<void> {
@@ -3189,6 +3236,7 @@ export async function createApiServer(options: ApiServerOptions = {}): Promise<A
 }
 
 if (require.main === module) {
+  installRpcProcessGuard();
   void createApiServer()
     .then(server => server.listen(Number(process.env.PORT ?? 3000)).then(port => {
       console.log(`PokeArena API listening on http://${server.bindHost}:${port}`);

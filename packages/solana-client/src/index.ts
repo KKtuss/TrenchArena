@@ -92,6 +92,8 @@ export {
 } from './instructions';
 export {
   ArenaChainClient,
+  classifySubmissionError,
+  isRetryableRpcError,
   type MatchEscrowState,
   type MatchEscrowReadOptions,
   type SentTransaction,

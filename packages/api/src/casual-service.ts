@@ -16,6 +16,8 @@ import {
   type PlayerChoice,
 } from '@pokearena/battle-engine';
 
+import { isRetryableRpcError } from '@pokearena/solana-client';
+
 import { previewCasual } from '@pokearena/db';
 import type { DurableCasualRoom, EconomicsStore, PayoutResult } from '@pokearena/db';
 
@@ -24,6 +26,7 @@ import {
   pickCreatorPresetId,
   type CasualPresetMon,
 } from './casual-presets';
+import { SettlementUnknownError } from './chain-economy';
 import { InMemoryEconomicsStore } from './memory-economics-store';
 import {
   CASUAL_FEE_BPS,
@@ -971,9 +974,58 @@ export class CasualRoomService {
       .then(() => this.handleTerminal(roomId, terminal));
     this.terminalJobs.set(roomId, next);
     void next.catch(error => {
+      if (error instanceof SettlementUnknownError || isRetryableRpcError(error)) {
+        console.info('[pokearena-settlement]', {
+          roomId,
+          operation: 'settleCasual',
+          classified: 'retryable',
+          retryInMs: error instanceof SettlementUnknownError ? error.retryInMs : 8_000,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
       console.error('[pokearena] casual settlement failed', roomId, error);
     });
     return next;
+  }
+
+  /**
+   * Run the terminal handler again after a retryable RPC failure. The battle
+   * subscription already fired, so reconciliation has to ask the session for
+   * the result it still holds.
+   */
+  async resumeSolSettlement(roomId: CasualRoomId): Promise<void> {
+    const room = this.rooms.get(roomId);
+    if (!room || room.status !== 'battling' || room.rail !== 'sol_chain' || !room.battleInstanceId) return;
+    const battle = this.activeBattles.get(room.battleInstanceId);
+    if (!battle) return;
+    const readResult = battle.session.getResult;
+    if (typeof readResult !== 'function') return;
+    const result = readResult.call(battle.session);
+    if (!result || (result.status !== 'win' && result.status !== 'tie')) return;
+    await this.handleTerminal(roomId, { type: 'completed', result });
+  }
+
+  solSettlementRooms(): Array<{
+    id: CasualRoomId;
+    status: CasualRoom['status'];
+    creatorId: string;
+    opponentId?: string;
+    rail: CasualRoom['rail'];
+  }> {
+    return [...this.rooms.values()]
+      .filter(room => (
+        room.rail === 'sol_chain'
+        && (room.status === 'battling' || room.status === 'completed')
+        && Boolean(room.opponentId)
+      ))
+      .map(room => ({
+        id: room.id,
+        status: room.status,
+        creatorId: room.creatorId,
+        ...(room.opponentId ? { opponentId: room.opponentId } : {}),
+        rail: room.rail,
+      }));
   }
 
   private async flushTerminal(roomId: CasualRoomId): Promise<void> {
@@ -999,14 +1051,28 @@ export class CasualRoomService {
       throw new Error('Chain settlement is not configured for a SOL room.');
     }
     if (room.rail === 'sol_chain' && room.opponentId && this.chainSettlement) {
-      chainPayout = await this.chainSettlement.settle({
-        roomId: room.id,
-        creatorId: room.creatorId,
-        opponentId: room.opponentId,
-        ...(result.status === 'win' && result.winner
-          ? { winnerId: result.winner }
-          : {}),
-      });
+      try {
+        chainPayout = await this.chainSettlement.settle({
+          roomId: room.id,
+          creatorId: room.creatorId,
+          opponentId: room.opponentId,
+          ...(result.status === 'win' && result.winner
+            ? { winnerId: result.winner }
+            : {}),
+        });
+      } catch (error) {
+        if (error instanceof SettlementUnknownError || isRetryableRpcError(error)) {
+          console.info('[pokearena-settlement]', {
+            roomId: room.id,
+            operation: 'settleCasual',
+            classified: 'retryable',
+            retryInMs: error instanceof SettlementUnknownError ? error.retryInMs : 8_000,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        throw error;
+      }
     }
 
     if (result.status === 'win' && result.winner && room.opponentId) {
