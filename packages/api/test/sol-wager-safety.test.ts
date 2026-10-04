@@ -392,6 +392,7 @@ class MemoryChainStore {
 function harness(options: {
   readMatchEscrowState?: (roomId: Uint8Array, ledger: SolLedger) => ReturnType<SolLedger['view']>;
   settledReadLags?: boolean;
+  laggingConfirmedReads?: boolean;
 } = {}) {
   const keeper = Keypair.generate();
   const creator = Keypair.generate();
@@ -419,6 +420,20 @@ function harness(options: {
       getMatchEscrowState: (roomId: Uint8Array) => (
         options.readMatchEscrowState?.(roomId, ledger) ?? ledger.view(roomId)
       ),
+      ...(options.laggingConfirmedReads
+        ? {
+          waitForMatchEscrowState: async (
+            _roomId: Uint8Array,
+            _predicate: (state: ReturnType<SolLedger['view']>) => boolean,
+            waitOptions?: { commitment?: string },
+          ) => {
+            if (waitOptions?.commitment !== 'confirmed') {
+              throw new Error('Match escrow state did not reach the expected state.');
+            }
+            throw new Error('Match escrow state did not reach the expected state.');
+          },
+        }
+        : {}),
       ...(options.settledReadLags
         ? {
           waitForMatchEscrowState: async (
@@ -1409,5 +1424,31 @@ test('boot recovery completes a battling room whose escrow is already settled', 
   assert.equal((await economics.getCasualRoom(roomId))?.status, 'completed');
   assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, paid.wins);
   assert.equal(ledger.balance(creator.publicKey), paid.creator);
+  assert.equal(ledger.total(), opened);
+});
+
+test('a lagging confirmed read still seats the opponent and charges the fee', async () => {
+  const { ledger, economy, chainStore, programId, creator, opponent, opened } = harness({
+    laggingConfirmedReads: true,
+  });
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  const intent = await economy.createSolWagerDepositIntent({
+    roomId,
+    playerId: opponentId,
+    side: 1,
+    collateralLamports: Number(COLLATERAL),
+  });
+  assert.equal(intent.serializedTx.length > 0, true);
+  assert.equal(ledger.escrow(roomId).opponent.equals(opponent.publicKey), true);
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await economy.prepareCasualStart(roomId);
+  assert.equal(ledger.escrow(roomId).status, 3);
+  assert.equal(ledger.escrow(roomId).feeCharged, true);
+  assert.equal(ledger.applied.filter(name => name === 'charge_match_fee').length, 1);
   assert.equal(ledger.total(), opened);
 });

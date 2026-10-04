@@ -196,7 +196,11 @@ export class ChainEconomyService {
       ) => Promise<MatchEscrowState>;
     };
     if (typeof client.waitForMatchEscrowState === 'function') {
-      return client.waitForMatchEscrowState(roomBytes, predicate, options);
+      return client.waitForMatchEscrowState(roomBytes, predicate, {
+        commitment: 'confirmed',
+        attempts: 8,
+        ...options,
+      });
     }
 
     const commitment = options?.commitment ?? 'confirmed';
@@ -950,10 +954,17 @@ export class ChainEconomyService {
         slot: result.slot,
       });
     }
-    await this.waitForMatchEscrowState(
-      roomBytes,
-      after => after.status === 3 && after.feeCharged,
-    );
+    try {
+      await this.waitForMatchEscrowState(
+        roomBytes,
+        after => after.status === 3 && after.feeCharged,
+      );
+    } catch (error) {
+      const latest = await Promise.resolve(
+        this.client!.getMatchEscrowState(roomBytes, 'confirmed'),
+      ).catch(() => undefined);
+      if (!(latest?.status === 3 && latest.feeCharged)) throw error;
+    }
   }
 
   async settleCasual(input: {
@@ -1209,10 +1220,17 @@ export class ChainEconomyService {
     if (result.status !== 'confirmed') {
       throw new Error(result.error ?? 'Seating the match opponent failed.');
     }
-    await this.waitForMatchEscrowState(
-      roomBytes,
-      after => after.opponent.equals(opponent),
-    );
+    try {
+      await this.waitForMatchEscrowState(
+        roomBytes,
+        after => after.opponent.equals(opponent),
+      );
+    } catch (error) {
+      const latest = await Promise.resolve(
+        this.client!.getMatchEscrowState(roomBytes, 'confirmed'),
+      ).catch(() => undefined);
+      if (!latest?.opponent.equals(opponent)) throw error;
+    }
   }
 
   /**
