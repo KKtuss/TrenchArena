@@ -391,6 +391,7 @@ class MemoryChainStore {
 
 function harness(options: {
   readMatchEscrowState?: (roomId: Uint8Array, ledger: SolLedger) => ReturnType<SolLedger['view']>;
+  settledReadLags?: boolean;
 } = {}) {
   const keeper = Keypair.generate();
   const creator = Keypair.generate();
@@ -418,6 +419,23 @@ function harness(options: {
       getMatchEscrowState: (roomId: Uint8Array) => (
         options.readMatchEscrowState?.(roomId, ledger) ?? ledger.view(roomId)
       ),
+      ...(options.settledReadLags
+        ? {
+          waitForMatchEscrowState: async (
+            roomId: Uint8Array,
+            predicate: (state: ReturnType<SolLedger['view']>) => boolean,
+          ) => {
+            const view = options.readMatchEscrowState?.(roomId, ledger) ?? ledger.view(roomId);
+            const settled = predicate({ ...view, status: 4 });
+            const unsettled = predicate({ ...view, status: view.status === 4 ? 3 : view.status });
+            if (settled && !unsettled) {
+              throw new Error('Match escrow state did not reach the expected state.');
+            }
+            if (predicate(view)) return view;
+            throw new Error('Match escrow state did not reach the expected state.');
+          },
+        }
+        : {}),
       buildTransaction: async (payer: PublicKey, instructions: TransactionInstruction[]) => {
         const tx = new Transaction();
         tx.feePayer = payer;
@@ -1332,5 +1350,64 @@ test('a stale escrow read after a landed settlement does not fail or pay twice',
   assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, winsBefore);
   assert.equal((await chainStore.getIntentByScope('sol_match_win', roomId))?.status, 'confirmed');
   assert.equal(ledger.escrow(roomId).status, 3);
+  assert.equal(ledger.total(), opened);
+});
+
+test('a confirmed settlement completes when the escrow read lags behind the transaction', async () => {
+  const { ledger, economy, chainStore, programId, creator, opponent, opened } = harness({
+    settledReadLags: true,
+    readMatchEscrowState: (roomId, source) => {
+      const view = source.view(roomId);
+      if (view.status === 4) return { ...view, status: 3, feeCharged: true };
+      return view;
+    },
+  });
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await economy.prepareCasualStart(roomId);
+  const payout = await economy.settleCasual({ roomId, creatorId, opponentId, winnerId: creatorId });
+  assert.equal(payout.amount, Number(COLLATERAL * 2n - FEE));
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+  assert.equal((await chainStore.getIntentByScope('sol_match_win', roomId))?.status, 'confirmed');
+  assert.equal(ledger.escrow(roomId).status, 4);
+  assert.equal(ledger.total(), opened);
+});
+
+test('boot recovery completes a battling room whose escrow is already settled', async () => {
+  const { ledger, economy, economics, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await economy.prepareCasualStart(roomId);
+  await economy.settleCasual({ roomId, creatorId, opponentId, winnerId: creatorId });
+  await persistRoom(economics, roomId, creatorId, 'battling', opponentId);
+  const paid = {
+    creator: ledger.balance(creator.publicKey),
+    opponent: ledger.balance(opponent.publicKey),
+    wins: ledger.applied.filter(name => name === 'settle_match_win').length,
+  };
+  await economy.recoverCasualRoom((await economics.getCasualRoom(roomId))!, economics);
+  const room = await economics.getCasualRoom(roomId);
+  assert.equal(room?.status, 'completed');
+  assert.equal(room?.resultStatus, 'win');
+  assert.equal(room?.winnerId, creatorId);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, paid.wins);
+  assert.equal(ledger.balance(creator.publicKey), paid.creator);
+  assert.equal(ledger.balance(opponent.publicKey), paid.opponent);
+  await economy.recoverCasualRoom((await economics.getCasualRoom(roomId))!, economics);
+  assert.equal((await economics.getCasualRoom(roomId))?.status, 'completed');
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, paid.wins);
+  assert.equal(ledger.balance(creator.publicKey), paid.creator);
   assert.equal(ledger.total(), opened);
 });

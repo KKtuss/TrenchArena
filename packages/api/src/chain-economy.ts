@@ -181,22 +181,36 @@ export class ChainEconomyService {
   private async waitForMatchEscrowState(
     roomBytes: Uint8Array,
     predicate: (state: MatchEscrowState) => boolean,
+    options?: { commitment?: 'processed' | 'confirmed' | 'finalized'; attempts?: number },
   ): Promise<MatchEscrowState> {
-    const client = this.client!;
+    const client = this.client as ArenaChainClient & {
+      waitForMatchEscrowState?: (
+        roomId: Uint8Array,
+        predicate: (state: MatchEscrowState) => boolean,
+        options?: {
+          commitment?: 'processed' | 'confirmed' | 'finalized';
+          attempts?: number;
+          initialDelayMs?: number;
+          maxDelayMs?: number;
+        },
+      ) => Promise<MatchEscrowState>;
+    };
     if (typeof client.waitForMatchEscrowState === 'function') {
-      return client.waitForMatchEscrowState(roomBytes, predicate);
+      return client.waitForMatchEscrowState(roomBytes, predicate, options);
     }
 
+    const commitment = options?.commitment ?? 'confirmed';
+    const attempts = Math.max(1, options?.attempts ?? 8);
     let lastError: unknown = new Error('Match escrow state did not reach the expected state.');
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        const state = await client.getMatchEscrowState(roomBytes, 'finalized');
+        const state = await client.getMatchEscrowState(roomBytes, commitment);
         if (predicate(state)) return state;
         lastError = new Error('Match escrow state did not reach the expected state.');
       } catch (error) {
         lastError = error;
       }
-      if (attempt < 7) {
+      if (attempt + 1 < attempts) {
         await new Promise(resolve => setTimeout(resolve, Math.min(2_000, 250 * (2 ** attempt))));
       }
     }
@@ -1045,10 +1059,30 @@ export class ChainEconomyService {
         });
       }
     }
-    const after = await this.waitForMatchEscrowState(
-      roomBytes,
-      candidate => candidate.status === 4,
-    );
+    // The keeper transaction is already confirmed. `finalized` account reads
+    // lag that confirmation, and throwing here leaves the room battling.
+    let after: MatchEscrowState;
+    try {
+      after = await this.waitForMatchEscrowState(
+        roomBytes,
+        candidate => candidate.status === 4,
+        { commitment: 'confirmed', attempts: 8 },
+      );
+    } catch (error) {
+      const latest = await Promise.resolve(
+        this.client!.getMatchEscrowState(roomBytes, 'confirmed'),
+      ).catch(() => undefined);
+      if (latest?.status === 4) {
+        after = latest;
+      } else {
+        after = { ...state, status: 4, feeCharged: state.feeCharged || !isTie };
+        console.info('[pokearena-settlement]', {
+          roomId: input.roomId,
+          phase: 'confirmed-before-account-read',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const gross = after.collateralLamports * 2n;
     const fee = after.feeCharged ? (gross * 200n) / 10_000n : 0n;
     const payout = isTie ? (gross - fee) / 2n : gross - fee;

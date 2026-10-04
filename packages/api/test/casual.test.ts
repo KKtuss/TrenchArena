@@ -41,6 +41,7 @@ test('casual rooms support private/open creation, accept, full-room and over-bal
     collateral: 99_000_000,
   }));
 
+  await casual.cancelRoom(open.id, 'demo-player-1');
   const privateRoom = await casual.createRoom({
     creatorId: 'demo-player-1',
     roomType: 'private',
@@ -48,7 +49,81 @@ test('casual rooms support private/open creation, accept, full-room and over-bal
     collateral: 25_000,
     invitedPlayerId: 'demo-player-2',
   });
+  assert.equal(casual.listOpenRooms('demo-player-2').some(room => room.id === privateRoom.id), true);
+  assert.equal(casual.listOpenRooms('demo-player-3').some(room => room.id === privateRoom.id), false);
   await assert.rejects(() => casual.acceptRoom(privateRoom.id, 'demo-player-1'));
+});
+
+test('SOL rooms hide until the creator deposit lands and cap active rooms', async () => {
+  const casual = new CasualRoomService({ economics: new MockEconomics() });
+  const invited = await casual.createRoom({
+    creatorId: 'sol-creator',
+    roomType: 'private',
+    battleSize: '1v1',
+    collateral: 1_000_000,
+    invitedPlayerId: 'sol-invitee',
+    rail: 'sol_chain',
+  });
+  assert.equal(invited.status, 'pending_deposit');
+  assert.equal(casual.listOpenRooms('sol-invitee').some(item => item.id === invited.id), false);
+  const inviteeRoom = await casual.createRoom({
+    creatorId: 'sol-invitee',
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: 1_000_000,
+    rail: 'sol_chain',
+  });
+  assert.equal(inviteeRoom.status, 'pending_deposit');
+
+  const replacement = await casual.createRoom({
+    creatorId: 'sol-creator',
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: 1_000_000,
+    rail: 'sol_chain',
+  });
+  assert.equal(casual.getRoom(invited.id).status, 'cancelled');
+  assert.equal(replacement.status, 'pending_deposit');
+  assert.equal(casual.listOpenRooms('sol-opponent').some(item => item.id === replacement.id), false);
+
+  casual.markSolDeposit(replacement.id, 'creator');
+  await assert.rejects(
+    () => casual.createRoom({
+      creatorId: 'sol-creator',
+      roomType: 'open',
+      battleSize: '1v1',
+      collateral: 1_000_000,
+      rail: 'sol_chain',
+    }),
+    /one active casual room/,
+  );
+  assert.equal(casual.getRoom(replacement.id).status, 'open');
+  assert.equal(casual.listOpenRooms('sol-opponent').some(item => item.id === replacement.id), true);
+  const full = await casual.acceptRoom(replacement.id, 'sol-opponent');
+  assert.equal(full.status, 'full');
+  assert.equal(full.deposits?.creator, true);
+  await assert.rejects(() => casual.acceptRoom(replacement.id, 'another-opponent'), /no longer open/);
+});
+
+test('funded SOL casual rooms open the 6→3 draft after both deposits', async () => {
+  const casual = new CasualRoomService({ economics: new MockEconomics() });
+  const created = await casual.createRoom({
+    creatorId: 'demo-player-1',
+    roomType: 'private',
+    battleSize: '1v1',
+    collateral: 1_000_000,
+    invitedPlayerId: 'demo-player-2',
+    rail: 'sol_chain',
+  });
+  casual.markSolDeposit(created.id, 'creator');
+  await casual.acceptRoom(created.id, 'demo-player-2');
+  assert.equal(casual.getRoom(created.id).status, 'full');
+  casual.markSolDeposit(created.id, 'opponent');
+  const funded = casual.getRoom(created.id, 'demo-player-1');
+  assert.equal(funded.status, 'drafting');
+  assert.equal(funded.teamPreview?.length, 2);
+  const waiting = await casual.startBattle(created.id, 'demo-player-1');
+  assert.equal(waiting.status, 'drafting');
 });
 
 test('2v2 rooms can be configured but start is unsupported', async () => {
@@ -201,6 +276,7 @@ test('both players must confirm three Pokémon before a casual battle starts', a
   assert.equal(economics.getBalance('demo-player-1'), before);
   assert.equal(economics.getBalance('demo-player-2'), before);
 
+  await casual.cancelRoom(room.id, 'demo-player-1');
   const missingCreator = await openCasualRoom(casual);
   bothReadyCasual(casual, missingCreator.id);
   casual.selectTeam(missingCreator.id, 'demo-player-2', [0, 1, 2], true);
@@ -297,12 +373,20 @@ test('chain-backed casual completion waits for verified chain settlement', async
     collateral: 500_000_000,
     rail: 'sol_chain',
   });
+  casual.markSolDeposit(created.id, 'creator');
   await casual.acceptRoom(created.id, 'demo-player-2');
+  casual.markSolDeposit(created.id, 'creator');
+  casual.markSolDeposit(created.id, 'opponent');
   bothConfirmCasual(casual, created.id);
+  const statuses: string[] = [];
+  casual.subscribe(created.id, room => {
+    statuses.push(room.status);
+  });
   const started = await casual.startBattle(created.id, 'demo-player-1');
   assert.equal(started.status, 'completed');
   assert.equal(chainSettled, true);
   assert.equal('rail' in (started.payout ?? {}), true);
+  assert.equal(statuses.includes('completed'), true);
 });
 
 test('competitive rooms lock custom Gen 9 OU sixes and start a six-on-six battle', async () => {
