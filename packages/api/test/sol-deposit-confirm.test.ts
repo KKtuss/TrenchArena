@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
-import { ArenaChainClient, type ArenaChainConfig } from '@pokearena/solana-client';
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { ArenaChainClient, IX, type ArenaChainConfig } from '@pokearena/solana-client';
 import type { ChainIntentRow, ChainIntentStatus, CreateIntentInput, PostgresChainStore } from '@pokearena/db';
 
 import { CasualRoomService } from '../src/casual-service';
@@ -481,4 +481,50 @@ test('a pending deposit is confirmed again after the process restarts', async ()
   assert.equal(watched?.status, 'confirmed');
   assert.equal((await restarted.chainStore.getIntent(copied!.id))?.status, 'confirmed');
   assert.equal(restarted.calls.sent, 0);
+});
+
+test('a wallet-augmented signature matches the issued deposit and a modified one is rejected', async () => {
+  const lighthouse = new PublicKey('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95');
+  const issued = await issuedIntent();
+  const stored = Buffer.from(
+    (await issued.chainStore.getIntent(issued.intentId))!.metadata.serializedTx as string,
+    'base64',
+  );
+  const unsigned = Transaction.from(stored);
+  const creates = unsigned.instructions.filter(instruction => (
+    instruction.programId.equals(new PublicKey(PROGRAM_ID))
+    && Buffer.from(instruction.data).subarray(0, IX.createMatchEscrow.length).equals(IX.createMatchEscrow)
+  ));
+  assert.equal(creates.length, 1);
+  const configAccount = creates[0]!.keys[1]!.pubkey;
+  unsigned.instructions.unshift(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }));
+  unsigned.add(new TransactionInstruction({
+    programId: lighthouse,
+    keys: [{ pubkey: configAccount, isSigner: false, isWritable: true }],
+    data: Buffer.from([4]),
+  }));
+  unsigned.sign(issued.player);
+  const accepted = await issued.economy.confirmIntent({
+    intentId: issued.intentId,
+    signature: encodeBase58(unsigned.signature!),
+    signedTransaction: [...unsigned.serialize()],
+  });
+  assert.equal(accepted.status, 'confirmed');
+  assert.equal(issued.calls.sent, 1);
+
+  const rejected = await issuedIntent();
+  const original = Transaction.from(Buffer.from(
+    (await rejected.chainStore.getIntent(rejected.intentId))!.metadata.serializedTx as string,
+    'base64',
+  ));
+  original.instructions[0]!.data = Buffer.from([1, 2, 3, 4]);
+  original.sign(rejected.player);
+  const failed = await rejected.economy.confirmIntent({
+    intentId: rejected.intentId,
+    signature: encodeBase58(original.signature!),
+    signedTransaction: [...original.serialize()],
+  });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error ?? '', /First difference: instruction 0 data/);
+  assert.equal(rejected.calls.sent, 0);
 });

@@ -718,6 +718,59 @@ function verifyIssuedSignature(input: {
   return { ok: true };
 }
 
+const WALLET_AUGMENTATION_PROGRAMS = [
+  new PublicKey('ComputeBudget111111111111111111111111111111'),
+  new PublicKey('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'),
+  new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
+  new PublicKey('Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'),
+];
+
+function isWalletAugmentation(instruction: TransactionInstruction): boolean {
+  return WALLET_AUGMENTATION_PROGRAMS.some(programId => instruction.programId.equals(programId));
+}
+
+function depositInstructionMismatch(
+  issued: TransactionInstruction[],
+  signed: TransactionInstruction[],
+): string | undefined {
+  const shared = Math.min(issued.length, signed.length);
+  for (let index = 0; index < shared; index += 1) {
+    const left = issued[index]!;
+    const right = signed[index]!;
+    if (!left.programId.equals(right.programId)) {
+      return `instruction ${index} program ${left.programId.toBase58()} != ${right.programId.toBase58()}`;
+    }
+    if (!Buffer.from(left.data).equals(Buffer.from(right.data))) {
+      return `instruction ${index} data`;
+    }
+    if (left.keys.length !== right.keys.length) {
+      return `instruction ${index} account count ${left.keys.length} != ${right.keys.length}`;
+    }
+    for (let keyIndex = 0; keyIndex < left.keys.length; keyIndex += 1) {
+      const expected = left.keys[keyIndex]!;
+      const actual = right.keys[keyIndex]!;
+      if (!expected.pubkey.equals(actual.pubkey)) {
+        return `instruction ${index} account ${keyIndex} pubkey`;
+      }
+      if (expected.isSigner !== actual.isSigner) {
+        return `instruction ${index} account ${keyIndex} signer`;
+      }
+      // A wallet assertion can promote a readonly account to writable in the
+      // compiled message header. It must not take writability away.
+      if (expected.isWritable && !actual.isWritable) {
+        return `instruction ${index} account ${keyIndex} writable`;
+      }
+    }
+  }
+  if (signed.length > issued.length) {
+    return `extra instruction program ${signed[issued.length]!.programId.toBase58()}`;
+  }
+  if (signed.length < issued.length) {
+    return `missing issued instruction ${issued.length - signed.length}`;
+  }
+  return undefined;
+}
+
 function verifyIssuedSignedTransaction(input: {
   signature: string;
   serializedTx: Uint8Array;
@@ -735,29 +788,17 @@ function verifyIssuedSignedTransaction(input: {
   if (!signed.feePayer?.equals(input.expectedSigner)) {
     return { ok: false, reason: 'Signed deposit transaction is not for this wallet.' };
   }
-  const computeBudgetProgram = 'ComputeBudget111111111111111111111111111111';
-  const issuedInstructions = issued.instructions.filter(
-    instruction => !instruction.programId.equals(new PublicKey(computeBudgetProgram)),
-  );
-  const signedInstructions = signed.instructions.filter(
-    instruction => !instruction.programId.equals(new PublicKey(computeBudgetProgram)),
-  );
-  if (
-    issuedInstructions.length !== signedInstructions.length
-    || issuedInstructions.some((instruction, index) => {
-      const candidate = signedInstructions[index]!;
-      return !instruction.programId.equals(candidate.programId)
-        || instruction.keys.length !== candidate.keys.length
-        || instruction.keys.some((key, keyIndex) => {
-          const other = candidate.keys[keyIndex]!;
-          return !key.pubkey.equals(other.pubkey)
-            || key.isSigner !== other.isSigner
-            || key.isWritable !== other.isWritable;
-        })
-        || !Buffer.from(instruction.data).equals(Buffer.from(candidate.data));
-    })
-  ) {
-    return { ok: false, reason: 'Signed transaction instructions do not match the issued deposit transaction.' };
+  // Wallets may prepend ComputeBudget priority fees and append Lighthouse or
+  // Memo assertions. Those instructions are not part of the deposit. The
+  // deposit instructions themselves must still be the issued ones, in order.
+  const issuedInstructions = issued.instructions.filter(instruction => !isWalletAugmentation(instruction));
+  const signedInstructions = signed.instructions.filter(instruction => !isWalletAugmentation(instruction));
+  const mismatch = depositInstructionMismatch(issuedInstructions, signedInstructions);
+  if (mismatch) {
+    return {
+      ok: false,
+      reason: `Signed transaction instructions do not match the issued deposit transaction. First difference: ${mismatch}.`,
+    };
   }
   let signature: Buffer;
   try {
