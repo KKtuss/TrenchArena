@@ -1739,6 +1739,7 @@ export class ChainEconomyService {
     if (!this.chainStore) return undefined;
     const win = await this.chainStore.getIntentByScope('sol_match_win', roomId);
     const tie = await this.chainStore.getIntentByScope('sol_match_tie', roomId);
+    if (win?.status === 'confirmed' || tie?.status === 'confirmed') return undefined;
     const open = (intent?: ChainIntentRow) => Boolean(
       intent && intent.status !== 'confirmed' && intent.status !== 'cancelled',
     );
