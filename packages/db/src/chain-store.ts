@@ -180,6 +180,24 @@ export class PostgresChainStore {
     });
   }
 
+  async mergeIntentMetadata(
+    id: string,
+    patch: Record<string, unknown>,
+  ): Promise<ChainIntentRow> {
+    return this.withMapped(async client => {
+      const result = await client.query(
+        `UPDATE chain_intents
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+             updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [id, JSON.stringify(patch)],
+      );
+      if (!result.rows[0]) throw new Error(`Unknown chain intent: ${id}`);
+      return mapIntent(result.rows[0]);
+    });
+  }
+
   async setIntentStatus(
     id: string,
     status: ChainIntentStatus,
@@ -192,12 +210,11 @@ export class PostgresChainStore {
       );
       if (!current.rows[0]) throw new Error(`Unknown chain intent: ${id}`);
       const currentStatus = current.rows[0].status;
-      const retryConfirmed = currentStatus === 'failed' && status === 'confirmed';
+      const retryable = status === 'confirmed' || status === 'pending';
       if (
         currentStatus === 'confirmed'
-        || currentStatus === 'expired'
         || currentStatus === 'cancelled'
-        || (currentStatus === 'failed' && !retryConfirmed)
+        || ((currentStatus === 'failed' || currentStatus === 'expired') && !retryable)
       ) {
         const existing = await client.query(`SELECT * FROM chain_intents WHERE id = $1`, [id]);
         return mapIntent(existing.rows[0]);
@@ -210,7 +227,20 @@ export class PostgresChainStore {
         [id, status],
       );
       if (!result.rows[0]) throw new Error(`Unknown chain intent: ${id}`);
-      if (extras.signature || status === 'pending' || status === 'confirmed' || status === 'failed') {
+      const txStatus = status === 'created' ? 'pending' : status;
+      if (extras.signature || txStatus === 'pending' || txStatus === 'confirmed' || txStatus === 'failed') {
+        if (extras.signature) {
+          const updated = await client.query(
+            `UPDATE chain_txs
+             SET status = $2,
+                 slot = COALESCE($3, slot),
+                 error = $4,
+                 confirmed_at = CASE WHEN $2 = 'confirmed' THEN now() ELSE confirmed_at END
+             WHERE signature = $1`,
+            [extras.signature, txStatus, extras.slot ?? null, extras.error ?? null],
+          );
+          if ((updated.rowCount ?? 0) > 0) return mapIntent(result.rows[0]);
+        }
         await client.query(
           `INSERT INTO chain_txs (id, intent_id, signature, slot, status, error, confirmed_at)
            VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $5 = 'confirmed' THEN now() ELSE NULL END)`,
@@ -219,7 +249,7 @@ export class PostgresChainStore {
             id,
             extras.signature ?? null,
             extras.slot ?? null,
-            status === 'created' ? 'pending' : status,
+            txStatus,
             extras.error ?? null,
           ],
         );

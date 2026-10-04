@@ -11,7 +11,8 @@ import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer'
 import { useArena } from '@/lib/arena-context';
 import { shouldEnterLiveBattle } from '@/lib/battle-entry';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
-import type { CasualRoom } from '@/lib/protocol';
+import { signSerializedTransaction } from '@/lib/solana-tx';
+import type { CasualRoom, TxIntentPayload } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
 
@@ -37,6 +38,20 @@ function lobbyNote(input: {
   } = input;
   if (room.battleSize === '2v2') return '2v2 rooms can be configured, but starts are not live yet.';
   if (room.status === 'cancelled') return 'This challenge was cancelled.';
+  if (room.rail === 'sol_chain') {
+    if (!room.deposits?.creator) {
+      return 'Confirm the SOL transaction in your wallet. The challenge appears to rivals after your stake is locked.';
+    }
+    if (!room.opponentId) return 'Your SOL stake is locked. Waiting for a rival.';
+    if (room.deposits?.creator && room.deposits.opponent) {
+      if (room.status === 'drafting') return 'Both SOL stakes are confirmed. Choose your three.';
+      if (room.status === 'battling' || room.status === 'starting') {
+        return 'Both SOL stakes are confirmed. The battle is starting.';
+      }
+      return 'Both SOL stakes are confirmed. Opening the draft.';
+    }
+    return 'You joined. Confirm your SOL stake in your wallet to start the battle.';
+  }
   if (competitive) {
     if (!room.opponentId) return 'Waiting for a rival. Keep your Gen 9 OU team ready — nothing is revealed yet.';
     if (youReady && rivalReady) {
@@ -83,12 +98,15 @@ export default function CasualRoomPage() {
   const [room, setRoom] = useState<CasualRoom | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [acceptArmed, setAcceptArmed] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
   const [savedTeam, setSavedTeam] = useState<SavedTeam | null>(null);
   const [starterPaste, setStarterPaste] = useState<string>();
   const [clock, setClock] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  const [pendingFundingIntent, setPendingFundingIntent] = useState<TxIntentPayload | null>(null);
+  const [fundingSignature, setFundingSignature] = useState<string | null>(null);
+  const [depositPending, setDepositPending] = useState(false);
+  const [fundingSignedTransaction, setFundingSignedTransaction] = useState<number[] | null>(null);
   const startRequested = useRef(false);
   const cameFromSelect = useRef(false);
   const battleHandoff = useRef(false);
@@ -112,12 +130,22 @@ export default function CasualRoomPage() {
       if (message.type === 'casual.result' && message.room.id === roomId) {
         setRoom(message.room);
       }
+      if (
+        message.type === 'tx.intent'
+        && message.intent.kind === 'sol_wager_deposit'
+        && message.intent.serializedTx?.length
+      ) {
+        setError(null);
+        setFundingSignature(null);
+        setFundingSignedTransaction(null);
+        setPendingFundingIntent(message.intent);
+      }
     });
     void client.request({ type: 'casual.subscribe', roomId }).then(response => {
       if (response.type === 'casual.state') setRoom(response.room);
     }).catch(err => setError(err instanceof Error ? err.message : String(err)));
     return unsubscribe;
-  }, [client, connected, roomId]);
+  }, [client, connected, roomId, walletAdapter]);
 
   const youAreCreator = Boolean(room && playerId && room.creatorId === playerId);
   const yours = useMemo(
@@ -142,23 +170,17 @@ export default function CasualRoomPage() {
     && (!room.invitedPlayerId || room.invitedPlayerId === playerId),
   );
   const money = (amount: number) => real ? formatSolLamports(amount) : formatPoke(amount);
-  const myDeposit = Boolean(playerId && room && (
-    playerId === room.creatorId ? room.deposits?.creator : room.deposits?.opponent
+  const creatorStakeLocked = Boolean(real && room?.deposits?.creator);
+  const opponentStakeLocked = Boolean(real && room?.deposits?.opponent);
+  const stakesLocked = Boolean(creatorStakeLocked && opponentStakeLocked);
+  const yourStakeLocked = Boolean(real && (
+    youAreCreator ? creatorStakeLocked : playerId === room?.opponentId && opponentStakeLocked
   ));
-  const stakesLocked = Boolean(real && room?.deposits?.creator && room.deposits.opponent);
-  const needsStake = Boolean(real && isPlayer && !myDeposit && room && room.status !== 'completed' && room.status !== 'cancelled' && room.status !== 'battling');
-
-  const lockReturnedStake = async (response: { type: string; intent?: { intentId: string; serializedTx?: number[] } }) => {
-    if (response.type !== 'tx.intent' || !response.intent?.serializedTx?.length) return;
-    if (!walletAdapter) throw new Error('Connect the wallet that must sign this stake.');
-    const { sendSerializedTransaction } = await import('@/lib/solana-tx');
-    const signature = await sendSerializedTransaction(walletAdapter, response.intent.serializedTx);
-    await client.request({
-      type: 'tx.confirm',
-      intentId: response.intent.intentId,
-      signature,
-    });
-  };
+  const lockedAmount = real
+    ? room
+      ? (Number(creatorStakeLocked) + Number(opponentStakeLocked)) * room.economics.collateral
+      : 0
+    : room?.economics.totalPot ?? 0;
 
   const yourId = room
     ? (youAreCreator ? room.creatorId : (room.opponentId ?? playerId ?? 'You'))
@@ -185,6 +207,19 @@ export default function CasualRoomPage() {
     ? Math.max(0, Math.ceil((selectionEndsAt - clock) / 1000))
     : null;
   const bothLocked = Boolean(drafting && yours?.confirmed && rivalPreview?.confirmed);
+
+  useEffect(() => {
+    if (!room || !playerId || room.rail !== 'sol_chain') return;
+    const ownDeposit = room.creatorId === playerId
+      ? room.deposits?.creator
+      : room.opponentId === playerId
+        ? room.deposits?.opponent
+        : false;
+    if (ownDeposit) {
+      setPendingFundingIntent(null);
+      setFundingSignature(null);
+    }
+  }, [playerId, room]);
   if (drafting) cameFromSelect.current = true;
   const revealBattle = Boolean(
     casualSelect
@@ -281,6 +316,86 @@ export default function CasualRoomPage() {
     }
   };
 
+  const payWager = async () => {
+    if (!walletAdapter) {
+      throw new Error('Connect the wallet to pay the SOL wager.');
+    }
+    let intent = pendingFundingIntent;
+    if (!intent) {
+      const response = await client.request({ type: 'casual.stake', roomId });
+      if (response.type !== 'tx.intent' || !response.intent.serializedTx?.length) {
+        throw new Error('The server did not issue a wager transaction. Refresh the room and try again.');
+      }
+      intent = response.intent;
+      setPendingFundingIntent(intent);
+    }
+    const signed = fundingSignature && fundingSignedTransaction
+      ? { signature: fundingSignature, signedTransaction: fundingSignedTransaction }
+      : await signSerializedTransaction(walletAdapter, intent.serializedTx!);
+    setFundingSignature(signed.signature);
+    setFundingSignedTransaction(signed.signedTransaction);
+    const response = await client.request({
+      type: 'tx.confirm',
+      intentId: intent.intentId,
+      signature: signed.signature,
+      signedTransaction: signed.signedTransaction,
+    });
+    if (response.type === 'tx.update' && response.status === 'confirmed') {
+      setDepositPending(false);
+      setPendingFundingIntent(null);
+      setFundingSignature(null);
+      setFundingSignedTransaction(null);
+      return;
+    }
+    if (response.type === 'tx.update' && response.status === 'pending') {
+      if (response.error && /deposit-only|already exists/i.test(response.error)) {
+        setDepositPending(false);
+        setPendingFundingIntent(null);
+        setFundingSignature(null);
+        setFundingSignedTransaction(null);
+        throw new Error('The escrow is already open. Pay the wager again to sign the deposit only.');
+      }
+      setDepositPending(true);
+      return;
+    }
+    const rejected = response.type === 'tx.update' ? response.error : undefined;
+    throw new Error(rejected ?? 'The server rejected this wager transaction.');
+  };
+
+  useEffect(() => {
+    if (!depositPending || !fundingSignature || !pendingFundingIntent) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void client.request({
+        type: 'tx.confirm',
+        intentId: pendingFundingIntent.intentId,
+        signature: fundingSignature,
+        ...(fundingSignedTransaction ? { signedTransaction: fundingSignedTransaction } : {}),
+      }).then(response => {
+        if (stopped || response.type !== 'tx.update') return;
+        if (response.status === 'confirmed') {
+          setDepositPending(false);
+          setPendingFundingIntent(null);
+          setFundingSignature(null);
+          setFundingSignedTransaction(null);
+          return;
+        }
+        if (response.status === 'failed' || response.status === 'expired' || response.status === 'cancelled') {
+          setDepositPending(false);
+          setFundingSignature(null);
+          setFundingSignedTransaction(null);
+          setError(response.error ?? 'The wager transaction did not confirm.');
+        }
+      }).catch(err => {
+        if (!stopped) setError(err instanceof Error ? err.message : String(err));
+      });
+    }, 2000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [client, depositPending, fundingSignature, fundingSignedTransaction, pendingFundingIntent]);
+
   const sendSelection = async (slots: number[], confirm = false) => {
     const response = await client.request({
       type: 'casual.select',
@@ -329,7 +444,9 @@ export default function CasualRoomPage() {
         <div>
           <h1 className={room ? undefined : 'pa-async'}>{room ? `Challenge ${code}` : 'Finding your room…'}</h1>
           <p className="pa-lead">
-            {competitive
+            {real
+              ? 'Your SOL stake is confirmed before this challenge is offered to another player.'
+              : competitive
               ? 'Bring a legal Gen 9 OU team. The rival cannot see your paste until the fight starts.'
               : 'Ready up once a rival joins. The 6→3 pick happens after both of you are ready.'}
           </p>
@@ -435,14 +552,16 @@ export default function CasualRoomPage() {
           <div className={`pa-vault${stakesLocked ? ' is-funded' : ''}${real ? ' rail-sol' : ' rail-poke'}`}>
             <header>
               <h2>{real ? 'Real stake' : 'Mock fight'}</h2>
-              <span className={real ? (stakesLocked ? 'ok' : 'warn') : 'ok'}>
-                {real ? (stakesLocked ? 'Escrow locked' : 'Escrow') : 'No SOL'}
+              <span className={real ? (stakesLocked ? 'ok' : yourStakeLocked ? 'ok' : 'warn') : 'ok'}>
+                {real
+                  ? (stakesLocked ? 'Escrow locked' : yourStakeLocked ? 'Your stake locked' : 'Waiting for wager')
+                  : 'No SOL'}
               </span>
             </header>
             <div className="pa-econ-rows">
               <div><span>Your stake</span><strong>{money(room.economics.collateral)}</strong></div>
               <div><span>Opponent stake</span><strong>{money(room.economics.collateral)}</strong></div>
-              <div><span>Amount locked</span><strong>{money(room.economics.totalPot)}</strong></div>
+              <div><span>Amount locked</span><strong>{money(lockedAmount)}</strong></div>
               <div className="fee"><span>Platform fee · 2%</span><strong>{money(room.economics.protocolFee)}</strong></div>
               <div className="payout"><span>Potential payout</span><strong>{money(room.economics.winnerPayout)}</strong></div>
             </div>
@@ -450,9 +569,13 @@ export default function CasualRoomPage() {
               {real
                 ? (stakesLocked
                   ? 'Both stakes are locked. The server settles escrow from the battle result.'
+                  : yourStakeLocked
+                    ? 'Your stake is locked. The challenge is waiting for an opponent to join.'
+                    : room.opponentId
+                      ? 'Your wager is not confirmed yet. Pay the wager below; the lobby will not start until the server confirms it.'
                   : room.status === 'cancelled'
                     ? 'Challenge cancelled. Unlocked stakes are refunded by the escrow rules.'
-                    : 'Funds lock only after each wallet signs. The battle cannot start until both deposits confirm.')
+                    : 'Your wallet will be asked to sign the escrow and stake transaction.')
                 : 'Mock fight. Development balance only. Nothing is escrowed on-chain.'}
             </p>
             {room.status === 'completed' ? (
@@ -503,17 +626,29 @@ export default function CasualRoomPage() {
             )) ? (
               <div className="pa-vault">
                 <div className="pa-lobby-actions pa-room-actions">
-                  {canAccept && real && !acceptArmed ? (
+                  {isPlayer && real && !yourStakeLocked && (
+                    room.status === 'pending_deposit'
+                    || room.status === 'open'
+                    || room.status === 'full'
+                    || room.status === 'ready'
+                  ) ? (
                     <button
                       type="button"
-                      className="pa-btn pa-btn-gold"
+                      className="pa-btn pa-btn-primary"
                       disabled={busy}
-                      onClick={() => setAcceptArmed(true)}
+                      onClick={() => void act(payWager)}
                     >
-                      Review stake
+                      {depositPending
+                        ? 'Wager confirming…'
+                        : fundingSignature
+                          ? 'Check wager status'
+                          : `Pay ${formatSolLamports(room.economics.collateral)} wager`}
                     </button>
                   ) : null}
-                  {canAccept && (!real || acceptArmed) ? (
+                  {depositPending ? (
+                    <p className="pa-muted">The signed wager stays pending until the escrow confirms. Paying again will not create a second escrow.</p>
+                  ) : null}
+                  {canAccept ? (
                     <button
                       type="button"
                       className="pa-btn pa-btn-primary"
@@ -521,30 +656,35 @@ export default function CasualRoomPage() {
                       onClick={() => void act(async () => {
                         const response = await client.request({ type: 'casual.accept', roomId });
                         if (response.type === 'casual.state') setRoom(response.room);
-                        await lockReturnedStake(response);
                       })}
                     >
-                      {real ? 'Confirm stake and accept' : 'Accept challenge'}
+                      {real ? 'Join challenge' : 'Accept challenge'}
                     </button>
                   ) : null}
-                  {isPlayer && room.status !== 'battling' && room.status !== 'completed' ? (
+                  {isPlayer
+                    && room.status !== 'battling'
+                    && room.status !== 'completed'
+                    && room.status !== 'cancelled' ? (
                     <button
                       type="button"
                       className="pa-btn pa-btn-surface"
                       disabled={busy}
                       onClick={() => void act(async () => {
                         const response = await client.request({ type: 'casual.cancel', roomId });
-                        if (response.type === 'casual.state') setRoom(response.room);
+                        if (response.type === 'casual.state') {
+                          setRoom(response.room);
+                          router.replace('/arena');
+                        }
                       })}
                     >
                       Cancel
                     </button>
                   ) : null}
-                  {isPlayer && casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
+                  {isPlayer && casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown && (!real || stakesLocked) ? (
                     <button
                       type="button"
                       className="pa-btn pa-btn-primary"
-                      disabled={busy || (real && !stakesLocked && !youReady)}
+                      disabled={busy}
                       onClick={() => void act(async () => {
                         if (!playerId) return;
                         const response = await client.request({
@@ -568,19 +708,6 @@ export default function CasualRoomPage() {
       <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <div className="pa-lobby-actions">
-        {needsStake && !canAccept ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-gold"
-            disabled={busy}
-            onClick={() => void act(async () => {
-              const response = await client.request({ type: 'casual.stake', roomId });
-              await lockReturnedStake(response);
-            })}
-          >
-            Lock my stake
-          </button>
-        ) : null}
         {isPlayer && competitive && room && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
           <button
             type="button"

@@ -18,13 +18,18 @@ import {
 } from '@pokearena/tournament';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import { TOURNAMENT_BURN_FEE_ATOMS } from '@pokearena/solana-client';
+import {
+  TOURNAMENT_BURN_FEE_ATOMS,
+  uuidToBytes,
+  type ArenaChainClient,
+} from '@pokearena/solana-client';
 
 import {
   previewCasual,
   previewTournament,
   recoverDurableState,
   RecoveryFailedError,
+  type ChainIntentRow,
   type EconomicsStore,
   type PayoutResult,
   type Pool,
@@ -35,7 +40,7 @@ import { CASUAL_SELECTION_MS, CASUAL_START_COUNTDOWN_MS, CasualRoomService } fro
 import { getGenerationPreset } from './generation-presets';
 import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor } from './fight-history';
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
-import { ChainEconomyService } from './chain-economy';
+import { assessDepositEscrow, ChainEconomyService, depositEscrowFollowUp } from './chain-economy';
 import {
   createPlayTokenEligibilityService,
   type PlayTokenCheckResult,
@@ -68,6 +73,7 @@ import {
   type ArenaSnapshot,
   type ClientMessage,
   type ServerMessage,
+  type TxIntentPayload,
   type TournamentSummary,
   type TournamentSelectionView,
 } from './protocol';
@@ -208,6 +214,9 @@ export class ApiServer {
   private readonly upgradeSockets = new Set<Duplex>();
   private readonly matchUnsubscribers = new Map<string, () => void>();
   private readonly casualUnsubscribers = new Map<string, () => void>();
+  private readonly solFundingJobs = new Map<string, Promise<TxIntentPayload | undefined>>();
+  private readonly solReconciliationJobs = new Map<string, Promise<boolean>>();
+  private readonly depositEscrowChecks = new Set<string>();
   private readonly pendingMatchBroadcasts = new Set<string>();
   private readonly pendingChallenges = new Map<string, StoredChallenge>();
   private readonly challengeByConnection = new Map<ClientConnection, string>();
@@ -304,10 +313,16 @@ export class ApiServer {
               refund: (roomId, creatorId, opponentId) => (
                 this.chainEconomy.refundCasual(roomId, creatorId, opponentId)
               ),
+              depositStillLive: roomId => this.chainEconomy.depositStillLive(roomId),
             },
           }
         : {}),
     });
+    this.chainEconomy.setSolDepositResolved((intent, outcome) => {
+      if (outcome.status !== 'confirmed' || intent.kind !== 'sol_wager_deposit' || !intent.roomId) return;
+      return this.applyConfirmedSolDeposit(intent, outcome.signature);
+    });
+    void this.chainEconomy.resumePendingDeposits();
     this.httpServer = createServer((request, response) => this.handleHttp(request, response));
     this.webSockets = new WebSocketServer({
       noServer: true,
@@ -381,7 +396,27 @@ export class ApiServer {
       chainEconomy,
     });
     server.attachEconomicsPool(pool);
+    await server.restoreDurableCasualRooms(store);
     return server;
+  }
+
+  private async restoreDurableCasualRooms(store: EconomicsStore): Promise<void> {
+    for (const room of await store.listCasualRooms()) {
+      let deposits: { creator?: boolean; opponent?: boolean } | undefined;
+      if (room.rail === 'sol_chain' && this.chainEconomy.client) {
+        try {
+          const state = await this.chainEconomy.client.getMatchEscrowState(uuidToBytes(room.id));
+          deposits = {
+            creator: state.creatorDeposited,
+            opponent: state.opponentDeposited,
+          };
+        } catch {
+          // A missing or temporarily unavailable escrow remains represented by
+          // the durable room; boot recovery owns any refund decision.
+        }
+      }
+      this.casual.restoreRoom(room, deposits);
+    }
   }
 
   async listen(port = 0): Promise<number> {
@@ -596,7 +631,7 @@ export class ApiServer {
         return;
       }
       case 'passport.status': {
-        if (!this.chainEconomy.enabled) {
+        if (!this.chainEconomy.pokeConfigured) {
           this.send(connection, {
             type: 'passport.status',
             passport: {
@@ -618,7 +653,7 @@ export class ApiServer {
                 quoteId: 'disabled',
               },
             },
-            chainEconomyEnabled: false,
+            chainEconomyEnabled: this.chainEconomy.enabled,
           }, message.requestId);
           return;
         }
@@ -659,12 +694,14 @@ export class ApiServer {
         const result = await this.chainEconomy.confirmIntent({
           intentId: message.intentId,
           signature: message.signature,
+          ...(message.signedTransaction ? { signedTransaction: message.signedTransaction } : {}),
         });
         this.send(connection, {
           type: 'tx.update',
           intentId: message.intentId,
           status: result.status,
           signature: message.signature,
+          ...(result.error ? { error: result.error } : {}),
         }, message.requestId);
         if (result.status === 'confirmed' && intent.kind === 'poke_entry_deposit') {
           try {
@@ -690,13 +727,15 @@ export class ApiServer {
           }, message.requestId);
         }
         if (result.status === 'confirmed' && intent.kind === 'sol_wager_deposit' && intent.roomId) {
-          const side = Number(intent.metadata?.side) === 1 ? 'opponent' : 'creator';
-          try {
-            this.casual.markSolDeposit(intent.roomId, side);
-            this.broadcastCasual(intent.roomId);
-          } catch {
-            // The on-chain deposit stands even if the room is already gone.
-          }
+          await this.applyConfirmedSolDeposit(intent, message.signature);
+        } else if (intent.kind === 'sol_wager_deposit') {
+          console.info('[pokearena-deposit]', {
+            signature: message.signature,
+            intentId: intent.id,
+            roomId: intent.roomId,
+            lobby: result.status,
+            source: 'signature-status',
+          });
         }
         void this.broadcastArenaSnapshots();
         return;
@@ -708,12 +747,13 @@ export class ApiServer {
           if (!this.chainEconomy.enabled) {
             throw new Error('Real stake is unavailable. Chain economy is not enabled on this server.');
           }
-          await this.chainEconomy.assertCanPlay(playerId);
+          if (this.chainEconomy.pokeConfigured) {
+            await this.chainEconomy.assertCanPlay(playerId);
+          }
           const lamports = message.collateralLamports ?? message.collateral;
           if (!Number.isSafeInteger(lamports) || lamports <= 0) {
             throw new Error('Real stake must be a positive lamport amount.');
           }
-          await this.assertSolStakeAvailable(playerId, lamports);
           const room = await this.casual.createRoom({
             creatorId: playerId,
             roomType: message.roomType,
@@ -723,23 +763,15 @@ export class ApiServer {
             rail: 'sol_chain',
             ruleset: message.ruleset ?? 'casual',
           });
-          const intent = await this.chainEconomy.createSolWagerDepositIntent({
-            roomId: room.id,
-            playerId,
-            side: 0,
-            collateralLamports: lamports,
-          });
           connection.casualRoomIds.add(room.id);
           this.ensureCasualSubscription(room.id);
+          const intent = room.rail === 'sol_chain'
+            ? await this.beginSolFunding(room.id, false)
+            : undefined;
           this.send(connection, {
             type: 'casual.created',
-            room,
-            intent: {
-              intentId: intent.intentId,
-              serializedTx: intent.serializedTx,
-              kind: 'sol_wager_deposit',
-              economics: intent.economics,
-            },
+            room: this.casual.getRoom(room.id, playerId),
+            ...(intent ? { intent } : {}),
           }, message.requestId);
           void this.broadcastArenaSnapshots();
           return;
@@ -759,6 +791,7 @@ export class ApiServer {
         return;
       }
       case 'casual.list':
+        void this.reconcileSolRoomsForPlayer(playerId);
         this.send(connection, {
           type: 'casual.list',
           rooms: this.casual.listOpenRooms(playerId),
@@ -787,31 +820,18 @@ export class ApiServer {
           if (!this.chainEconomy.enabled) {
             throw new Error('Real stake is unavailable. Chain economy is not enabled on this server.');
           }
-          await this.chainEconomy.assertCanPlay(playerId);
-          await this.assertSolStakeAvailable(playerId, existing.collateral);
+          if (this.chainEconomy.pokeConfigured) {
+            await this.chainEconomy.assertCanPlay(playerId);
+          }
         }
-        const room = await this.casual.acceptRoom(message.roomId, playerId);
+        let room = await this.casual.acceptRoom(message.roomId, playerId);
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
-        if (room.rail === 'sol_chain') {
-          const intent = await this.chainEconomy.createSolWagerDepositIntent({
-            roomId: room.id,
-            playerId,
-            side: 1,
-            collateralLamports: room.collateral,
-          });
-          this.send(connection, {
-            type: 'tx.intent',
-            intent: {
-              intentId: intent.intentId,
-              serializedTx: intent.serializedTx,
-              kind: 'sol_wager_deposit',
-              economics: intent.economics,
-            },
-          }, message.requestId);
-        }
         this.send(connection, { type: 'casual.state', room }, message.requestId);
         this.broadcastCasual(room.id);
+        if (room.rail === 'sol_chain') {
+          await this.beginSolFunding(room.id);
+        }
         void this.broadcastArenaSnapshots();
         return;
       }
@@ -837,21 +857,35 @@ export class ApiServer {
           side,
           collateralLamports: room.collateral,
         });
-        this.send(connection, {
-          type: 'tx.intent',
-          intent: {
-            intentId: intent.intentId,
-            serializedTx: intent.serializedTx,
-            kind: 'sol_wager_deposit',
-            economics: intent.economics,
-          },
-        }, message.requestId);
+        if (intent.serializedTx.length) {
+          this.send(connection, {
+            type: 'tx.intent',
+            intent: {
+              intentId: intent.intentId,
+              serializedTx: intent.serializedTx,
+              kind: 'sol_wager_deposit',
+              economics: intent.economics,
+            },
+          }, message.requestId);
+        } else {
+          this.casual.markSolDeposit(room.id, side === 0 ? 'creator' : 'opponent');
+          const current = this.casual.getRoom(room.id, playerId);
+          this.send(connection, { type: 'casual.state', room: current }, message.requestId);
+          this.broadcastCasual(room.id);
+        }
         return;
       }
       case 'casual.ready': {
         const room = this.casual.setReady(message.roomId, playerId, message.ready, message.team);
         this.send(connection, { type: 'casual.state', room }, message.requestId);
         this.broadcastCasual(room.id);
+        if (
+          room.rail === 'sol_chain'
+          && room.status === 'ready'
+          && room.opponentId
+        ) {
+          await this.beginSolFunding(room.id);
+        }
         return;
       }
       case 'casual.select': {
@@ -907,6 +941,17 @@ export class ApiServer {
         connection.casualRoomIds.add(room.id);
         this.ensureCasualSubscription(room.id);
         this.send(connection, { type: 'casual.state', room: this.casual.getRoom(room.id, playerId) }, message.requestId);
+        void this.reconcileSolRoom(room.id);
+        const current = this.casual.getRoom(room.id);
+        if (
+          current.rail === 'sol_chain'
+          && (
+            (!current.deposits?.creator && current.creatorId === playerId)
+            || (current.deposits?.creator && current.opponentId === playerId && !current.deposits?.opponent)
+          )
+        ) {
+          await this.beginSolFunding(current.id);
+        }
         return;
       }
       case 'tournament.create': {
@@ -915,7 +960,7 @@ export class ApiServer {
         let entryFee = message.entryFee ?? DEFAULT_TOURNAMENT_ENTRY_POKE;
         let chainEntryAtoms: number | undefined;
         let chainQuoteId: string | undefined;
-        if (this.chainEconomy.enabled) {
+        if (this.chainEconomy.pokeConfigured) {
           if ((message.maxPlayers ?? 32) !== 32) {
             throw new Error('Chain tournaments use a fixed 32-player field.');
           }
@@ -931,11 +976,11 @@ export class ApiServer {
           title: message.title ?? 'PokeArena Open',
           format: 'gen9ou',
           ruleset: rulesetId,
-          maxPlayers: this.chainEconomy.enabled ? 32 : (message.maxPlayers ?? 4),
+          maxPlayers: this.chainEconomy.pokeConfigured ? 32 : (message.maxPlayers ?? 4),
           matchTimeoutMs: 300_000,
           hostId: playerId,
           entryFee,
-          ...(this.chainEconomy.enabled
+          ...(this.chainEconomy.pokeConfigured
             ? {
                 rail: 'sol_chain' as const,
                 entryAtoms: chainEntryAtoms,
@@ -960,7 +1005,9 @@ export class ApiServer {
         }, message.requestId);
         return;
       case 'tournament.payBurnFee': {
-        if (!this.chainEconomy.enabled) throw new Error('Chain economy is not enabled.');
+        if (!this.chainEconomy.pokeConfigured) {
+          throw new Error('POKE economy is not configured. POKEARENA_POKE_MINT is unset.');
+        }
         const tournamentId = message.tournamentId as TournamentId;
         const tournament = await this.tournaments.getTournament(tournamentId);
         if (
@@ -1006,7 +1053,7 @@ export class ApiServer {
       case 'tournament.join': {
         const tournamentId = message.tournamentId as TournamentId;
         const targetTournament = await this.tournaments.getTournament(tournamentId);
-        if (this.chainEconomy.enabled && targetTournament.rail === 'sol_chain' && targetTournament.maxPlayers !== 32) {
+        if (this.chainEconomy.pokeConfigured && targetTournament.rail === 'sol_chain' && targetTournament.maxPlayers !== 32) {
           throw new Error('Chain tournaments must use a 32-player field.');
         }
         const ruleset = getRuleset(targetTournament.ruleset);
@@ -1014,7 +1061,7 @@ export class ApiServer {
           ? this.presetTeamForJoin(ruleset.presetId)
           : this.customTeamForJoin(playerId, message.team, ruleset.id);
         validateRulesetTeam(team, ruleset.id);
-        if (this.chainEconomy.enabled) {
+        if (this.chainEconomy.pokeConfigured && targetTournament.rail === 'sol_chain') {
           await this.chainEconomy.assertCanPlay(playerId);
         }
         await this.tournaments.registerPlayer(tournamentId, {
@@ -1106,7 +1153,7 @@ export class ApiServer {
         if (!this.localTestMode && beforeStart.finalizesAt !== undefined && Date.now() < beforeStart.finalizesAt) {
           throw new Error('Team finalization is still open.');
         }
-        if (this.chainEconomy.enabled) {
+        if (this.chainEconomy.pokeConfigured) {
           if (beforeStart.rail !== 'sol_chain' || beforeStart.finalizesAt === undefined) {
             throw new Error('Chain tournaments start only after the full payment window has closed.');
           }
@@ -1305,7 +1352,8 @@ export class ApiServer {
     };
   }
 
-  private async buildArenaSnapshot(playerId: string): Promise<ArenaSnapshot> {
+  private async buildArenaSnapshot(playerId: string, reconcile = true): Promise<ArenaSnapshot> {
+    if (reconcile) void this.reconcileSolRoomsForPlayer(playerId);
     const base: ArenaSnapshot = {
       wallet: await this.economics.ensureWallet(playerId),
       tournaments: await this.listTournamentSummaries(),
@@ -1319,7 +1367,9 @@ export class ApiServer {
     try {
       const { PublicKey } = await import('@solana/web3.js');
       const owner = new PublicKey(playerId);
-      const passport = await this.chainEconomy.getPassport(playerId);
+      const passport = this.chainEconomy.pokeConfigured
+        ? await this.chainEconomy.getPassport(playerId)
+        : undefined;
       const freeLamports = await this.chainEconomy.client.getSolBalance(owner);
       const treasuryLamports = await this.chainEconomy.client.getTreasuryLamports();
       return {
@@ -1333,6 +1383,243 @@ export class ApiServer {
     } catch {
       return base;
     }
+  }
+
+  private async applyConfirmedSolDeposit(intent: ChainIntentRow, signature: string): Promise<void> {
+    if (!intent.roomId) return;
+    const side = Number(intent.metadata?.side) === 1 ? 'opponent' : 'creator';
+    try {
+      this.casual.markSolDeposit(intent.roomId, side);
+      this.broadcastCasual(intent.roomId);
+      console.info('[pokearena-deposit]', {
+        signature,
+        intentId: intent.id,
+        roomId: intent.roomId,
+        lobby: 'opened',
+        source: 'signature-status',
+      });
+      this.scheduleDepositEscrowCheck(intent.roomId, side, signature);
+      const room = this.casual.getRoom(intent.roomId);
+      if (room.rail === 'sol_chain' && room.deposits?.creator && room.deposits.opponent) {
+        await this.casual.startBattle(intent.roomId, room.creatorId);
+        this.broadcastCasual(intent.roomId);
+      } else if (room.rail === 'sol_chain' && side === 'creator') {
+        await this.beginSolFunding(intent.roomId);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[pokearena-casual]', {
+        operation: 'start_after_deposit',
+        roomId: intent.roomId,
+        message,
+      });
+    }
+  }
+
+  /**
+   * One confirmed escrow read after the lobby is already open. A missing
+   * account or a rate limit retries once, then stops. It never closes the lobby.
+   */
+  private scheduleDepositEscrowCheck(
+    roomId: string,
+    side: 'creator' | 'opponent',
+    signature: string,
+  ): void {
+    const key = `${roomId}:${side}`;
+    if (this.depositEscrowChecks.has(key)) return;
+    this.depositEscrowChecks.add(key);
+    void this.readDepositEscrow(roomId, side, signature, 0).finally(() => {
+      this.depositEscrowChecks.delete(key);
+    });
+  }
+
+  private async readDepositEscrow(
+    roomId: string,
+    side: 'creator' | 'opponent',
+    signature: string,
+    attempt: number,
+  ): Promise<void> {
+    const client = this.chainEconomy.client;
+    if (!client) return;
+    let room;
+    try {
+      room = this.casual.getRoom(roomId);
+    } catch {
+      return;
+    }
+    if (room.rail !== 'sol_chain') return;
+    try {
+      const state = await this.readEscrowOnce(roomId);
+      const verdict = assessDepositEscrow({
+        side,
+        roomCreator: room.creatorId,
+        ...(room.opponentId ? { roomOpponent: room.opponentId } : {}),
+        roomCollateral: room.collateral,
+        state,
+      });
+      console.info('[pokearena-deposit]', {
+        signature,
+        roomId,
+        side,
+        attempt,
+        lobby: 'opened',
+        source: 'signature-status',
+        escrow: verdict,
+      });
+      if (depositEscrowFollowUp(verdict, attempt) === 'revoke') {
+        this.casual.revokeUnmatchedSolDeposit(
+          roomId,
+          side,
+          'Escrow account contradicts the confirmed deposit.',
+        );
+        this.broadcastCasual(roomId);
+        return;
+      }
+      if (depositEscrowFollowUp(verdict, attempt) === 'retry') {
+        await waitForEscrowRetry();
+        return this.readDepositEscrow(roomId, side, signature, 1);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.info('[pokearena-deposit]', {
+        signature,
+        roomId,
+        side,
+        attempt,
+        lobby: 'opened',
+        source: 'signature-status',
+        escrow: 'unread',
+        reason: message,
+      });
+      if (depositEscrowFollowUp('unread', attempt) === 'retry') {
+        await waitForEscrowRetry();
+        return this.readDepositEscrow(roomId, side, signature, 1);
+      }
+    }
+  }
+
+  private readEscrowOnce(roomId: string) {
+    const client = this.chainEconomy.client;
+    if (!client) throw new Error('Chain client is required.');
+    if (client.getMatchEscrowStateOnce) {
+      return client.getMatchEscrowStateOnce(uuidToBytes(roomId), 'confirmed');
+    }
+    return client.getMatchEscrowState(uuidToBytes(roomId), 'confirmed');
+  }
+
+  /**
+   * The wallet confirmation callback is not the source of truth for a SOL
+   * wager. A wallet can land a transaction while the browser disconnects
+   * before tx.confirm reaches this process. Re-read the escrow whenever a
+   * player opens a room or refreshes the arena so cached room state converges
+   * to the confirmed on-chain deposit flags.
+   */
+  private async reconcileSolRoomsForPlayer(playerId: string): Promise<void> {
+    const rooms = this.casual.listRoomsForPlayer(playerId)
+      .filter(room => room.status !== 'cancelled' && room.status !== 'completed');
+    await Promise.all(rooms.map(room => this.reconcileSolRoom(room.id)));
+  }
+
+  private async reconcileSolRoom(roomId: string): Promise<boolean> {
+    const existing = this.solReconciliationJobs.get(roomId);
+    if (existing) return existing;
+
+    const job = this.reconcileSolRoomOnce(roomId).finally(() => {
+      this.solReconciliationJobs.delete(roomId);
+    });
+    this.solReconciliationJobs.set(roomId, job);
+    return job;
+  }
+
+  private async reconcileSolRoomOnce(roomId: string): Promise<boolean> {
+    if (!this.chainEconomy.enabled || !this.chainEconomy.client) return false;
+    let room;
+    try {
+      room = this.casual.getRoom(roomId);
+    } catch {
+      return false;
+    }
+    if (room.rail !== 'sol_chain') return false;
+    if (room.status === 'cancelled' || room.status === 'completed') return false;
+
+    let state: Awaited<ReturnType<ArenaChainClient['getMatchEscrowState']>>;
+    try {
+      state = await this.readEscrowOnce(roomId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/not found/i.test(message)) {
+        console.warn('[pokearena-reconciliation]', {
+          operation: 'read_match_escrow',
+          roomId,
+          message,
+        });
+      }
+      // No escrow yet is normal for a newly created or cancelled room.
+      return false;
+    }
+
+    let changed = false;
+    const creatorEscrow = assessDepositEscrow({
+      side: 'creator',
+      roomCreator: room.creatorId,
+      ...(room.opponentId ? { roomOpponent: room.opponentId } : {}),
+      roomCollateral: room.collateral,
+      state,
+    });
+    const opponentEscrow = assessDepositEscrow({
+      side: 'opponent',
+      roomCreator: room.creatorId,
+      ...(room.opponentId ? { roomOpponent: room.opponentId } : {}),
+      roomCollateral: room.collateral,
+      state,
+    });
+    if (creatorEscrow === 'mismatch' && room.deposits?.creator) {
+      this.casual.revokeUnmatchedSolDeposit(roomId, 'creator', 'Escrow account contradicts the creator deposit.');
+      changed = true;
+    } else if (creatorEscrow === 'matched' && !room.deposits?.creator) {
+      await this.chainEconomy.adoptEscrowDeposit(roomId, 'creator');
+      this.casual.markSolDeposit(roomId, 'creator');
+      changed = true;
+    }
+    if (opponentEscrow === 'mismatch' && room.deposits?.opponent) {
+      this.casual.revokeUnmatchedSolDeposit(roomId, 'opponent', 'Escrow account contradicts the opponent deposit.');
+      changed = true;
+    } else if (opponentEscrow === 'matched' && !room.deposits?.opponent) {
+      await this.chainEconomy.adoptEscrowDeposit(roomId, 'opponent');
+      this.casual.markSolDeposit(roomId, 'opponent');
+      changed = true;
+    }
+
+    const current = this.casual.getRoom(roomId);
+    if (
+      current.deposits?.creator
+      && current.deposits.opponent
+      && current.opponentId
+      && current.status !== 'battling'
+      && current.status !== 'completed'
+      && current.status !== 'cancelled'
+    ) {
+      try {
+        if (current.rail === 'sol_chain') {
+          await this.startChargedCasualBattle(roomId, current.creatorId, false);
+        } else {
+          await this.casual.startBattle(roomId, current.creatorId);
+        }
+        changed = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn('[pokearena-casual]', {
+          operation: 'start_after_reconciliation',
+          roomId,
+          message,
+        });
+      }
+    }
+    if (changed) {
+      this.broadcastCasual(roomId);
+      void this.broadcastArenaSnapshots(false);
+    }
+    return changed;
   }
 
   private async fightHistory(playerId: string, limit: number, before?: FightHistoryCursor) {
@@ -1624,7 +1911,7 @@ export class ApiServer {
       const count = registered.length;
       const playable = count >= 2 && (count & (count - 1)) === 0;
       if (!playable) {
-        if (this.chainEconomy.enabled) {
+        if (this.chainEconomy.pokeConfigured) {
           for (const player of registered) {
             const intent = await this.chainEconomy.getIntentByScope(
               'poke_entry_deposit',
@@ -2015,7 +2302,7 @@ export class ApiServer {
     }
     const tournament = await this.tournaments.getTournament(tournamentId);
     // Chain cups: champion prize is SOL via pay_prize (treasury reserve), not entry POKE.
-    if (this.chainEconomy.enabled) {
+    if (this.chainEconomy.pokeConfigured && tournament.rail === 'sol_chain') {
       const payout = await this.chainEconomy.payTournamentPrize({
         tournamentId,
         winnerId: result.winner,
@@ -2217,17 +2504,90 @@ export class ApiServer {
    * A failure after that fee returns the vault. A failure before the fee
    * leaves the wager refundable.
    */
+  private async beginSolFunding(roomId: string, notify = true): Promise<TxIntentPayload | undefined> {
+    const existing = this.solFundingJobs.get(roomId);
+    if (existing) return existing;
+
+    const job = (async () => {
+      for (let step = 0; step < 2; step += 1) {
+        const room = this.casual.getRoom(roomId);
+        if (
+          room.rail !== 'sol_chain'
+        ) return;
+        if (room.deposits?.creator && room.deposits.opponent) {
+          await this.casual.startBattle(roomId, room.creatorId);
+          this.broadcastCasual(roomId);
+          return;
+        }
+
+        // The creator funds first. Until that confirmation arrives the room
+        // remains a private pending-deposit record and is not listed/joinable.
+        // Once the creator deposit is confirmed, an opponent may join and the
+        // server asks that opponent for the second deposit.
+        if (!room.deposits?.creator) {
+          if (room.opponentId) return;
+          if (room.status !== 'pending_deposit') return;
+        } else if (!room.opponentId) {
+          return;
+        }
+
+        const side: 0 | 1 = room.deposits?.creator ? 1 : 0;
+        const playerId = side === 0 ? room.creatorId : room.opponentId;
+        if (!playerId) return;
+        await this.assertSolStakeAvailable(playerId, room.collateral);
+        const intent = await this.chainEconomy.createSolWagerDepositIntent({
+          roomId,
+          playerId,
+          side,
+          collateralLamports: room.collateral,
+        });
+        if (intent.serializedTx.length) {
+          const target = this.sessionsByPlayer.get(playerId);
+          const payload: TxIntentPayload = {
+            intentId: intent.intentId,
+            serializedTx: intent.serializedTx,
+            kind: 'sol_wager_deposit',
+            economics: intent.economics,
+          };
+          if (notify && target && !target.closed) {
+            target.casualRoomIds.add(roomId);
+            this.send(target, {
+              type: 'tx.intent',
+              intent: payload,
+            });
+          }
+          return payload;
+        }
+        this.casual.markSolDeposit(roomId, side === 0 ? 'creator' : 'opponent');
+      }
+    })().finally(() => {
+      this.solFundingJobs.delete(roomId);
+    });
+    this.solFundingJobs.set(roomId, job);
+    return job;
+  }
+
   private async startChargedCasualBattle(
     roomId: string,
     playerId: string,
     chargeFee: boolean,
     team?: string,
   ) {
-    if (chargeFee) await this.chainEconomy.prepareCasualStart(roomId);
+    const before = this.casual.getRoom(roomId);
+    const casualSelectionConfirmed = before.status === 'drafting'
+      || before.status === 'ready'
+      ? Boolean(
+        before.teamPreview?.length === 2
+        && before.teamPreview.every(preview => preview.confirmed),
+      )
+      : false;
+    const shouldChargeFee = chargeFee
+      || (before.rail === 'sol_chain' && casualSelectionConfirmed);
+    if (shouldChargeFee) await this.chainEconomy.prepareCasualStart(roomId);
     try {
       return await this.casual.startBattle(roomId, playerId, team);
     } catch (error) {
-      if (chargeFee) {
+      if (shouldChargeFee) {
         const latest = this.casual.getRoom(roomId);
         if (
           latest.rail === 'sol_chain'
@@ -2255,6 +2615,13 @@ export class ApiServer {
     requestId?: string,
   ): Promise<void> {
     const before = this.casual.getRoom(roomId, playerId);
+    if (
+      before.rail === 'sol_chain'
+      && (!before.deposits?.creator || !before.deposits.opponent)
+    ) {
+      this.send(connection, { type: 'casual.state', room: before }, requestId);
+      return;
+    }
     const launchingFight = before.status === 'battling'
       || ((before.ruleset ?? 'casual') === 'competitive' && before.status === 'ready')
       || (before.status === 'drafting' && Boolean(
@@ -2290,13 +2657,13 @@ export class ApiServer {
     }
   }
 
-  private async broadcastArenaSnapshots(): Promise<void> {
+  private async broadcastArenaSnapshots(reconcile = true): Promise<void> {
     await Promise.all([...this.connections.values()].map(async connection => {
       if (!connection.playerId || connection.closed) return;
       try {
         this.send(connection, {
           type: 'arena.snapshot',
-          snapshot: await this.buildArenaSnapshot(connection.playerId),
+          snapshot: await this.buildArenaSnapshot(connection.playerId, reconcile),
         });
       } catch {
         // A stale wallet snapshot must not crash other clients.
@@ -2727,6 +3094,13 @@ export class ApiServer {
       response.end('Not found');
     }
   }
+}
+
+function waitForEscrowRetry(): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, 1_000);
+    timer.unref?.();
+  });
 }
 
 function envFlag(value: string | undefined): boolean {

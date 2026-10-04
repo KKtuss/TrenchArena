@@ -31,6 +31,7 @@ export type ClientMessage =
       requestId: string;
       intentId: string;
       signature: string;
+      signedTransaction?: number[];
     }
   | {
       type: 'casual.create';
@@ -342,11 +343,24 @@ export function parseClientMessage(raw: string): ClientMessage {
     case 'tx.confirm':
       requireString(value, 'intentId');
       requireString(value, 'signature');
+      if (value.signedTransaction !== undefined) {
+        if (
+          !Array.isArray(value.signedTransaction)
+          || value.signedTransaction.length === 0
+          || value.signedTransaction.length > 2_000
+          || value.signedTransaction.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
+        ) {
+          throw new Error('signedTransaction must be a valid serialized transaction.');
+        }
+      }
       return {
         type: 'tx.confirm',
         requestId: value.requestId as string,
         intentId: value.intentId as string,
         signature: value.signature as string,
+        ...(value.signedTransaction !== undefined
+          ? { signedTransaction: value.signedTransaction as number[] }
+          : {}),
       };
     case 'team.inspect':
       requireString(value, 'team');

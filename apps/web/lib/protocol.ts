@@ -374,7 +374,7 @@ export type ClientMessage =
   | { type: 'arena.snapshot' }
   | { type: 'passport.status' }
   | { type: 'treasury.snapshot' }
-  | { type: 'tx.confirm'; intentId: string; signature: string }
+  | { type: 'tx.confirm'; intentId: string; signature: string; signedTransaction?: number[] }
   | { type: 'tournament.payBurnFee'; tournamentId: string; playerPokeAta?: string }
   | {
       type: 'casual.create';

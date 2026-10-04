@@ -375,12 +375,11 @@ class RacingChainStore {
       await Promise.resolve();
       const row = this.intents.get(id);
       if (!row) throw new Error(`Unknown chain intent: ${id}`);
-      const retryConfirmed = row.status === 'failed' && status === 'confirmed';
+      const retryable = status === 'confirmed' || status === 'pending';
       if (
         row.status === 'confirmed'
-        || row.status === 'expired'
         || row.status === 'cancelled'
-        || (row.status === 'failed' && !retryConfirmed)
+        || ((row.status === 'failed' || row.status === 'expired') && !retryable)
       ) {
         return clone(row);
       }
@@ -608,25 +607,18 @@ test('four different stakes settle concurrently without crossing escrow', async 
   assert.equal(env.ledger.replays.size, specs.length);
 });
 
-test('one creator can settle two rooms against different opponents at the same time', async () => {
+test('one creator cannot fund two active rooms at the same time', async () => {
   const env = harness();
   const creator = wallet();
   const specs: RoomSpec[] = [
     { id: randomUUID(), collateral: 10_000_000n, creator, opponent: wallet(), winner: 'creator' },
     { id: randomUUID(), collateral: 50_000_000n, creator, opponent: wallet(), winner: 'opponent' },
   ];
-  for (const spec of specs) await fundRoom(env, spec);
-  await Promise.all(specs.map(spec => env.economy.prepareCasualStart(spec.id)));
-  const before = env.ledger.balance(creator.publicKey);
-  await Promise.all(specs.map(spec => settleRoom(env, spec)));
-  assert.equal(env.ledger.balance(creator.publicKey) - before, payoutOf(specs[0]!.collateral));
-  assert.equal(
-    env.ledger.balance(specs[1]!.opponent.publicKey) - START + specs[1]!.collateral,
-    payoutOf(specs[1]!.collateral),
+  await fundRoom(env, specs[0]!);
+  await assert.rejects(
+    () => fundRoom(env, specs[1]!),
+    /one active casual room/,
   );
-  assert.equal(env.ledger.escrow(specs[0]!.id).wins, 1);
-  assert.equal(env.ledger.escrow(specs[1]!.id).wins, 1);
-  assert.notEqual(env.ledger.escrow(specs[0]!.id).collateral, env.ledger.escrow(specs[1]!.id).collateral);
 });
 
 test('two rooms with the same stake and two with different stakes settle together', async () => {
@@ -704,8 +696,8 @@ test('one failed settlement and one timeout leave the other rooms paid once', as
   assert.equal(env.ledger.escrow(specs[3]!.id).wins, 1);
   const failedIntent = await env.chainStore.getIntentByScope('sol_match_win', specs[0]!.id);
   const timedOut = await env.chainStore.getIntentByScope('sol_match_win', specs[1]!.id);
-  assert.equal(failedIntent?.status, 'failed');
-  assert.equal(timedOut?.status, 'expired');
+  assert.equal(failedIntent?.status, 'pending');
+  assert.equal(timedOut?.status, 'pending');
   assert.equal((await env.economics.getCasualRoom(specs[2]!.id))?.status, 'completed');
   assert.equal((await env.economics.getCasualRoom(specs[0]!.id))?.status, 'full');
 });
@@ -821,7 +813,7 @@ test('recovery of a landed win before the intent is confirmed records that winne
   assert.equal(env.ledger.escrow(spec.id).ties, 0);
 });
 
-test('boot-style recovery leaves a still-active room unsettled', async () => {
+test('boot-style recovery tie-settles a dead battle and leaves a settled room paid once', async () => {
   const env = harness();
   const live: RoomSpec = {
     id: randomUUID(),
@@ -850,11 +842,13 @@ test('boot-style recovery leaves a still-active room unsettled', async () => {
     { ...liveRoom, status: 'battling' },
     env.economics,
   );
-  assert.equal(env.ledger.escrow(live.id).ties, 0);
-  assert.equal(env.ledger.escrow(live.id).status, 3);
-  assert.equal(env.ledger.balance(live.creator.publicKey), creatorBefore);
-  assert.equal(env.ledger.balance(live.opponent.publicKey), opponentBefore);
-  assert.equal((await env.economics.getCasualRoom(live.id))?.status, 'battling');
+  const split = (live.collateral * 2n - feeOf(live.collateral)) / 2n;
+  assert.equal(env.ledger.escrow(live.id).ties, 1);
+  assert.equal(env.ledger.escrow(live.id).status, 4);
+  assert.equal(env.ledger.balance(live.creator.publicKey) - creatorBefore, split);
+  assert.equal(env.ledger.balance(live.opponent.publicKey) - opponentBefore, split);
+  assert.equal((await env.economics.getCasualRoom(live.id))?.status, 'completed');
+  assert.equal((await env.economics.getCasualRoom(live.id))?.resultStatus, 'tie');
   assert.equal((await env.economics.getCasualRoom(live.id))?.winnerId, undefined);
   assert.equal(env.ledger.escrow(done.id).wins, 1);
   assert.equal((await env.economics.getCasualRoom(done.id))?.resultStatus, 'win');

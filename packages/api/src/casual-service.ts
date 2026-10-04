@@ -17,7 +17,7 @@ import {
 } from '@pokearena/battle-engine';
 
 import { previewCasual } from '@pokearena/db';
-import type { EconomicsStore, PayoutResult } from '@pokearena/db';
+import type { DurableCasualRoom, EconomicsStore, PayoutResult } from '@pokearena/db';
 
 import {
   getCasualPreset,
@@ -26,7 +26,9 @@ import {
 } from './casual-presets';
 import { InMemoryEconomicsStore } from './memory-economics-store';
 import {
+  CASUAL_FEE_BPS,
   MockEconomics,
+  POKE_SYMBOL,
   type CasualEconomicsPreview,
   type ChainPayoutResult,
 } from './mock-economics';
@@ -205,6 +207,7 @@ export class CasualRoomService {
       winnerId?: string;
     }): Promise<ChainPayoutResult>;
     refund(roomId: string, creatorId: string, opponentId?: string): Promise<void>;
+    depositStillLive?(roomId: string): Promise<boolean>;
   };
 
   constructor(options: {
@@ -244,6 +247,13 @@ export class CasualRoomService {
     if (input.invitedPlayerId && input.invitedPlayerId === input.creatorId) {
       throw new Error('Cannot challenge yourself.');
     }
+    await this.abandonUnfundedSolRooms(input.creatorId);
+    const activePlayers = [input.creatorId, input.invitedPlayerId].filter(
+      (playerId): playerId is string => Boolean(playerId),
+    );
+    if (activePlayers.some(playerId => this.playerOccupiesActiveRoom(playerId))) {
+      throw new Error('Each player may only have one active casual room.');
+    }
     const rail = input.rail ?? 'legacy_poke';
     const economics = rail === 'sol_chain'
       ? {
@@ -269,6 +279,12 @@ export class CasualRoomService {
       rail,
       ...(rail === 'sol_chain' ? { collateralLamports: input.collateral } : {}),
     });
+    const status: CasualRoomStatus = rail === 'sol_chain' ? 'pending_deposit' : 'open';
+    if (rail === 'sol_chain') {
+      // Keep the durable room hidden until the creator's escrow/deposit lands.
+      // The API starts that transaction immediately after returning the room.
+      await this.economics.setCasualRoomStatus(id, status);
+    }
     const room: CasualRoom = {
       id,
       matchId,
@@ -280,7 +296,9 @@ export class CasualRoomService {
       ...(input.invitedPlayerId ? { invitedPlayerId: input.invitedPlayerId } : {}),
       collateral: input.collateral,
       economics,
-      status: rail === 'sol_chain' ? 'pending_deposit' : 'open',
+      // SOL rooms are not discoverable/joinable until the creator deposit is
+      // confirmed. The server starts the creator transaction immediately.
+      status,
       ready: { [input.creatorId]: false },
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -293,7 +311,18 @@ export class CasualRoomService {
 
   listOpenRooms(viewerId?: string): CasualRoom[] {
     return [...this.rooms.values()]
-      .filter(room => room.roomType === 'open' && (room.status === 'open' || room.status === 'full'))
+      .filter(room => (
+        (room.roomType === 'open' || room.invitedPlayerId === viewerId)
+        && (
+          (room.status === 'open' && (
+            room.rail !== 'sol_chain' || Boolean(room.deposits?.creator)
+          ))
+          || room.status === 'full'
+          || (room.rail === 'sol_chain'
+            && room.status === 'pending_deposit'
+            && Boolean(room.deposits?.creator))
+        )
+      ))
       .map(room => this.serializeRoom(room, viewerId))
       .sort((a, b) => b.createdAt - a.createdAt);
   }
@@ -340,17 +369,157 @@ export class CasualRoomService {
     return this.serializeRoom(this.requireRoom(roomId), viewerId);
   }
 
+  /**
+   * Rehydrate a durable room after a process restart. Live battle/team state is
+   * intentionally not reconstructed here; durable SOL room state is enough to
+   * keep a funded lobby joinable until both players reconnect.
+   */
+  restoreRoom(input: DurableCasualRoom, deposits?: { creator?: boolean; opponent?: boolean }): CasualRoom {
+    const id = input.id as CasualRoomId;
+    const matchId = input.matchId as CasualMatchId;
+    const existing = this.rooms.get(id);
+    if (existing) {
+      if (deposits) existing.deposits = deposits;
+      this.advanceFundedSolCasualLobby(existing);
+      return this.serializeRoom(existing);
+    }
+    const rail = input.rail ?? 'legacy_poke';
+    const restoredStatus = (
+      rail === 'sol_chain'
+      && input.status === 'pending_deposit'
+      && Boolean(deposits?.creator)
+      && !input.opponentId
+    )
+      ? 'open'
+      : input.status;
+    if (restoredStatus !== input.status) {
+      void this.economics.setCasualRoomStatus(id, restoredStatus as DurableCasualRoom['status']).catch(() => {
+        // The confirmed escrow/deposit is authoritative if persistence lags.
+      });
+    }
+    const economics: CasualEconomicsPreview = {
+      symbol: POKE_SYMBOL,
+      collateral: input.collateral,
+      totalPot: input.collateral * 2,
+      protocolFee: Math.floor((input.collateral * 2 * CASUAL_FEE_BPS) / 10_000),
+      feeRateBps: CASUAL_FEE_BPS,
+      winnerPayout: input.collateral * 2
+        - Math.floor((input.collateral * 2 * CASUAL_FEE_BPS) / 10_000),
+    };
+    const timestamp = this.now();
+    const room: CasualRoom = {
+      id,
+      matchId,
+      roomType: input.roomType,
+      battleSize: input.battleSize,
+      format: 'gen9ou',
+      ruleset: 'casual',
+      creatorId: input.creatorId,
+      ...(input.opponentId ? { opponentId: input.opponentId } : {}),
+      ...(input.invitedPlayerId ? { invitedPlayerId: input.invitedPlayerId } : {}),
+      collateral: input.collateral,
+      economics,
+      status: restoredStatus as CasualRoomStatus,
+      ready: {
+        [input.creatorId]: false,
+        ...(input.opponentId ? { [input.opponentId]: false } : {}),
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      rail,
+      ...(deposits ? { deposits } : {}),
+      ...(input.winnerId ? { winnerId: input.winnerId } : {}),
+      ...(input.battleInstanceId
+        ? { battleInstanceId: input.battleInstanceId as CasualBattleInstanceId }
+        : {}),
+    };
+    this.rooms.set(id, room);
+    this.roomsByMatchId.set(matchId, id);
+    this.advanceFundedSolCasualLobby(room);
+    return this.serializeRoom(room);
+  }
+
   markSolDeposit(roomId: string, side: 'creator' | 'opponent'): CasualRoom {
     const room = this.requireRoom(roomId);
     if (room.rail !== 'sol_chain') {
       throw new Error('This room is not a real-stake match.');
     }
+    if (room.status === 'cancelled' || room.status === 'completed') {
+      return this.serializeRoom(room);
+    }
     room.deposits = {
       creator: side === 'creator' ? true : Boolean(room.deposits?.creator),
       opponent: side === 'opponent' ? true : Boolean(room.deposits?.opponent),
     };
+    if (
+      side === 'creator'
+      && room.status === 'pending_deposit'
+      && !room.opponentId
+    ) {
+      room.status = 'open';
+      // The in-memory transition is immediate for connected clients. Persist
+      // it asynchronously so a restart also restores the public open state.
+      void this.economics.setCasualRoomStatus(room.id, 'open').catch(() => {
+        // On-chain confirmation remains authoritative; boot recovery can
+        // reconstruct the room from the escrow if persistence briefly fails.
+      });
+    }
+    this.advanceFundedSolCasualLobby(room);
     room.updatedAt = this.now();
     this.notify(room);
+    return this.serializeRoom(room);
+  }
+
+  /**
+   * Undo a deposit the signature path already accepted when a later escrow
+   * read contradicts the room. A live or finished battle is left alone.
+   */
+  revokeUnmatchedSolDeposit(
+    roomId: string,
+    side: 'creator' | 'opponent',
+    reason: string,
+  ): CasualRoom {
+    const room = this.requireRoom(roomId);
+    if (
+      room.status === 'starting'
+      || room.status === 'battling'
+      || room.status === 'completed'
+      || room.status === 'cancelled'
+    ) {
+      console.warn('[pokearena-deposit]', {
+        roomId,
+        side,
+        escrow: 'mismatch',
+        lobby: 'left-open',
+        reason: `${reason}; room is ${room.status}`,
+      });
+      return this.serializeRoom(room);
+    }
+    room.deposits = {
+      creator: side === 'creator' ? false : Boolean(room.deposits?.creator),
+      opponent: side === 'opponent' ? false : Boolean(room.deposits?.opponent),
+    };
+    room.ready[room.creatorId] = false;
+    if (room.opponentId) room.ready[room.opponentId] = false;
+    this.clearSelectionTimer(room.id);
+    this.clearCountdownTimer(room.id);
+    delete room.selectionEndsAt;
+    delete room.countdownEndsAt;
+    if (room.opponentId) room.status = 'full';
+    else if (room.deposits.creator) room.status = 'open';
+    else room.status = 'pending_deposit';
+    void this.economics.setCasualRoomStatus(room.id, room.status).catch(() => {
+      // The in-memory correction is what connected clients see immediately.
+    });
+    room.updatedAt = this.now();
+    this.notify(room);
+    console.warn('[pokearena-deposit]', {
+      roomId,
+      side,
+      escrow: 'mismatch',
+      lobby: room.status,
+      reason,
+    });
     return this.serializeRoom(room);
   }
 
@@ -370,13 +539,18 @@ export class CasualRoomService {
     ) {
       return this.serializeRoom(room, playerId);
     }
-    const joinable = room.status === 'open'
-      || (room.rail === 'sol_chain' && room.status === 'pending_deposit');
+    const joinable = room.rail === 'sol_chain'
+      ? Boolean(room.deposits?.creator)
+        && (room.status === 'open' || room.status === 'pending_deposit')
+      : room.status === 'open';
     if (!joinable) throw new Error('This casual room is no longer open.');
     if (room.opponentId) throw new Error('This casual room is already full.');
     if (playerId === room.creatorId) throw new Error('Creator already occupies this room.');
     if (room.roomType === 'private' && room.invitedPlayerId && room.invitedPlayerId !== playerId) {
       throw new Error('You were not invited to this private challenge.');
+    }
+    if (this.playerOccupiesActiveRoom(playerId, room.id)) {
+      throw new Error('Each player may only have one active casual room.');
     }
     await this.economics.acceptCasualRoomWithHold({
       roomId: room.id,
@@ -395,6 +569,13 @@ export class CasualRoomService {
     const room = this.requireRoom(roomId);
     if (playerId !== room.creatorId && playerId !== room.opponentId) {
       throw new Error('You are not a player in this casual room.');
+    }
+    if (
+      isCasualSelectRoom(room)
+      && room.status === 'drafting'
+      && ready
+    ) {
+      return this.serializeRoom(room, playerId);
     }
     if (room.status !== 'full' && room.status !== 'ready') {
       throw new Error('Room is not ready for readiness changes.');
@@ -513,6 +694,50 @@ export class CasualRoomService {
     return Boolean(creator?.confirmed && opponent?.confirmed);
   }
 
+  /**
+   * A SOL room is persisted before the wallet signs. If that signature never
+   * lands, the creator has no visible fight and no escrow, but the record still
+   * occupies the one-room cap. Replace only that unfunded attempt.
+   */
+  private async abandonUnfundedSolRooms(creatorId: string): Promise<void> {
+    const stale = [...this.rooms.values()].filter(room => (
+      room.creatorId === creatorId
+      && room.rail === 'sol_chain'
+      && room.status === 'pending_deposit'
+      && !room.opponentId
+      && !room.deposits?.creator
+      && !room.deposits?.opponent
+    ));
+    for (const room of stale) {
+      if (await this.chainSettlement?.depositStillLive?.(room.id)) continue;
+      if (this.chainSettlement) {
+        await this.chainSettlement.refund(room.id, room.creatorId, room.opponentId);
+      }
+      const current = this.rooms.get(room.id);
+      if (
+        !current
+        || current.status !== 'pending_deposit'
+        || current.deposits?.creator
+        || current.deposits?.opponent
+        || current.opponentId
+      ) {
+        continue;
+      }
+      await this.economics.cancelCasualRoom(current.id);
+      current.status = 'cancelled';
+      current.updatedAt = this.now();
+      this.notify(current);
+    }
+  }
+
+  private playerOccupiesActiveRoom(playerId: string, excludeRoomId?: string): boolean {
+    return [...this.rooms.values()].some(room => (
+      room.id !== excludeRoomId
+      && isActiveRoomStatus(room.status)
+      && (room.creatorId === playerId || room.opponentId === playerId)
+    ));
+  }
+
   async cancelRoom(roomId: string, playerId: string): Promise<CasualRoom> {
     const room = this.requireRoom(roomId);
     if (playerId !== room.creatorId && playerId !== room.opponentId) {
@@ -580,6 +805,9 @@ export class CasualRoomService {
     if (room.status === 'battling' && room.battleInstanceId) return this.serializeRoom(room, playerId);
     const inflight = this.battleStarts.get(room.id);
     if (inflight) return inflight.then(started => this.serializeRoom(started, playerId));
+    if (this.advanceFundedSolCasualLobby(room) && room.status === 'drafting') {
+      return this.serializeRoom(room, playerId);
+    }
     if (isCasualSelectRoom(room) && room.status === 'ready') {
       return this.advanceReadyCountdown(room.id, playerId);
     }
@@ -1087,6 +1315,33 @@ export class CasualRoomService {
     });
   }
 
+  /**
+   * Real SOL casual 1v1 rooms hide the ready control. Once both stakes confirm,
+   * treat the lobby as ready and deal the shared six immediately.
+   */
+  private advanceFundedSolCasualLobby(room: CasualRoom): boolean {
+    if (room.rail !== 'sol_chain' || !isCasualSelectRoom(room) || !room.opponentId) {
+      return false;
+    }
+    if (!(room.deposits?.creator && room.deposits.opponent)) return false;
+    if (
+      room.status !== 'pending_deposit'
+      && room.status !== 'open'
+      && room.status !== 'full'
+      && room.status !== 'ready'
+    ) {
+      return false;
+    }
+    room.ready[room.creatorId] = true;
+    room.ready[room.opponentId] = true;
+    this.syncReadyStatus(room);
+    void this.economics.setCasualRoomStatus(room.id, 'ready').catch(() => {
+      // In-memory draft is enough for connected clients; boot recovery can
+      // reopen the lobby from the confirmed deposits.
+    });
+    return true;
+  }
+
   private syncReadyStatus(room: CasualRoom): void {
     const opponentId = room.opponentId;
     const bothReady = Boolean(opponentId)
@@ -1094,6 +1349,15 @@ export class CasualRoomService {
       && Boolean(opponentId && room.ready[opponentId]);
     if (room.status === 'full' || room.status === 'ready') {
       room.status = bothReady ? 'ready' : 'full';
+    }
+    if (
+      bothReady
+      && room.rail === 'sol_chain'
+      && !(room.deposits?.creator && room.deposits.opponent)
+    ) {
+      // Real SOL rooms stay in `ready` while the wallet funding flow runs.
+      // The server advances to drafting only after both deposits reconcile.
+      return;
     }
     if (bothReady && room.battleSize === '1v1' && (room.status === 'ready' || room.status === 'drafting')) {
       if (isCasualSelectRoom(room) && room.status === 'ready') {
@@ -1188,6 +1452,10 @@ function sameBattleResult(left: BattleResult, right: BattleResult): boolean {
 
 function isCasualSelectRoom(room: CasualRoom): boolean {
   return room.ruleset === 'casual' && room.battleSize === '1v1';
+}
+
+function isActiveRoomStatus(status: CasualRoomStatus): boolean {
+  return status !== 'completed' && status !== 'cancelled';
 }
 
 function isCompetitiveRoom(room: CasualRoom): boolean {

@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { Keypair, PublicKey, type TransactionInstruction } from '@solana/web3.js';
+import { Keypair, PublicKey, Transaction, type TransactionInstruction } from '@solana/web3.js';
 import type { BattleEngine } from '@pokearena/battle-engine';
 import {
   InMemoryTournamentStore,
@@ -39,6 +39,31 @@ const START = 10_000_000_000n;
 const COLLATERAL = 1_000_000_000n;
 const RENT = 890_880n;
 const FEE = (COLLATERAL * 2n * 200n) / 10_000n;
+
+test('pending SOL rooms stay hidden until a landed creator deposit', async () => {
+  const economics = new InMemoryEconomicsStore();
+  const creator = Keypair.generate().publicKey.toBase58();
+  const casual = new CasualRoomService({ economics });
+  const room = await casual.createRoom({
+    creatorId: creator,
+    roomType: 'open',
+    battleSize: '1v1',
+    collateral: Number(COLLATERAL),
+    rail: 'sol_chain',
+  });
+
+  assert.equal(casual.listOpenRooms('opponent').some(item => item.id === room.id), false);
+  casual.markSolDeposit(room.id, 'creator');
+  assert.equal(casual.listOpenRooms('opponent').some(item => item.id === room.id), true);
+  const durable = await economics.getCasualRoom(room.id);
+  assert.ok(durable);
+
+  const restored = new CasualRoomService({ economics });
+  restored.restoreRoom(durable, { creator: true });
+  const restoredRoom = restored.listOpenRooms('opponent').find(item => item.id === room.id);
+  assert.equal(restoredRoom?.status, 'open');
+  assert.equal(restoredRoom?.deposits?.creator, true);
+});
 
 interface Escrow {
   creator: PublicKey;
@@ -335,18 +360,27 @@ class MemoryChainStore {
     return row ? { ...row } : undefined;
   }
 
+  async mergeIntentMetadata(
+    id: string,
+    patch: Record<string, unknown>,
+  ): Promise<ChainIntentRow> {
+    const row = this.intents.get(id);
+    if (!row) throw new Error(`Unknown chain intent: ${id}`);
+    row.metadata = { ...row.metadata, ...patch };
+    return { ...row, metadata: { ...row.metadata } };
+  }
+
   async setIntentStatus(
     id: string,
     status: ChainIntentStatus,
   ): Promise<ChainIntentRow> {
     const row = this.intents.get(id);
     if (!row) throw new Error(`Unknown chain intent: ${id}`);
-    const retryConfirmed = row.status === 'failed' && status === 'confirmed';
+    const retryable = status === 'confirmed' || status === 'pending';
     if (
       row.status === 'confirmed'
-      || row.status === 'expired'
       || row.status === 'cancelled'
-      || (row.status === 'failed' && !retryConfirmed)
+      || ((row.status === 'failed' || row.status === 'expired') && !retryable)
     ) {
       return { ...row };
     }
@@ -355,7 +389,9 @@ class MemoryChainStore {
   }
 }
 
-function harness() {
+function harness(options: {
+  readMatchEscrowState?: (roomId: Uint8Array, ledger: SolLedger) => ReturnType<SolLedger['view']>;
+} = {}) {
   const keeper = Keypair.generate();
   const creator = Keypair.generate();
   const opponent = Keypair.generate();
@@ -379,7 +415,16 @@ function harness() {
     chainStore: chainStore as unknown as PostgresChainStore,
     client: {
       configAddress: configPda(programId)[0],
-      getMatchEscrowState: (roomId: Uint8Array) => ledger.view(roomId),
+      getMatchEscrowState: (roomId: Uint8Array) => (
+        options.readMatchEscrowState?.(roomId, ledger) ?? ledger.view(roomId)
+      ),
+      buildTransaction: async (payer: PublicKey, instructions: TransactionInstruction[]) => {
+        const tx = new Transaction();
+        tx.feePayer = payer;
+        tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+        tx.add(...instructions);
+        return tx;
+      },
     } as unknown as ArenaChainClient,
     keeper,
     submitKeeper: instructions => ledger.submit(instructions),
@@ -388,6 +433,38 @@ function harness() {
   const opened = ledger.total();
   return { keeper, creator, opponent, mallory, programId, ledger, chainStore, economy, economics, opened };
 }
+
+test('reuses an existing escrow instead of recreating it for a SOL deposit retry', async () => {
+  const { ledger, economy, chainStore, programId, creator } = harness();
+  const roomId = randomUUID();
+  ledger.open(roomId, creator.publicKey);
+
+  const first = await economy.createSolWagerDepositIntent({
+    roomId,
+    playerId: creator.publicKey.toBase58(),
+    side: 0,
+    collateralLamports: Number(COLLATERAL),
+  });
+  const transaction = Transaction.from(Uint8Array.from(first.serializedTx));
+  assert.equal(transaction.instructions.length, 1);
+  assert.equal(
+    Buffer.from(transaction.instructions[0]!.data).subarray(0, 8).equals(IX.depositSolWager),
+    true,
+  );
+  ledger.apply(transaction.instructions[0]!);
+
+  const retry = await economy.createSolWagerDepositIntent({
+    roomId,
+    playerId: creator.publicKey.toBase58(),
+    side: 0,
+    collateralLamports: Number(COLLATERAL),
+  });
+  assert.deepEqual(retry.serializedTx, []);
+  assert.equal(
+    (await chainStore.getIntentByScope('sol_wager_deposit', `${roomId}:creator`))?.status,
+    'confirmed',
+  );
+});
 
 async function persistRoom(
   economics: InMemoryEconomicsStore,
@@ -413,7 +490,7 @@ async function persistRoom(
       collateral: Number(COLLATERAL),
     });
   }
-  if (status === 'starting' || status === 'battling') {
+  if (status !== 'full') {
     await economics.setCasualRoomStatus(roomId, status);
   }
 }
@@ -473,6 +550,33 @@ test('one-sided funding cancellation refunds only the depositor', async () => {
   await economy.recoverCasualRoom(room!, economics);
   assert.equal((await economics.getCasualRoom(roomId))?.status, 'cancelled');
   assert.equal(ledger.total(), opened);
+});
+
+test('refund waits through a stale escrow read before marking the intent confirmed', async () => {
+  let reads = 0;
+  const { ledger, economy, economics, programId, creator } = harness({
+    readMatchEscrowState: (roomId, currentLedger) => {
+      reads += 1;
+      if (reads === 2) {
+        const stale = currentLedger.view(roomId);
+        return { ...stale, creatorDeposited: true, status: 1 };
+      }
+      return currentLedger.view(roomId);
+    },
+  });
+  const roomId = randomUUID();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await persistRoom(economics, roomId, creator.publicKey.toBase58());
+
+  await economy.refundCasual(roomId, creator.publicKey.toBase58());
+
+  assert.equal(reads, 3);
+  assert.equal(ledger.escrow(roomId).creatorDeposited, false);
+  assert.equal(
+    (await economics.getCasualRoom(roomId))?.status,
+    'pending_deposit',
+  );
 });
 
 test('both-sided funded cancellation tie-settles both stakes', async () => {
@@ -646,9 +750,12 @@ test('battle initialization failure before the fee leaves the wager refundable',
   });
   ledger.open(room.id, creator.publicKey);
   ledger.apply(deposit(programId, creator.publicKey, room.id, 0));
+  casual.markSolDeposit(room.id, 'creator');
   await economy.seatMatchOpponent({ roomId: room.id, opponentId });
   ledger.apply(deposit(programId, opponent.publicKey, room.id, 1));
   await casual.acceptRoom(room.id, opponentId);
+  casual.markSolDeposit(room.id, 'creator');
+  casual.markSolDeposit(room.id, 'opponent');
   bothConfirmCasual(casual, room.id, creatorId, opponentId);
   await assert.rejects(() => casual.startBattle(room.id, creatorId), /showdown failed before fee/);
   const escrow = ledger.escrow(room.id);
@@ -687,6 +794,7 @@ test('battle initialization failure after the fee tie-settles the remainder', as
   });
   ledger.open(room.id, creator.publicKey);
   ledger.apply(deposit(programId, creator.publicKey, room.id, 0));
+  casual.markSolDeposit(room.id, 'creator');
   await economy.seatMatchOpponent({ roomId: room.id, opponentId });
   ledger.apply(deposit(programId, opponent.publicKey, room.id, 1));
   await confirmDeposits(chainStore, room.id, creatorId, opponentId);
@@ -694,6 +802,8 @@ test('battle initialization failure after the fee tie-settles the remainder', as
   assert.equal(ledger.escrow(room.id).status, 3);
   assert.equal(ledger.feeVault, FEE);
   await casual.acceptRoom(room.id, opponentId);
+  casual.markSolDeposit(room.id, 'creator');
+  casual.markSolDeposit(room.id, 'opponent');
   bothConfirmCasual(casual, room.id, creatorId, opponentId);
   await assert.rejects(() => casual.startBattle(room.id, creatorId), /showdown failed after fee/);
   const escrow = ledger.escrow(room.id);
@@ -709,7 +819,7 @@ test('battle initialization failure after the fee tie-settles the remainder', as
   assert.equal(ledger.total(), opened);
 });
 
-test('process restart while funding refunds the depositor', async () => {
+test('process restart while funding preserves a landed one-sided deposit', async () => {
   const { ledger, economy, economics, programId, creator, opponent, opened } = harness();
   const roomId = randomUUID();
   const creatorId = creator.publicKey.toBase58();
@@ -721,11 +831,12 @@ test('process restart while funding refunds the depositor', async () => {
     tournaments: new InMemoryTournamentStore(),
     recoverSolCasualRoom: room => economy.recoverCasualRoom(room, economics),
   });
-  assert.ok(report.cancelledCasualRoomIds.includes(roomId));
-  assert.equal(ledger.escrow(roomId).status, 5);
-  assert.equal(ledger.balance(creator.publicKey), START - RENT);
+  assert.equal(report.cancelledCasualRoomIds.includes(roomId), false);
+  assert.equal(ledger.escrow(roomId).status, 1);
+  assert.equal(ledger.escrow(roomId).creatorDeposited, true);
+  assert.equal(ledger.balance(creator.publicKey), START - RENT - COLLATERAL);
   assert.equal(ledger.balance(opponent.publicKey), START);
-  assert.equal((await economics.getCasualRoom(roomId))?.status, 'cancelled');
+  assert.equal((await economics.getCasualRoom(roomId))?.status, 'pending_deposit');
   assert.equal((await economics.getCasualRoom(roomId))?.winnerId, undefined);
   assert.equal(ledger.total(), opened);
 });
@@ -768,7 +879,7 @@ test('process restart after both deposits does not invent a tie', async () => {
   assert.equal(ledger.total(), opened);
 });
 
-test('process restart during an active fight does not tie-settle it', async () => {
+test('process restart during an active fight tie-settles the dead battle', async () => {
   const { ledger, economy, economics, chainStore, programId, creator, opponent, opened } = harness();
   const roomId = randomUUID();
   const creatorId = creator.publicKey.toBase58();
@@ -781,27 +892,47 @@ test('process restart during an active fight does not tie-settle it', async () =
   await persistRoom(economics, roomId, creatorId, 'battling', opponentId);
   await economy.prepareCasualStart(roomId);
   assert.equal(ledger.escrow(roomId).status, 3);
-  const creatorBefore = ledger.balance(creator.publicKey);
-  const opponentBefore = ledger.balance(opponent.publicKey);
   await recoverDurableState({
     economics,
     tournaments: new InMemoryTournamentStore(),
     recoverSolCasualRoom: room => economy.recoverCasualRoom(room, economics),
   });
   const room = await economics.getCasualRoom(roomId);
-  assert.equal(ledger.escrow(roomId).status, 3);
+  assert.equal(ledger.escrow(roomId).status, 4);
   assert.equal(ledger.feeVault, FEE);
-  assert.equal(ledger.balance(creator.publicKey), creatorBefore);
-  assert.equal(ledger.balance(opponent.publicKey), opponentBefore);
-  assert.equal(room?.status, 'battling');
-  assert.equal(room?.resultStatus, undefined);
-  assert.equal(room?.winnerId, undefined);
-  assert.equal((await chainStore.getIntentByScope('sol_match_tie', roomId)), undefined);
+  assert.equal(ledger.balance(creator.publicKey), START - RENT - FEE / 2n);
+  assert.equal(ledger.balance(opponent.publicKey), START - FEE / 2n);
+  assert.equal(room?.status, 'completed');
+  assert.equal(room?.resultStatus, 'tie');
+  assert.equal((await chainStore.getIntentByScope('sol_match_tie', roomId))?.status, 'confirmed');
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_tie').length, 1);
   assert.equal(ledger.total(), opened);
 
   await economy.recoverCasualRoom(room!, economics);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_tie').length, 1);
+  assert.equal(ledger.total(), opened);
+});
+
+test('a charged escrow with no battle result is tie-settled on recovery', async () => {
+  const { ledger, economy, economics, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await persistRoom(economics, roomId, creatorId, 'full', opponentId);
+  await economy.prepareCasualStart(roomId);
   assert.equal(ledger.escrow(roomId).status, 3);
-  assert.equal((await economics.getCasualRoom(roomId))?.status, 'battling');
+  await economy.recoverCasualRoom((await economics.getCasualRoom(roomId))!, economics);
+  assert.equal(ledger.escrow(roomId).status, 4);
+  assert.equal(ledger.feeVault, FEE);
+  assert.equal(ledger.balance(creator.publicKey), START - RENT - FEE / 2n);
+  assert.equal(ledger.balance(opponent.publicKey), START - FEE / 2n);
+  assert.equal((await economics.getCasualRoom(roomId))?.resultStatus, 'tie');
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_tie').length, 1);
   assert.equal(ledger.total(), opened);
 });
 
@@ -870,6 +1001,80 @@ test('recovery of an already-settled room records the winner without paying agai
   assert.equal(ledger.balance(opponent.publicKey), opponentAfter);
   assert.equal(ledger.replays.size, 1);
   assert.equal((await economics.getWallet(opponentId)).balance, 0);
+  assert.equal(ledger.total(), opened);
+});
+
+test('a settled escrow with a failed win intent records that winner and does not pay again', async () => {
+  const { ledger, economy, economics, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await persistRoom(economics, roomId, creatorId, 'battling', opponentId);
+  await economy.prepareCasualStart(roomId);
+  ledger.escrow(roomId).status = 4;
+  const recorded = await chainStore.createIntent({
+    kind: 'sol_match_win',
+    scopeId: roomId,
+    playerId: creatorId,
+    asset: 'SOL',
+    amount: 0,
+    idempotencyKey: `sol_match_win:${roomId}`,
+    roomId,
+  });
+  await chainStore.setIntentStatus(recorded.id, 'failed');
+  await economy.recoverCasualRoom((await economics.getCasualRoom(roomId))!, economics);
+  const room = await economics.getCasualRoom(roomId);
+  assert.equal(room?.status, 'completed');
+  assert.equal(room?.resultStatus, 'win');
+  assert.equal(room?.winnerId, creatorId);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 0);
+  assert.equal(ledger.total(), opened);
+});
+
+test('a confirmed tie is recorded even when a failed win intent also exists', async () => {
+  const { ledger, economy, economics, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await persistRoom(economics, roomId, creatorId, 'battling', opponentId);
+  await economy.prepareCasualStart(roomId);
+  ledger.escrow(roomId).status = 4;
+  const win = await chainStore.createIntent({
+    kind: 'sol_match_win',
+    scopeId: roomId,
+    playerId: creatorId,
+    asset: 'SOL',
+    amount: 0,
+    idempotencyKey: `sol_match_win:${roomId}`,
+    roomId,
+  });
+  await chainStore.setIntentStatus(win.id, 'failed');
+  const tie = await chainStore.createIntent({
+    kind: 'sol_match_tie',
+    scopeId: roomId,
+    asset: 'SOL',
+    amount: 0,
+    idempotencyKey: `sol_match_tie:${roomId}`,
+    roomId,
+  });
+  await chainStore.setIntentStatus(tie.id, 'confirmed');
+  await economy.recoverCasualRoom((await economics.getCasualRoom(roomId))!, economics);
+  const room = await economics.getCasualRoom(roomId);
+  assert.equal(room?.status, 'completed');
+  assert.equal(room?.resultStatus, 'tie');
+  assert.equal(room?.winnerId, undefined);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 0);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_tie').length, 0);
   assert.equal(ledger.total(), opened);
 });
 
@@ -974,5 +1179,158 @@ test('happy path charges the fee and pays the winner once', async () => {
     /already settled as a tie|Match was already settled/,
   );
   assert.equal(ledger.balance(opponent.publicKey), START - COLLATERAL + (COLLATERAL * 2n - FEE));
+  assert.equal(ledger.total(), opened);
+});
+
+test('a failed settlement stays retryable and the retry pays once', async () => {
+  const { ledger, economy, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await economy.prepareCasualStart(roomId);
+  ledger.failNext = true;
+  await assert.rejects(
+    () => economy.settleCasual({ roomId, creatorId, opponentId, winnerId: opponentId }),
+    /Simulated keeper/,
+  );
+  const failed = await chainStore.getIntentByScope('sol_match_win', roomId);
+  assert.equal(failed?.status, 'pending');
+  assert.equal(failed?.playerId, opponentId);
+  assert.equal(ledger.escrow(roomId).status, 3);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 0);
+  await economy.settleCasual({ roomId, creatorId, opponentId, winnerId: opponentId });
+  assert.equal(ledger.escrow(roomId).status, 4);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+  assert.equal(ledger.balance(opponent.publicKey), START - COLLATERAL + (COLLATERAL * 2n - FEE));
+  assert.equal((await chainStore.getIntentByScope('sol_match_win', roomId))?.status, 'confirmed');
+  assert.equal(ledger.total(), opened);
+});
+
+test('settlement is refused when the escrow is not active', async () => {
+  const { ledger, economy, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  const before = ledger.balance(creator.publicKey);
+  await assert.rejects(
+    () => economy.settleCasual({ roomId, creatorId, opponentId, winnerId: creatorId }),
+    /Refusing sol_match_win/,
+  );
+  assert.equal(ledger.escrow(roomId).status, 1);
+  assert.equal(ledger.applied.includes('settle_match_win'), false);
+  assert.equal(ledger.applied.includes('charge_match_fee'), false);
+  assert.equal(ledger.balance(creator.publicKey), before);
+  assert.equal((await chainStore.getIntentByScope('sol_match_win', roomId))?.status, 'pending');
+  assert.equal(ledger.total(), opened);
+});
+
+test('startup recovery settles a persisted win and does not pay a landed settlement twice', async () => {
+  const { ledger, economy, economics, chainStore, programId, creator, opponent, opened } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await persistRoom(economics, roomId, creatorId, 'battling', opponentId);
+  await economy.prepareCasualStart(roomId);
+  const recorded = await chainStore.createIntent({
+    kind: 'sol_match_win',
+    scopeId: roomId,
+    playerId: creatorId,
+    asset: 'SOL',
+    amount: 0,
+    idempotencyKey: `sol_match_win:${roomId}`,
+    roomId,
+    metadata: { settlementPhase: 'recorded', winnerId: creatorId },
+  });
+  await chainStore.setIntentStatus(recorded.id, 'pending');
+  await recoverDurableState({
+    economics,
+    tournaments: new InMemoryTournamentStore(),
+    recoverSolCasualRoom: room => economy.recoverCasualRoom(room, economics),
+  });
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+  assert.equal((await economics.getCasualRoom(roomId))?.status, 'completed');
+  assert.equal((await economics.getCasualRoom(roomId))?.winnerId, creatorId);
+  const paid = ledger.balance(creator.publicKey);
+
+  await chainStore.setIntentStatus(recorded.id, 'pending');
+  await economy.settleCasual({ roomId, creatorId, opponentId, winnerId: creatorId });
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, 1);
+  assert.equal(ledger.balance(creator.publicKey), paid);
+  assert.equal(ledger.total(), opened);
+});
+
+test('process restart during an unconfirmed deposit does not cancel the room', async () => {
+  const { economy, economics, chainStore, creator, opened, ledger } = harness();
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  await persistRoom(economics, roomId, creatorId);
+  const intent = await chainStore.createIntent({
+    kind: 'sol_wager_deposit',
+    scopeId: `${roomId}:creator`,
+    playerId: creatorId,
+    asset: 'SOL',
+    amount: Number(COLLATERAL),
+    idempotencyKey: `sol_wager_deposit:${roomId}:creator`,
+    roomId,
+    metadata: {
+      signature: 'inflight-deposit-signature',
+      lastValidBlockHeight: 1,
+      side: 0,
+    },
+  });
+  await chainStore.setIntentStatus(intent.id, 'pending');
+  const report = await recoverDurableState({
+    economics,
+    tournaments: new InMemoryTournamentStore(),
+    recoverSolCasualRoom: room => economy.recoverCasualRoom(room, economics),
+  });
+  assert.equal(report.cancelledCasualRoomIds.includes(roomId), false);
+  assert.equal((await economics.getCasualRoom(roomId))?.status, 'pending_deposit');
+  assert.equal(ledger.total(), opened);
+});
+
+test('a stale escrow read after a landed settlement does not fail or pay twice', async () => {
+  let activeReads = 0;
+  const { ledger, economy, chainStore, programId, creator, opponent, opened } = harness({
+    readMatchEscrowState: (roomId, source) => {
+      const view = source.view(roomId);
+      if (view.status !== 3) return view;
+      activeReads += 1;
+      // The fee wait and the settlement's first read stay on Active.
+      // The read after the failed submit observes the landed Settled account.
+      if (activeReads <= 2) return view;
+      return { ...view, status: 4, feeCharged: true };
+    },
+  });
+  const roomId = randomUUID();
+  const creatorId = creator.publicKey.toBase58();
+  const opponentId = opponent.publicKey.toBase58();
+  ledger.open(roomId, creator.publicKey);
+  ledger.apply(deposit(programId, creator.publicKey, roomId, 0));
+  await economy.seatMatchOpponent({ roomId, opponentId });
+  ledger.apply(deposit(programId, opponent.publicKey, roomId, 1));
+  await confirmDeposits(chainStore, roomId, creatorId, opponentId);
+  await economy.prepareCasualStart(roomId);
+  const winsBefore = ledger.applied.filter(name => name === 'settle_match_win').length;
+  ledger.failNext = true;
+  const payout = await economy.settleCasual({ roomId, creatorId, opponentId, winnerId: creatorId });
+  assert.equal(payout.amount, Number(COLLATERAL * 2n - FEE));
+  assert.equal(ledger.failNext, false);
+  assert.equal(ledger.applied.filter(name => name === 'settle_match_win').length, winsBefore);
+  assert.equal((await chainStore.getIntentByScope('sol_match_win', roomId))?.status, 'confirmed');
+  assert.equal(ledger.escrow(roomId).status, 3);
   assert.equal(ledger.total(), opened);
 });

@@ -27,7 +27,7 @@ export default function CreateCasualPage() {
   const [stakeChoice, setStakeChoice] = useState<'mock' | 'real' | null>(null);
   const stake = stakeChoice ?? (chain ? 'real' : 'mock');
   const real = stake === 'real';
-  const [collateral, setCollateral] = useState(100_000);
+  const [collateral, setCollateral] = useState(10_000_000);
   const [confirmedStake, setConfirmedStake] = useState(false);
   const [invitedPlayerId, setInvitedPlayerId] = useState('');
   const [preview, setPreview] = useState<CasualEconomicsPreview | null>(null);
@@ -36,7 +36,7 @@ export default function CreateCasualPage() {
 
   useEffect(() => {
     if (!chain || stakeChoice !== null) return;
-    setCollateral(50_000_000);
+    setCollateral(10_000_000);
     setRoomType('private');
   }, [chain, stakeChoice]);
 
@@ -99,16 +99,23 @@ export default function CreateCasualPage() {
       });
       if (response.type === 'casual.created') {
         if (response.intent?.serializedTx?.length && walletAdapter) {
-          const { sendSerializedTransaction } = await import('@/lib/solana-tx');
-          const signature = await sendSerializedTransaction(
+          const { signSerializedTransaction } = await import('@/lib/solana-tx');
+          const signed = await signSerializedTransaction(
             walletAdapter,
             response.intent.serializedTx,
           );
-          await client.request({
+          const confirmation = await client.request({
             type: 'tx.confirm',
             intentId: response.intent.intentId,
-            signature,
+            signature: signed.signature,
+            signedTransaction: signed.signedTransaction,
           });
+          if (confirmation.type !== 'tx.update') {
+            throw new Error('The server rejected the wager transaction. The challenge was not opened.');
+          }
+          if (confirmation.status === 'failed' || confirmation.status === 'expired' || confirmation.status === 'cancelled') {
+            throw new Error(confirmation.error ?? 'The wager transaction did not land. The challenge was not opened.');
+          }
         }
         router.push(`/casual/${response.room.id}`);
       }
@@ -123,10 +130,10 @@ export default function CreateCasualPage() {
     <div className="pa-page">
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <h1>{real ? 'Lock a real stake.' : 'Set a mock fight.'}</h1>
+          <h1>{real ? 'Create a real-stake challenge.' : 'Set a mock fight.'}</h1>
           <p className="pa-lead">
             {real
-              ? 'Both trainers post the same SOL stake into escrow. A 2% fee comes off the pool at match start. The battle winner is paid from that escrow.'
+              ? 'Your SOL stake is locked first. Once it confirms, the challenge becomes visible to the invited or queued opponent. A 2% fee comes off the pool at match start.'
               : 'Mock fights use the development POKE ledger. No SOL moves. This is the default path.'}
           </p>
         </div>
@@ -167,12 +174,12 @@ export default function CreateCasualPage() {
                   type="button"
                   className={stake === 'real' ? 'selected' : ''}
                   disabled={!chain}
-                  title={chain ? 'Lock SOL in the existing escrow' : 'Chain economy is not enabled'}
+                  title={chain ? 'The creator signs after room creation; the opponent signs after joining' : 'Chain economy is not enabled'}
                   onClick={() => {
                     setStakeChoice('real');
                     setConfirmedStake(false);
                     setRoomType('private');
-                    setCollateral(50_000_000);
+                    setCollateral(10_000_000);
                   }}
                 >
                   Real stake
@@ -328,7 +335,7 @@ export default function CreateCasualPage() {
                   checked={confirmedStake}
                   onChange={event => setConfirmedStake(event.target.checked)}
                 />
-                <span>I confirm this stake. Both wallets will lock the same amount in escrow.</span>
+                <span>I confirm this 0.01 SOL wager. The creator signs after the room is created; the opponent signs after joining.</span>
               </label>
             ) : null}
             {!walletConnected ? <p className="pa-setup-warn">Connect a wallet to create a challenge.</p> : null}
@@ -357,7 +364,7 @@ export default function CreateCasualPage() {
                   disabled={busy || overBalance || collateral <= 0 || (roomType === 'private' && !invitedPlayerId.trim()) || (real && !confirmedStake)}
                   onClick={() => void onCreate()}
                 >
-                  {busy ? 'Locking challenge…' : real ? 'Confirm and challenge' : 'Create mock fight'}
+                  {busy ? 'Creating challenge…' : real ? 'Create real-stake challenge' : 'Create mock fight'}
                 </button>
               )}
             </div>
