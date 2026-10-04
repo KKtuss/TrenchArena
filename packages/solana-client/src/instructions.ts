@@ -44,6 +44,9 @@ export function initializeConfigIx(input: {
   const [feeVault] = feeVaultPda(input.programId);
   const [treasuryVault] = treasuryVaultPda(input.programId);
   const [operatorVault] = operatorVaultPda(input.programId);
+  const pokeMint = input.pokeMint.equals(PublicKey.default)
+    ? SystemProgram.programId
+    : input.pokeMint;
   return new TransactionInstruction({
     programId: input.programId,
     keys: [
@@ -51,7 +54,7 @@ export function initializeConfigIx(input: {
       { pubkey: feeVault, isSigner: false, isWritable: true },
       { pubkey: treasuryVault, isSigner: false, isWritable: true },
       { pubkey: operatorVault, isSigner: false, isWritable: true },
-      { pubkey: input.pokeMint, isSigner: false, isWritable: false },
+      { pubkey: pokeMint, isSigner: false, isWritable: false },
       { pubkey: input.quoteAuthority, isSigner: false, isWritable: false },
       { pubkey: input.keeper, isSigner: false, isWritable: false },
       { pubkey: config, isSigner: false, isWritable: true },
@@ -62,6 +65,23 @@ export function initializeConfigIx(input: {
       u64(input.buybackBps),
       u64(input.minBuybackLamports),
     ]),
+  });
+}
+
+export function setPokeMintIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  pokeMint: PublicKey;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: config, isSigner: false, isWritable: true },
+      { pubkey: input.pokeMint, isSigner: false, isWritable: false },
+    ],
+    data: IX.setPokeMint,
   });
 }
 

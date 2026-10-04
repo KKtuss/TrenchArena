@@ -18,6 +18,56 @@ export interface TreasurySplitPreview {
   operatorBps: number;
 }
 
+function requireNonNegativeLamports(name: string, lamports: number): void {
+  if (!Number.isSafeInteger(lamports) || lamports < 0) {
+    throw new Error(`${name} must be a non-negative integer lamport amount.`);
+  }
+}
+
+/**
+ * Minimum balance for a creator whose create and deposit are separate
+ * transactions. The creator pays both account rents, both transaction fees,
+ * the wager, and must remain rent-exempt after the deposit.
+ */
+export function minimumSolCreatorFunding(
+  collateralLamports: number,
+  matchEscrowRentLamports: number,
+  matchVaultRentLamports: number,
+  transactionFeeLamports: number,
+  payerRentReserveLamports: number,
+): number {
+  if (!Number.isSafeInteger(collateralLamports) || collateralLamports <= 0) {
+    throw new Error('Collateral must be a positive integer lamport amount.');
+  }
+  requireNonNegativeLamports('Match escrow rent', matchEscrowRentLamports);
+  requireNonNegativeLamports('Match vault rent', matchVaultRentLamports);
+  requireNonNegativeLamports('Transaction fee', transactionFeeLamports);
+  requireNonNegativeLamports('Payer rent reserve', payerRentReserveLamports);
+  const total = collateralLamports
+    + matchEscrowRentLamports
+    + matchVaultRentLamports
+    + (2 * transactionFeeLamports)
+    + payerRentReserveLamports;
+  if (!Number.isSafeInteger(total)) throw new Error('Funding requirement exceeds safe integer range.');
+  return total;
+}
+
+/** Minimum balance required immediately before a separate SOL deposit. */
+export function minimumSolDepositBalance(
+  collateralLamports: number,
+  transactionFeeLamports: number,
+  payerRentReserveLamports: number,
+): number {
+  if (!Number.isSafeInteger(collateralLamports) || collateralLamports <= 0) {
+    throw new Error('Collateral must be a positive integer lamport amount.');
+  }
+  requireNonNegativeLamports('Transaction fee', transactionFeeLamports);
+  requireNonNegativeLamports('Payer rent reserve', payerRentReserveLamports);
+  const total = collateralLamports + transactionFeeLamports + payerRentReserveLamports;
+  if (!Number.isSafeInteger(total)) throw new Error('Deposit requirement exceeds safe integer range.');
+  return total;
+}
+
 export function previewSolCasual(collateralLamports: number): SolCasualPreview {
   if (!Number.isSafeInteger(collateralLamports) || collateralLamports <= 0) {
     throw new Error('Collateral must be a positive integer lamport amount.');

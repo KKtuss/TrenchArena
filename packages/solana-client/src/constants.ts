@@ -9,8 +9,18 @@ export const BPS_DENOM = 10_000;
 export const PASSPORT_USD_CENTS = 2_000;
 /** Approximate tournament entry cost in USD cents. */
 export const TOURNAMENT_ENTRY_USD_CENTS = 500;
-/** Fixed POKE burn fee required per chain tournament player. */
-export const TOURNAMENT_BURN_FEE_ATOMS = 10_000;
+export {
+  POKE_MINT_DECIMALS,
+  POKE_ATOM_SCALE,
+  TOURNAMENT_BURN_FEE_POKE,
+  TOURNAMENT_BURN_FEE_ATOMS,
+  TOURNAMENT_FIELD_SIZE,
+  TOURNAMENT_FIELD_BURN_FEE_POKE,
+  TOURNAMENT_FIELD_BURN_FEE_ATOMS,
+  formatPokeFromAtoms,
+  assertTournamentBurnFeeAtoms,
+  tournamentBurnFeeRequirement,
+} from './poke-units';
 
 /** Reject quotes older than this many milliseconds. */
 export const QUOTE_MAX_AGE_MS = 120_000;

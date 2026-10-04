@@ -99,7 +99,7 @@ export function loadChainConfig(env: NodeJS.ProcessEnv = process.env): ArenaChai
 
   const required = productionLike || enabled;
   const programId = requirePubkey(env, 'POKEARENA_PROGRAM_ID', required);
-  const pokeMint = requirePubkey(env, 'POKEARENA_POKE_MINT', required);
+  const pokeMint = requirePubkey(env, 'POKEARENA_POKE_MINT', false) ?? PublicKey.default;
   // Vaults are program PDAs; env overrides are optional when program id is known.
   let feeVault = requirePubkey(env, 'POKEARENA_FEE_VAULT', false);
   let treasuryVault = requirePubkey(env, 'POKEARENA_TREASURY_VAULT', false);

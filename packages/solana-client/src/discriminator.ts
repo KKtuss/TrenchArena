@@ -23,4 +23,5 @@ export const IX = {
   payPrize: anchorDiscriminator('pay_prize'),
   releasePrize: anchorDiscriminator('release_prize'),
   buybackAndBurnPoke: anchorDiscriminator('buyback_and_burn_poke'),
+  setPokeMint: anchorDiscriminator('set_poke_mint'),
 } as const;

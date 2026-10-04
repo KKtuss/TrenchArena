@@ -5,6 +5,16 @@
   "type": "commonjs",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./poke-units": {
+      "types": "./dist/src/poke-units.d.ts",
+      "default": "./dist/src/poke-units.js"
+    }
+  },
   "engines": {
     "node": ">=22.18.0"
   },
