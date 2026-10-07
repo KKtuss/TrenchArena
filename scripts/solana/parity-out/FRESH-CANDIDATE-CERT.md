@@ -8,7 +8,7 @@ HRN was not opened, upgraded, closed, or otherwise mutated. No mainnet SOL was s
 
 | Field | Value |
 | --- | --- |
-| Git HEAD | `ff515028e350f1559d7561e831e59ec558a802e5` |
+| Certified source/tooling commit | `f72d6e44e1497f8da80aae975a3f718737bbc489` |
 | Working tree | dirty (certification source is in the canonical repo, not committed) |
 | ELF path | `target/deploy/arena_escrow_pinocchio.so` |
 | ELF size | 131,408 bytes |
@@ -25,6 +25,60 @@ This ELF supersedes the earlier 123,776-byte candidate (`e1ed97f9…`). Same pro
 Rent values above were queried with `getMinimumBalanceForRentExemption` using
 the exact ProgramData length and, separately, the 36-byte program account
 length. The former 6,960-lamports/byte estimate is not used for Mainnet.
+
+## Deployment-preparation checks
+
+`scripts/solana/deploy-pinocchio-mainnet.sh` now refuses:
+
+- unstaged, staged, or untracked source changes;
+- any program keypair other than `6dHMWQd1M2ZZSmrkQLGZcFpHnvHi8rcH68QqQJ4Kj4r8`;
+- any artifact other than 131,408 bytes with SHA-256
+  `03154ec42a2cfc75866a5cf28cd27254d2c7cf63ee03910d415096027ef04837`;
+- non-Mainnet RPCs or a non-Mainnet genesis hash; and
+- execution without `--confirm-mainnet`.
+
+It also refuses the known HRN, retired, and sentinel program IDs, retains the
+upgrade authority, and never passes `--final`. These checks were verified by
+source inspection plus negative invocation checks; no deployment command was
+executed.
+
+## Exact preparation funding
+
+Mainnet RPC rent values used:
+
+| Account | Bytes | Rent |
+| --- | ---: | ---: |
+| Program account | 36 | 833,120 lamports |
+| ProgramData | 131,453 | 668,431,480 lamports |
+| Config | 305 | 2,199,640 lamports |
+| Each initialization vault | 8 | 690,880 lamports |
+| Zero-byte payer reserve | 0 | 650,240 lamports |
+| One-wager canary match escrow | 133 | 1,325,880 lamports |
+| One-wager canary match vault | 0 | 650,240 lamports |
+
+Using the deployment script's 50,000,000-lamport upload/fee reserve, initial
+deployment preparation requires **719,264,600 lamports
+(0.719264600 SOL)**:
+
+`833,120 + 668,431,480 + 50,000,000`.
+
+Using the initialization script's 10,000,000-lamport transaction reserve,
+initialization requires **14,922,520 lamports (0.014922520 SOL)**:
+
+`2,199,640 + (3 × 690,880) + 650,240 + 10,000,000`.
+
+The minimal harmless SOL canary defined here is one creator creating a match
+with 1 lamport collateral, depositing it, refunding it, and closing the
+cancelled match. Its temporary funding is **1,991,121 lamports
+(0.001991121 SOL)**:
+
+`1,325,880 + 650,240 + 1 + (3 × 5,000)`.
+
+This assumes three base-fee-only transactions, no priority fee, and existing
+initialized authority/keeper wallets. The account rent and collateral return
+when the canary closes; the 15,000 lamports are transaction fees. The combined
+preparation balance including the script reserves and this canary is
+**736,178,241 lamports (0.736178241 SOL)**. No funds were moved.
 
 ## Gates
 
