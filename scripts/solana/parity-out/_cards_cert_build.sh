@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
-cd /mnt/d/CursorProj/PokeArena
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$ROOT"
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:/root/.cargo/bin:/usr/bin:$PATH"
 echo "=== cargo test ==="
 cargo test --manifest-path programs/arena-escrow-pinocchio/Cargo.toml --no-default-features -- --test-threads=8
