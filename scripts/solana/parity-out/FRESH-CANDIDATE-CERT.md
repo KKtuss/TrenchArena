@@ -8,7 +8,7 @@ HRN was not opened, upgraded, closed, or otherwise mutated. No mainnet SOL was s
 
 | Field | Value |
 | --- | --- |
-| Certified source/tooling commit | `f72d6e44e1497f8da80aae975a3f718737bbc489` |
+| Certified source/tooling commit | `ff16f722b6e192da53a847e1988e50bb4072c707` |
 | Working tree | dirty (certification source is in the canonical repo, not committed) |
 | ELF path | `target/deploy/arena_escrow_pinocchio.so` |
 | ELF size | 131,408 bytes |
@@ -38,9 +38,10 @@ length. The former 6,960-lamports/byte estimate is not used for Mainnet.
 - execution without `--confirm-mainnet`.
 
 It also refuses the known HRN, retired, and sentinel program IDs, retains the
-upgrade authority, and never passes `--final`. These checks were verified by
-source inspection plus negative invocation checks; no deployment command was
-executed.
+upgrade authority, and never passes `--final`. Dirty-source, non-Mainnet, and
+wrong-program-ID negative invocations were exercised; the artifact-hash and
+explicit-confirmation guards were verified in the committed script. No
+deployment command was executed.
 
 ## Exact preparation funding
 
