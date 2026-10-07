@@ -1474,12 +1474,11 @@ export class ChainEconomyService {
         ? (result as { serializedTx?: string }).serializedTx!
         : '';
       if (!serializedTx) throw new Error('Keeper override returned a signature without signed bytes.');
+      const lastValidBlockHeight = (result as { lastValidBlockHeight?: number }).lastValidBlockHeight;
       await persistSigned({
         signature: result.signature,
         serializedTx,
-        ...((result as { lastValidBlockHeight?: number }).lastValidBlockHeight !== undefined
-          ? { lastValidBlockHeight: (result as { lastValidBlockHeight?: number }).lastValidBlockHeight }
-          : {}),
+        ...(Number.isFinite(lastValidBlockHeight) ? { lastValidBlockHeight } : {}),
       });
       return result;
     }
