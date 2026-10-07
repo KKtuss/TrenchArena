@@ -159,19 +159,19 @@ const assessment = assessInitialization({
   operatorVault: presence(operatorInfo),
 });
 
-const configRent = await connection.getMinimumBalanceForRentExemption(273);
+const configRent = await connection.getMinimumBalanceForRentExemption(305);
 const vaultRent = await connection.getMinimumBalanceForRentExemption(8);
-const initRent = initializationRentLamports(space => (space === 273 ? configRent : vaultRent));
+const initRent = initializationRentLamports(space => (space === 305 ? configRent : vaultRent));
 const payerReserve = await connection.getMinimumBalanceForRentExemption(0);
 const required = BigInt(initRent + INIT_FEE_RESERVE_LAMPORTS + payerReserve);
 const balance = BigInt(await connection.getBalance(authority.publicKey));
 const replayRent = await connection.getMinimumBalanceForRentExemption(42);
-const reserveRent = await connection.getMinimumBalanceForRentExemption(67);
-const emptyRent = payerReserve;
+const cardsReserveRent = await connection.getMinimumBalanceForRentExemption(163);
+const cardsVaultRent = await connection.getMinimumBalanceForRentExemption(165);
 const liveKeeper = keeperSettlementCost(space => {
   if (space === 42) return replayRent;
-  if (space === 67) return reserveRent;
-  if (space === 0) return emptyRent;
+  if (space === 163) return cardsReserveRent;
+  if (space === 165) return cardsVaultRent;
   throw new Error(`Unexpected rent space ${space}.`);
 });
 const defaultPrize = 100_000_000n;

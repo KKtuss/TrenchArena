@@ -43,7 +43,7 @@ import {
   buybackAndBurnPokeIx,
   setPokeMintIx,
 } from '../src/instructions';
-import { TOKEN_PROGRAM_ID } from '../src/token';
+import { TOKEN_2022_PROGRAM_ID } from '../src/token';
 
 const PROGRAM_ID = new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W');
 
@@ -246,7 +246,7 @@ test('instruction builders preserve account order and flags', () => {
     quoteId,
     priceMicroUsd: 400_000,
   });
-  assert.equal(entry.keys[6].pubkey.equals(TOKEN_PROGRAM_ID), true);
+  assert.equal(entry.keys[6].pubkey.equals(TOKEN_2022_PROGRAM_ID), true);
   assert.equal(entry.keys[8].pubkey.equals(SYSVAR_RENT_PUBKEY), true);
   assert.equal(entry.data.length, 8 + 16 + 8 + 32 + 8);
 

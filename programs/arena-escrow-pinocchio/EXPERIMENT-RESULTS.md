@@ -43,7 +43,7 @@ Size reduction: **344,720 bytes (82.1% smaller)**.
 Offline ABI fixtures (`pinocchio-abi-parity.test.ts`): pass.
 
 Real-tx integration against local validator loaded with Pinocchio `.so` under Program ID
-`26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke`:
+`41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W`:
 
 - `initialize_config` + treasury seed deposit: pass
 - SOL wager fee + win: pass

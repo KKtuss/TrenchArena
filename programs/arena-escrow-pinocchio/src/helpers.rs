@@ -1,6 +1,7 @@
 use pinocchio::{
     account_info::AccountInfo,
-    instruction::Signer,
+    instruction::{AccountMeta, Instruction, Signer},
+    program::slice_invoke_signed,
     program_error::ProgramError,
     pubkey::{create_program_address, find_program_address, Pubkey},
     sysvars::{rent::Rent, Sysvar},
@@ -8,16 +9,22 @@ use pinocchio::{
 };
 use pinocchio_system::instructions::{CreateAccount, Transfer as SystemTransfer};
 use pinocchio_token::instructions::{
-    Burn, InitializeAccount3, Transfer as TokenTransfer,
+    CloseAccount, InitializeAccount3, Transfer as TokenTransfer,
 };
 
 use crate::{
     error::ArenaError,
-    state::{Config, TOKEN_ACCOUNT_SPACE},
+    state::{Config, POKE_MINT_DECIMALS, TOKEN_ACCOUNT_SPACE},
 };
 
 pub const SYSTEM_PROGRAM_ID: Pubkey = pinocchio_system::ID;
+/// Classic SPL Token (Tokenkeg). CARDS accounts and CARDS CPIs use this.
 pub const TOKEN_PROGRAM_ID: Pubkey = pinocchio_token::ID;
+/// Token-2022 (TokenzQd...). POKE accounts and POKE CPIs use this.
+pub const TOKEN_2022_PROGRAM_ID: Pubkey = [
+    6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218, 182, 26, 252, 77,
+    131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
+];
 
 #[inline(always)]
 pub fn assert_signer(account: &AccountInfo) -> Result<(), ProgramError> {
@@ -49,7 +56,16 @@ pub fn assert_system_account(account: &AccountInfo) -> Result<(), ProgramError> 
 }
 
 #[inline(always)]
+/// POKE instructions must name Token-2022.
 pub fn assert_token_program(account: &AccountInfo) -> Result<(), ProgramError> {
+    if account.key() != &TOKEN_2022_PROGRAM_ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    Ok(())
+}
+
+/// CARDS instructions must name classic SPL Token.
+pub fn assert_spl_token_program(account: &AccountInfo) -> Result<(), ProgramError> {
     if account.key() != &TOKEN_PROGRAM_ID {
         return Err(ProgramError::IncorrectProgramId);
     }
@@ -171,7 +187,118 @@ pub fn system_transfer(from: &AccountInfo, to: &AccountInfo, lamports: u64) -> P
     .invoke()
 }
 
+fn invoke_token(
+    program_id: &Pubkey,
+    metas: &[AccountMeta],
+    data: &[u8],
+    accounts: &[&AccountInfo],
+    signers: &[Signer],
+) -> ProgramResult {
+    let instruction = Instruction {
+        program_id,
+        accounts: metas,
+        data,
+    };
+    slice_invoke_signed(&instruction, accounts, signers)
+}
+
 pub fn token_transfer(
+    from: &AccountInfo,
+    to: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+) -> ProgramResult {
+    token_transfer_with(&TOKEN_2022_PROGRAM_ID, from, to, authority, amount, &[])
+}
+
+pub fn token_transfer_signed(
+    from: &AccountInfo,
+    to: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+    signer_seeds: &[Signer],
+) -> ProgramResult {
+    token_transfer_with(
+        &TOKEN_2022_PROGRAM_ID,
+        from,
+        to,
+        authority,
+        amount,
+        signer_seeds,
+    )
+}
+
+fn token_transfer_with(
+    program_id: &Pubkey,
+    from: &AccountInfo,
+    to: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+    signer_seeds: &[Signer],
+) -> ProgramResult {
+    let metas = [
+        AccountMeta::writable(from.key()),
+        AccountMeta::writable(to.key()),
+        AccountMeta::readonly_signer(authority.key()),
+    ];
+    let mut data = [0u8; 9];
+    data[0] = 3;
+    data[1..9].copy_from_slice(&amount.to_le_bytes());
+    invoke_token(program_id, &metas, &data, &[from, to, authority], signer_seeds)
+}
+
+pub fn token_burn(
+    account: &AccountInfo,
+    mint: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+) -> ProgramResult {
+    token_burn_with(&TOKEN_2022_PROGRAM_ID, account, mint, authority, amount, &[])
+}
+
+pub fn token_burn_signed(
+    account: &AccountInfo,
+    mint: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+    signer_seeds: &[Signer],
+) -> ProgramResult {
+    token_burn_with(
+        &TOKEN_2022_PROGRAM_ID,
+        account,
+        mint,
+        authority,
+        amount,
+        signer_seeds,
+    )
+}
+
+fn token_burn_with(
+    program_id: &Pubkey,
+    account: &AccountInfo,
+    mint: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+    signer_seeds: &[Signer],
+) -> ProgramResult {
+    let metas = [
+        AccountMeta::writable(account.key()),
+        AccountMeta::writable(mint.key()),
+        AccountMeta::readonly_signer(authority.key()),
+    ];
+    let mut data = [0u8; 9];
+    data[0] = 8;
+    data[1..9].copy_from_slice(&amount.to_le_bytes());
+    invoke_token(
+        program_id,
+        &metas,
+        &data,
+        &[account, mint, authority],
+        signer_seeds,
+    )
+}
+
+pub fn spl_token_transfer(
     from: &AccountInfo,
     to: &AccountInfo,
     authority: &AccountInfo,
@@ -186,7 +313,7 @@ pub fn token_transfer(
     .invoke()
 }
 
-pub fn token_transfer_signed(
+pub fn spl_token_transfer_signed(
     from: &AccountInfo,
     to: &AccountInfo,
     authority: &AccountInfo,
@@ -202,33 +329,39 @@ pub fn token_transfer_signed(
     .invoke_signed(signer_seeds)
 }
 
-pub fn token_burn(
+/// SPL CloseAccount (discriminator 9) for Tokenkeg or Token-2022.
+pub fn close_token_account_signed(
+    token_program_id: &Pubkey,
     account: &AccountInfo,
-    mint: &AccountInfo,
+    destination: &AccountInfo,
     authority: &AccountInfo,
-    amount: u64,
-) -> ProgramResult {
-    Burn {
-        account,
-        mint,
-        authority,
-        amount,
-    }
-    .invoke()
-}
-
-pub fn token_burn_signed(
-    account: &AccountInfo,
-    mint: &AccountInfo,
-    authority: &AccountInfo,
-    amount: u64,
     signer_seeds: &[Signer],
 ) -> ProgramResult {
-    Burn {
+    let metas = [
+        AccountMeta::writable(account.key()),
+        AccountMeta::writable(destination.key()),
+        AccountMeta::readonly_signer(authority.key()),
+    ];
+    let data = [9u8];
+    invoke_token(
+        token_program_id,
+        &metas,
+        &data,
+        &[account, destination, authority],
+        signer_seeds,
+    )
+}
+
+pub fn spl_close_account_signed(
+    account: &AccountInfo,
+    destination: &AccountInfo,
+    authority: &AccountInfo,
+    signer_seeds: &[Signer],
+) -> ProgramResult {
+    CloseAccount {
         account,
-        mint,
+        destination,
         authority,
-        amount,
     }
     .invoke_signed(signer_seeds)
 }
@@ -249,31 +382,48 @@ pub fn load_config(account: &AccountInfo, program_id: &Pubkey) -> Result<Config,
 
 #[inline(always)]
 pub fn token_mint(account: &AccountInfo) -> Result<Pubkey, ProgramError> {
-    assert_owned_by(account, &TOKEN_PROGRAM_ID)?;
-    let data = account.try_borrow_data()?;
-    if data.len() < 32 {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    let mut mint = [0u8; 32];
-    mint.copy_from_slice(&data[0..32]);
-    Ok(mint)
+    read_token_pubkey(account, &TOKEN_2022_PROGRAM_ID, 0)
 }
 
 #[inline(always)]
 pub fn token_owner(account: &AccountInfo) -> Result<Pubkey, ProgramError> {
-    assert_owned_by(account, &TOKEN_PROGRAM_ID)?;
-    let data = account.try_borrow_data()?;
-    if data.len() < 64 {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    let mut owner = [0u8; 32];
-    owner.copy_from_slice(&data[32..64]);
-    Ok(owner)
+    read_token_pubkey(account, &TOKEN_2022_PROGRAM_ID, 32)
 }
 
 #[inline(always)]
 pub fn token_amount(account: &AccountInfo) -> Result<u64, ProgramError> {
-    assert_owned_by(account, &TOKEN_PROGRAM_ID)?;
+    read_token_amount(account, &TOKEN_2022_PROGRAM_ID)
+}
+
+pub fn spl_token_mint(account: &AccountInfo) -> Result<Pubkey, ProgramError> {
+    read_token_pubkey(account, &TOKEN_PROGRAM_ID, 0)
+}
+
+pub fn spl_token_owner(account: &AccountInfo) -> Result<Pubkey, ProgramError> {
+    read_token_pubkey(account, &TOKEN_PROGRAM_ID, 32)
+}
+
+pub fn spl_token_amount(account: &AccountInfo) -> Result<u64, ProgramError> {
+    read_token_amount(account, &TOKEN_PROGRAM_ID)
+}
+
+fn read_token_pubkey(
+    account: &AccountInfo,
+    owner: &Pubkey,
+    offset: usize,
+) -> Result<Pubkey, ProgramError> {
+    assert_owned_by(account, owner)?;
+    let data = account.try_borrow_data()?;
+    if data.len() < offset + 32 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&data[offset..offset + 32]);
+    Ok(key)
+}
+
+fn read_token_amount(account: &AccountInfo, owner: &Pubkey) -> Result<u64, ProgramError> {
+    assert_owned_by(account, owner)?;
     let data = account.try_borrow_data()?;
     if data.len() < 72 {
         return Err(ProgramError::InvalidAccountData);
@@ -281,7 +431,79 @@ pub fn token_amount(account: &AccountInfo) -> Result<u64, ProgramError> {
     Ok(u64::from_le_bytes(data[64..72].try_into().unwrap()))
 }
 
+const MINT_BASE: usize = 82;
+const ACCOUNT_TYPE_AT: usize = 165;
+const TLV_AT: usize = 166;
+const MAX_POKE_MINT: usize = 1024;
+const MINT_ACCOUNT_TYPE: u8 = 1;
+const EXT_METADATA_POINTER: u16 = 18;
+const EXT_TOKEN_METADATA: u16 = 19;
+const POINTER_LEN: usize = 64;
+
+/// Token-2022 POKE mint.
+/// A bare 82-byte mint is accepted. A larger mint is accepted only when it is
+/// the launch layout: account type Mint, zero padding, MetadataPointer (64
+/// bytes) and TokenMetadata, and no other extension. MetadataPointer and
+/// TokenMetadata do not add accounts to Transfer or Burn.
+pub fn assert_poke_mint_account(mint: &AccountInfo) -> Result<(), ProgramError> {
+    assert_owned_by(mint, &TOKEN_2022_PROGRAM_ID)?;
+    let data = mint.try_borrow_data()?;
+    let len = data.len();
+    if len < MINT_BASE || len > MAX_POKE_MINT || data[44] != POKE_MINT_DECIMALS || data[45] != 1 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if len == MINT_BASE {
+        return Ok(());
+    }
+    if len < TLV_AT || data[ACCOUNT_TYPE_AT] != MINT_ACCOUNT_TYPE {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let mut index = MINT_BASE;
+    while index < ACCOUNT_TYPE_AT {
+        if data[index] != 0 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        index += 1;
+    }
+    let mut offset = TLV_AT;
+    let mut pointer = false;
+    let mut metadata = false;
+    while offset < len {
+        if len - offset < 4 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let kind = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let ext_len = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as usize;
+        let next = offset + 4 + ext_len;
+        if next > len {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        if kind == EXT_METADATA_POINTER {
+            if pointer || ext_len != POINTER_LEN {
+                return Err(ProgramError::InvalidAccountData);
+            }
+            pointer = true;
+        } else if kind == EXT_TOKEN_METADATA {
+            if metadata || ext_len == 0 {
+                return Err(ProgramError::InvalidAccountData);
+            }
+            metadata = true;
+        } else {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        offset = next;
+    }
+    if !pointer || !metadata {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    Ok(())
+}
+
 pub fn assert_mint_account(mint: &AccountInfo) -> Result<(), ProgramError> {
+    assert_poke_mint_account(mint)
+}
+
+pub fn assert_spl_mint_account(mint: &AccountInfo) -> Result<(), ProgramError> {
     assert_owned_by(mint, &TOKEN_PROGRAM_ID)?;
     if mint.data_len() < 82 {
         return Err(ProgramError::InvalidAccountData);
@@ -289,8 +511,26 @@ pub fn assert_mint_account(mint: &AccountInfo) -> Result<(), ProgramError> {
     Ok(())
 }
 
-/// Create + InitializeAccount3 for an SPL token PDA vault.
+/// Create + InitializeAccount3 for a Token-2022 PDA vault (POKE).
 pub fn init_token_account_pda(
+    payer: &AccountInfo,
+    account: &AccountInfo,
+    mint: &AccountInfo,
+    authority: &Pubkey,
+    signer_seeds: &[Signer],
+) -> ProgramResult {
+    create_account_signed(
+        payer,
+        account,
+        TOKEN_ACCOUNT_SPACE,
+        &TOKEN_2022_PROGRAM_ID,
+        signer_seeds,
+    )?;
+    initialize_account3(&TOKEN_2022_PROGRAM_ID, account, mint, authority)
+}
+
+/// Create + InitializeAccount3 for a classic SPL PDA vault (CARDS).
+pub fn init_spl_token_account_pda(
     payer: &AccountInfo,
     account: &AccountInfo,
     mint: &AccountInfo,
@@ -310,6 +550,33 @@ pub fn init_token_account_pda(
         owner: authority,
     }
     .invoke()
+}
+
+fn initialize_account3(
+    program_id: &Pubkey,
+    account: &AccountInfo,
+    mint: &AccountInfo,
+    owner: &Pubkey,
+) -> ProgramResult {
+    let metas = [
+        AccountMeta::writable(account.key()),
+        AccountMeta::readonly(mint.key()),
+    ];
+    let mut data = [0u8; 33];
+    data[0] = 18;
+    data[1..33].copy_from_slice(owner);
+    invoke_token(program_id, &metas, &data, &[account, mint], &[])
+}
+
+pub fn close_program_account(account: &AccountInfo, recipient: &AccountInfo) -> ProgramResult {
+    if account.key() == recipient.key() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let amount = account.lamports();
+    if amount > 0 {
+        transfer_lamports_direct(account, recipient, amount)?;
+    }
+    account.close()
 }
 
 #[inline(always)]

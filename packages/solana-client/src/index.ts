@@ -115,6 +115,11 @@ export {
 } from './instructions';
 export { closureState } from './close-accounts';
 export {
+  REQUIRED_PROGRAM_INSTRUCTIONS,
+  REQUIRED_CARDS_INSTRUCTIONS,
+  instructionSurfaceManifest,
+} from './instruction-surface';
+export {
   ArenaChainClient,
   classifySubmissionError,
   isRetryableRpcError,

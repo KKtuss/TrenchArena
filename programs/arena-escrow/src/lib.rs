@@ -2,12 +2,31 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program::{self, CreateAccount, Transfer};
 use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount, Transfer as TokenTransfer};
 
-declare_id!("26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke");
+declare_id!("41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W");
 
 pub const CASUAL_FEE_BPS: u64 = 200;
 pub const TREASURY_BPS: u64 = 9000;
 pub const OPERATOR_BPS: u64 = 1000;
 pub const BPS_DENOM: u64 = 10_000;
+pub const POKE_MINT_DECIMALS: u8 = 6;
+
+fn mint_for_init(account: &AccountInfo) -> Result<Pubkey> {
+    if *account.key == system_program::ID {
+        return Ok(Pubkey::default());
+    }
+    validated_poke_mint(account)
+}
+
+fn validated_poke_mint(account: &AccountInfo) -> Result<Pubkey> {
+    if *account.key == system_program::ID || *account.key == Pubkey::default() {
+        return err!(ArenaError::InvalidMint);
+    }
+    require!(*account.owner == token::ID, ArenaError::InvalidMint);
+    let data = account.try_borrow_data().map_err(|_| error!(ArenaError::InvalidMint))?;
+    require!(data.len() >= 82, ArenaError::InvalidMint);
+    require!(data[44] == POKE_MINT_DECIMALS, ArenaError::InvalidMint);
+    Ok(*account.key)
+}
 
 #[program]
 pub mod arena_escrow {
@@ -316,6 +335,10 @@ pub mod arena_escrow {
         price_micro_usd: u64,
     ) -> Result<()> {
         require!(amount > 0, ArenaError::InvalidAmount);
+        require!(
+            ctx.accounts.config.poke_mint != Pubkey::default(),
+            ArenaError::PokeMintNotConfigured
+        );
         let entry = &mut ctx.accounts.entry_escrow;
         entry.tournament_id = tournament_id;
         entry.player = ctx.accounts.player.key();
@@ -340,6 +363,10 @@ pub mod arena_escrow {
     }
 
     pub fn refund_poke_entry(ctx: Context<RefundPokeEntry>) -> Result<()> {
+        require!(
+            ctx.accounts.config.poke_mint != Pubkey::default(),
+            ArenaError::PokeMintNotConfigured
+        );
         require!(
             ctx.accounts.entry_escrow.status == EntryStatus::Reserved as u8,
             ArenaError::InvalidEntryStatus
@@ -380,6 +407,10 @@ pub mod arena_escrow {
     }
 
     pub fn burn_poke_entry(ctx: Context<BurnPokeEntry>, burn_key: [u8; 32]) -> Result<()> {
+        require!(
+            ctx.accounts.config.poke_mint != Pubkey::default(),
+            ArenaError::PokeMintNotConfigured
+        );
         require!(
             ctx.accounts.entry_escrow.status == EntryStatus::Reserved as u8,
             ArenaError::InvalidEntryStatus
@@ -604,6 +635,10 @@ pub mod arena_escrow {
         sol_amount: u64,
         min_poke_out: u64,
     ) -> Result<()> {
+        require!(
+            ctx.accounts.config.poke_mint != Pubkey::default(),
+            ArenaError::PokeMintNotConfigured
+        );
         require!(sol_amount > 0, ArenaError::InvalidAmount);
         require!(
             sol_amount >= ctx.accounts.config.min_buyback_lamports,
@@ -659,6 +694,20 @@ pub mod arena_escrow {
             ),
             min_poke_out,
         )?;
+        Ok(())
+    }
+
+    pub fn set_poke_mint(ctx: Context<SetPokeMint>) -> Result<()> {
+        let cfg = &mut ctx.accounts.config;
+        require!(
+            ctx.accounts.authority.key() == cfg.authority,
+            ArenaError::Unauthorized
+        );
+        require!(
+            cfg.poke_mint == Pubkey::default(),
+            ArenaError::PokeMintAlreadySet
+        );
+        cfg.poke_mint = validated_poke_mint(&ctx.accounts.poke_mint.to_account_info())?;
         Ok(())
     }
 }
@@ -795,7 +844,8 @@ pub struct InitializeConfig<'info> {
         bump
     )]
     pub operator_vault: UncheckedAccount<'info>,
-    pub poke_mint: Account<'info, Mint>,
+    /// CHECK: System Program stores an unset mint. Any other account must be a 6-decimal Tokenkeg mint.
+    pub poke_mint: UncheckedAccount<'info>,
     /// CHECK: quote authority pubkey stored only
     pub quote_authority: UncheckedAccount<'info>,
     /// CHECK: keeper pubkey stored only
@@ -809,6 +859,15 @@ pub struct InitializeConfig<'info> {
     )]
     pub config: Account<'info, Config>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetPokeMint<'info> {
+    pub authority: Signer<'info>,
+    #[account(mut)]
+    pub config: Account<'info, Config>,
+    /// CHECK: classic SPL mint, 6 decimals, rejected when config.poke_mint is already set
+    pub poke_mint: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1206,4 +1265,10 @@ pub enum ArenaError {
     InsufficientFunds,
     #[msg("Slippage exceeded")]
     SlippageExceeded,
+    #[msg("POKE mint is not configured")]
+    PokeMintNotConfigured,
+    #[msg("POKE mint is already configured")]
+    PokeMintAlreadySet,
+    #[msg("POKE mint must be a 6-decimal classic SPL mint")]
+    InvalidMint,
 }

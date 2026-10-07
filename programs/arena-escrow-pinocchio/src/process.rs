@@ -13,6 +13,7 @@ use crate::{
     helpers::{
         assert_mint_account, assert_signer, assert_system_account, assert_system_program,
         assert_token_program, assert_writable, authority_or_keeper, create_account_signed,
+        SYSTEM_PROGRAM_ID,
         init_token_account_pda, load_config, read_bytes_arg, read_u64_arg, read_u8_arg,
         system_transfer, token_amount, token_burn, token_burn_signed, token_mint, token_owner,
         token_transfer, token_transfer_signed, transfer_lamports_direct, verify_pda,
@@ -21,8 +22,9 @@ use crate::{
     state::{
         require, Config, EntryEscrow, EntryStatus, MatchEscrow, MatchStatus, PrizeReserve,
         PrizeStatus, Replay, ReplayKind, TreasuryDeposit, BPS_DENOM, CASUAL_FEE_BPS,
-        CONFIG_SPACE, ENTRY_ESCROW_SPACE, MATCH_ESCROW_SPACE, OPERATOR_BPS, PRIZE_RESERVE_SPACE,
-        REPLAY_SPACE, TREASURY_BPS, TREASURY_DEPOSIT_SPACE, UNCHECKED_VAULT_SPACE,
+        CONFIG_SPACE, ENTRY_ESCROW_SPACE, MATCH_ESCROW_SPACE, OPERATOR_BPS,
+        PRIZE_RESERVE_SPACE, REPLAY_SPACE, TOURNAMENT_ENTRY_ATOMS, TREASURY_BPS,
+        TREASURY_DEPOSIT_SPACE, UNCHECKED_VAULT_SPACE,
     },
 };
 
@@ -43,6 +45,7 @@ pub const IX_SET_PRIZE_WINNER: [u8; 8] = [0xe1, 0x25, 0xdb, 0xb1, 0xb3, 0x2c, 0x
 pub const IX_PAY_PRIZE: [u8; 8] = [0x50, 0x82, 0x6a, 0x1c, 0xb1, 0x8a, 0xe2, 0x1a];
 pub const IX_RELEASE_PRIZE: [u8; 8] = [0x55, 0x53, 0x76, 0x70, 0xca, 0x15, 0x68, 0xd0];
 pub const IX_BUYBACK_AND_BURN_POKE: [u8; 8] = [0xa8, 0x02, 0x2f, 0x00, 0x08, 0xc7, 0x26, 0x9d];
+pub const IX_SET_POKE_MINT: [u8; 8] = [0xc4, 0x90, 0xfa, 0x46, 0x5a, 0xa7, 0x80, 0x84];
 
 pub fn process(
     program_id: &Pubkey,
@@ -73,6 +76,44 @@ pub fn process(
         IX_PAY_PRIZE => process_pay_prize(program_id, accounts, data),
         IX_RELEASE_PRIZE => process_release_prize(program_id, accounts, data),
         IX_BUYBACK_AND_BURN_POKE => process_buyback_and_burn_poke(program_id, accounts, data),
+        IX_SET_POKE_MINT => process_set_poke_mint(program_id, accounts),
+        crate::cards::IX_SET_CARDS_MINT => crate::cards::process_set_cards_mint(program_id, accounts),
+        crate::cards::IX_FUND_CARDS_PRIZE => {
+            crate::cards::process_fund_cards_prize(program_id, accounts, data)
+        }
+        crate::cards::IX_SET_CARDS_PRIZE_WINNER => {
+            crate::cards::process_set_cards_prize_winner(program_id, accounts)
+        }
+        crate::cards::IX_PAY_CARDS_PRIZE => {
+            crate::cards::process_pay_cards_prize(program_id, accounts, data)
+        }
+        crate::cards::IX_RELEASE_CARDS_PRIZE => {
+            crate::cards::process_release_cards_prize(program_id, accounts)
+        }
+        crate::cards::IX_FUND_CARDS_PRIZE_FROM_TREASURY => {
+            crate::cards::process_fund_cards_prize_from_treasury(program_id, accounts, data)
+        }
+        crate::cards::IX_INIT_CARDS_REWARD_VAULTS => {
+            crate::cards::process_init_cards_reward_vaults(program_id, accounts)
+        }
+        crate::cards::IX_CLAIM_CARDS_OPERATOR => {
+            crate::cards::process_claim_cards_operator(program_id, accounts, data)
+        }
+        crate::cards::IX_CLOSE_FINAL_CARDS_PRIZE => {
+            crate::cards::process_close_final_cards_prize(program_id, accounts)
+        }
+        crate::cards::IX_CLAIM_FEE_VAULT => {
+            crate::cards::process_claim_fee_vault(program_id, accounts, data)
+        }
+        crate::cards::IX_CLOSE_SETTLED_MATCH => {
+            crate::cards::process_close_settled_match(program_id, accounts)
+        }
+        crate::cards::IX_CLAIM_OPERATOR_FEES => {
+            crate::cards::process_claim_operator_fees(program_id, accounts)
+        }
+        crate::cards::IX_CLOSE_FINAL_ENTRY => {
+            crate::cards::process_close_final_entry(program_id, accounts)
+        }
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
@@ -104,7 +145,7 @@ fn load_prize_reserve(
     PrizeReserve::unpack(&data)
 }
 
-fn init_replay<'a>(
+pub(crate) fn init_replay_account<'a>(
     authority: &'a AccountInfo,
     replay: &'a AccountInfo,
     system_program: &'a AccountInfo,
@@ -124,6 +165,34 @@ fn init_replay<'a>(
         bump,
     };
     write_account_data(replay, |d| state.pack(d))
+}
+
+/// System Program in the mint slot means POKE is not launched. The stored field
+/// is the zero pubkey, which no SPL mint account can occupy.
+fn mint_for_init(mint: &AccountInfo) -> Result<Pubkey, ProgramError> {
+    if mint.key() == &SYSTEM_PROGRAM_ID {
+        return Ok(Pubkey::default());
+    }
+    validated_poke_mint(mint)
+}
+
+fn validated_poke_mint(mint: &AccountInfo) -> Result<Pubkey, ProgramError> {
+    if mint.key() == &SYSTEM_PROGRAM_ID || *mint.key() == Pubkey::default() {
+        return Err(ArenaError::InvalidMint.into());
+    }
+    // Token-2022 owner, 6 decimals, initialized, and the launch extension set.
+    // A classic SPL mint or a TransferFee mint cannot be stored.
+    if crate::helpers::assert_poke_mint_account(mint).is_err() {
+        return Err(ArenaError::InvalidMint.into());
+    }
+    Ok(*mint.key())
+}
+
+fn require_poke_configured(config: &Config) -> Result<(), ProgramError> {
+    if config.poke_mint == Pubkey::default() {
+        return Err(ArenaError::PokeMintNotConfigured.into());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +218,7 @@ fn process_initialize_config(
     assert_signer(authority)?;
     assert_writable(authority)?;
     assert_system_program(system_program)?;
-    assert_mint_account(poke_mint)?;
+    let stored_mint = mint_for_init(poke_mint)?;
 
     // fee_vault
     let fee_bump = verify_pda(fee_vault, &[b"fee_vault"], program_id)?;
@@ -202,7 +271,7 @@ fn process_initialize_config(
         fee_vault: *fee_vault.key(),
         treasury_vault: *treasury_vault.key(),
         operator_vault: *operator_vault.key(),
-        poke_mint: *poke_mint.key(),
+        poke_mint: stored_mint,
         quote_authority: *quote_authority.key(),
         keeper: *keeper.key(),
         fee_bps: CASUAL_FEE_BPS,
@@ -211,7 +280,26 @@ fn process_initialize_config(
         buyback_bps,
         min_buyback_lamports,
         bump: cfg_bump,
+        cards_mint: Pubkey::default(),
     };
+    write_account_data(config, |d| cfg.pack(d))
+}
+
+// ---------------------------------------------------------------------------
+// set_poke_mint
+// accounts: authority, config, poke_mint
+// The config authority may attach a real mint once, and only while unset.
+// ---------------------------------------------------------------------------
+fn process_set_poke_mint(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let [authority, config, poke_mint, ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+    assert_signer(authority)?;
+    assert_writable(config)?;
+    let mut cfg = load_config(config, program_id)?;
+    require(*authority.key() == cfg.authority, ArenaError::Unauthorized)?;
+    require(cfg.poke_mint == Pubkey::default(), ArenaError::PokeMintAlreadySet)?;
+    cfg.poke_mint = validated_poke_mint(poke_mint)?;
     write_account_data(config, |d| cfg.pack(d))
 }
 
@@ -263,6 +351,7 @@ fn process_create_match_escrow(
         fee_charged: false,
         status: MatchStatus::Open as u8,
         bump: escrow_bump,
+        settlement_key: [0u8; 32],
     };
     write_account_data(match_escrow, |d| state.pack(d))?;
 
@@ -565,7 +654,7 @@ fn process_settle_match_win(
         ArenaError::Unauthorized,
     )?;
 
-    init_replay(
+    init_replay_account(
         authority,
         replay,
         system_program,
@@ -579,6 +668,7 @@ fn process_settle_match_win(
     let payout = vault_lamports.saturating_sub(rent);
     transfer_lamports_direct(match_vault, winner, payout)?;
 
+    escrow.settlement_key = settlement_key;
     escrow.status = MatchStatus::Settled as u8;
     write_account_data(match_escrow, |d| escrow.pack(d))
 }
@@ -631,7 +721,7 @@ fn process_settle_match_tie(
         ArenaError::InvalidMatchStatus,
     )?;
 
-    init_replay(
+    init_replay_account(
         authority,
         replay,
         system_program,
@@ -650,6 +740,7 @@ fn process_settle_match_tie(
     transfer_lamports_direct(match_vault, creator, each)?;
     transfer_lamports_direct(match_vault, opponent, each + rem)?;
 
+    escrow.settlement_key = settlement_key;
     escrow.status = MatchStatus::Settled as u8;
     write_account_data(match_escrow, |d| escrow.pack(d))
 }
@@ -674,7 +765,7 @@ fn process_deposit_poke_entry(
     let (amount, off) = read_u64_arg(data, off)?;
     let (quote_id, off) = read_bytes_arg::<32>(data, off)?;
     let (price_micro_usd, _) = read_u64_arg(data, off)?;
-    require(amount > 0, ArenaError::InvalidAmount)?;
+    require(amount == TOURNAMENT_ENTRY_ATOMS, ArenaError::InvalidAmount)?;
 
     assert_signer(player)?;
     assert_writable(player)?;
@@ -686,6 +777,7 @@ fn process_deposit_poke_entry(
     }
 
     let cfg = load_config(config, program_id)?;
+    require_poke_configured(&cfg)?;
     assert_mint_account(poke_mint)?;
     require(*poke_mint.key() == cfg.poke_mint, ArenaError::Unauthorized)?;
 
@@ -744,6 +836,7 @@ fn process_deposit_poke_entry(
         price_micro_usd,
         status: EntryStatus::Reserved as u8,
         bump: entry_bump,
+        burn_key: [0u8; 32],
     };
     write_account_data(entry_escrow, |d| entry.pack(d))?;
 
@@ -772,6 +865,7 @@ fn process_refund_poke_entry(
     assert_token_program(token_program)?;
 
     let cfg = load_config(config, program_id)?;
+    require_poke_configured(&cfg)?;
     assert_mint_account(poke_mint)?;
     require(*poke_mint.key() == cfg.poke_mint, ArenaError::Unauthorized)?;
 
@@ -854,6 +948,7 @@ fn process_burn_poke_entry(
     assert_token_program(token_program)?;
 
     let cfg = load_config(config, program_id)?;
+    require_poke_configured(&cfg)?;
     authority_or_keeper(authority, &cfg)?;
     assert_mint_account(poke_mint)?;
     require(*poke_mint.key() == cfg.poke_mint, ArenaError::Unauthorized)?;
@@ -890,7 +985,7 @@ fn process_burn_poke_entry(
     let vault_owner = token_owner(entry_vault)?;
     require(vault_owner == *entry_escrow.key(), ArenaError::Unauthorized)?;
 
-    init_replay(
+    init_replay_account(
         authority,
         replay,
         system_program,
@@ -907,8 +1002,10 @@ fn process_burn_poke_entry(
         &bump_ref
     );
     let signer = Signer::from(&seeds_arr);
+    require(amount == TOURNAMENT_ENTRY_ATOMS, ArenaError::InvalidAmount)?;
     token_burn_signed(entry_vault, poke_mint, entry_escrow, amount, &[signer])?;
 
+    entry.burn_key = burn_key;
     entry.status = EntryStatus::Burned as u8;
     write_account_data(entry_escrow, |d| entry.pack(d))
 }
@@ -977,7 +1074,7 @@ fn process_deposit_treasury_sol(
         &[ledger_signer],
     )?;
 
-    init_replay(
+    init_replay_account(
         authority,
         replay,
         system_program,
@@ -1165,7 +1262,7 @@ fn process_pay_prize(
     )?;
     require(reserve.winner_set, ArenaError::PrizeWinnerNotSet)?;
 
-    init_replay(
+    init_replay_account(
         authority,
         replay,
         system_program,
@@ -1263,6 +1360,7 @@ fn process_buyback_and_burn_poke(
     let _ = system_program; // present for Anchor parity / replay init
 
     let cfg = load_config(config, program_id)?;
+    require_poke_configured(&cfg)?;
     require(
         sol_amount >= cfg.min_buyback_lamports,
         ArenaError::BuybackTooSmall,
@@ -1286,7 +1384,7 @@ fn process_buyback_and_burn_poke(
         / BPS_DENOM;
     require(spend > 0 && spend <= max_sol, ArenaError::InsufficientFunds)?;
 
-    init_replay(
+    init_replay_account(
         authority,
         replay,
         system_program,
@@ -1300,4 +1398,63 @@ fn process_buyback_and_burn_poke(
     let available = token_amount(poke_burn_source)?;
     require(available >= min_poke_out, ArenaError::SlippageExceeded)?;
     token_burn(poke_burn_source, poke_mint, authority, min_poke_out)
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_discriminator_is_rejected() {
+        let err = process(&crate::ID, &[], &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap_err();
+        assert_eq!(err, ProgramError::InvalidInstructionData);
+    }
+
+    #[test]
+    fn short_instruction_data_is_rejected() {
+        let err = process(&crate::ID, &[], &[0, 1, 2]).unwrap_err();
+        assert_eq!(err, ProgramError::InvalidInstructionData);
+    }
+
+    #[test]
+    fn every_client_instruction_is_dispatched() {
+        let discs = [
+            IX_INITIALIZE_CONFIG,
+            IX_CREATE_MATCH_ESCROW,
+            IX_DEPOSIT_SOL_WAGER,
+            IX_SEAT_MATCH_OPPONENT,
+            IX_REFUND_SOL_WAGER,
+            IX_CHARGE_MATCH_FEE,
+            IX_SETTLE_MATCH_WIN,
+            IX_SETTLE_MATCH_TIE,
+            IX_DEPOSIT_POKE_ENTRY,
+            IX_REFUND_POKE_ENTRY,
+            IX_BURN_POKE_ENTRY,
+            IX_DEPOSIT_TREASURY_SOL,
+            IX_RESERVE_PRIZE,
+            IX_SET_PRIZE_WINNER,
+            IX_PAY_PRIZE,
+            IX_RELEASE_PRIZE,
+            IX_BUYBACK_AND_BURN_POKE,
+            IX_SET_POKE_MINT,
+            crate::cards::IX_CLAIM_OPERATOR_FEES,
+            crate::cards::IX_SET_CARDS_MINT,
+            crate::cards::IX_FUND_CARDS_PRIZE,
+            crate::cards::IX_SET_CARDS_PRIZE_WINNER,
+            crate::cards::IX_PAY_CARDS_PRIZE,
+            crate::cards::IX_RELEASE_CARDS_PRIZE,
+            crate::cards::IX_CLAIM_FEE_VAULT,
+            crate::cards::IX_INIT_CARDS_REWARD_VAULTS,
+            crate::cards::IX_CLAIM_CARDS_OPERATOR,
+            crate::cards::IX_FUND_CARDS_PRIZE_FROM_TREASURY,
+            crate::cards::IX_CLOSE_SETTLED_MATCH,
+            crate::cards::IX_CLOSE_FINAL_ENTRY,
+            crate::cards::IX_CLOSE_FINAL_CARDS_PRIZE,
+        ];
+        assert_eq!(discs.len(), 31);
+        for disc in discs {
+            let err = process(&crate::ID, &[], &disc).unwrap_err();
+            assert_ne!(err, ProgramError::InvalidInstructionData);
+        }
+    }
 }

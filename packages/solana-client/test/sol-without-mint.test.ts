@@ -32,9 +32,9 @@ import {
   setPokeMintIx,
   settleMatchWinIx,
 } from '../src/index';
-import { TOKEN_PROGRAM_ID } from '../src/token';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '../src/token';
 
-const PROGRAM_ID = new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W');
+const PROGRAM_ID = new PublicKey('6dHMWQd1M2ZZSmrkQLGZcFpHnvHi8rcH68QqQJ4Kj4r8');
 const SO_PATH = join(__dirname, '../../../../target/deploy/arena_escrow_pinocchio.so');
 const UNAUTHORIZED = 6002;
 const POKE_UNSET = 6017;
@@ -131,7 +131,7 @@ function mintData(decimals: number): Buffer {
   return data;
 }
 
-function installMint(svm: Svm, mint: PublicKey, decimals: number, owner = TOKEN_PROGRAM_ID): void {
+function installMint(svm: Svm, mint: PublicKey, decimals: number, owner = TOKEN_2022_PROGRAM_ID): void {
   svm.setAccount(mint, {
     lamports: Number(svm.minimumBalanceForRentExemption(82n)),
     data: mintData(decimals),
@@ -182,7 +182,7 @@ test('initialize with the System Program stores the zero mint', { skip: !svmRead
   assert.equal(IX.setPokeMint.equals(Buffer.from([0xc4, 0x90, 0xfa, 0x46, 0x5a, 0xa7, 0x80, 0x84])), true);
 });
 
-test('initialize with a 6-decimal Tokenkeg mint stores that mint', { skip: !svmReady() && (loadError ?? 'artifact missing') }, () => {
+test('initialize with a 6-decimal Token-2022 mint stores that mint', { skip: !svmReady() && (loadError ?? 'artifact missing') }, () => {
   const svm = loadSvm();
   const authority = Keypair.generate();
   const keeper = Keypair.generate();
@@ -308,7 +308,7 @@ test('POKE instructions fail while the mint is zero', { skip: !svmReady() && (lo
       pokeMint: dummyMint,
       playerPoke: dummyAta,
       tournamentId,
-      amount: 1n,
+      amount: 10_000_000_000n,
       quoteId,
       priceMicroUsd: 1,
     }),
@@ -351,7 +351,7 @@ test('POKE instructions fail while the mint is zero', { skip: !svmReady() && (lo
   ]), POKE_UNSET);
 });
 
-test('only the config authority can set the mint once, and only a 6-decimal Tokenkeg mint', { skip: !svmReady() && (loadError ?? 'artifact missing') }, () => {
+test('only the config authority can set the mint once, and only a 6-decimal Token-2022 mint', { skip: !svmReady() && (loadError ?? 'artifact missing') }, () => {
   const svm = loadSvm();
   const authority = Keypair.generate();
   const keeper = Keypair.generate();
@@ -359,6 +359,7 @@ test('only the config authority can set the mint once, and only a 6-decimal Toke
   const good = Keypair.generate();
   const wrongDecimals = Keypair.generate();
   const wrongOwner = Keypair.generate();
+  const classicSpl = Keypair.generate();
   fund(svm, authority.publicKey);
   fund(svm, keeper.publicKey);
   fund(svm, stranger.publicKey);
@@ -366,6 +367,7 @@ test('only the config authority can set the mint once, and only a 6-decimal Toke
   installMint(svm, good.publicKey, 6);
   installMint(svm, wrongDecimals.publicKey, 9);
   installMint(svm, wrongOwner.publicKey, 6, SystemProgram.programId);
+  installMint(svm, classicSpl.publicKey, 6, TOKEN_PROGRAM_ID);
 
   assertError(send(svm, keeper, [
     setPokeMintIx({ programId: PROGRAM_ID, authority: keeper.publicKey, pokeMint: good.publicKey }),
@@ -378,6 +380,9 @@ test('only the config authority can set the mint once, and only a 6-decimal Toke
   ]), INVALID_MINT);
   assertError(send(svm, authority, [
     setPokeMintIx({ programId: PROGRAM_ID, authority: authority.publicKey, pokeMint: wrongOwner.publicKey }),
+  ]), INVALID_MINT);
+  assertError(send(svm, authority, [
+    setPokeMintIx({ programId: PROGRAM_ID, authority: authority.publicKey, pokeMint: classicSpl.publicKey }),
   ]), INVALID_MINT);
   assert.equal(storedMint(svm).equals(PublicKey.default), true);
 
@@ -410,13 +415,27 @@ test('POKE deposit and burn work after the mint is configured', { skip: !svmRead
   const playerPoke = Keypair.generate();
   svm.setAccount(playerPoke.publicKey, {
     lamports: Number(svm.minimumBalanceForRentExemption(165n)),
-    data: tokenAccount(mint.publicKey, player.publicKey, 5_000_000n),
-    owner: TOKEN_PROGRAM_ID,
+    data: tokenAccount(mint.publicKey, player.publicKey, 10_000_000_000n),
+    owner: TOKEN_2022_PROGRAM_ID,
     executable: false,
     rentEpoch: 0,
   });
   const tournamentId = createHash('sha256').update('live-tour').digest().subarray(0, 16);
   const quoteId = createHash('sha256').update('live-quote').digest();
+  const INVALID_AMOUNT = 6000;
+  assertError(send(svm, player, [
+    depositPokeEntryIx({
+      programId: PROGRAM_ID,
+      player: player.publicKey,
+      config: configPda(PROGRAM_ID)[0],
+      pokeMint: mint.publicKey,
+      playerPoke: playerPoke.publicKey,
+      tournamentId,
+      amount: 1n,
+      quoteId,
+      priceMicroUsd: 1_000,
+    }),
+  ]), INVALID_AMOUNT);
   const deposited = send(svm, player, [
     depositPokeEntryIx({
       programId: PROGRAM_ID,
@@ -425,7 +444,7 @@ test('POKE deposit and burn work after the mint is configured', { skip: !svmRead
       pokeMint: mint.publicKey,
       playerPoke: playerPoke.publicKey,
       tournamentId,
-      amount: 1_000_000n,
+      amount: 10_000_000_000n,
       quoteId,
       priceMicroUsd: 1_000,
     }),

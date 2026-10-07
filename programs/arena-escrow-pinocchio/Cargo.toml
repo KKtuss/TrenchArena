@@ -1,7 +1,7 @@
 [package]
 name = "arena-escrow-pinocchio"
 version = "0.1.0"
-description = "Pinocchio parity implementation of arena_escrow (experiment)"
+description = "Production Pinocchio implementation of arena_escrow"
 edition = "2021"
 
 [lib]

@@ -21,6 +21,13 @@ pub enum ArenaError {
     BuybackTooSmall = 14,
     InsufficientFunds = 15,
     SlippageExceeded = 16,
+    PokeMintNotConfigured = 17,
+    PokeMintAlreadySet = 18,
+    InvalidMint = 19,
+    CardsMintNotConfigured = 20,
+    CardsMintAlreadySet = 21,
+    /// Lamports above rent, or a non-zero token amount, still sit in the account.
+    BalanceRemaining = 22,
 }
 
 impl From<ArenaError> for ProgramError {

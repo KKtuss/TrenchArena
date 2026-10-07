@@ -10,8 +10,8 @@ export const PRODUCTION_PROGRAM_ID = '41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu
 export const PRODUCTION_UPGRADE_AUTHORITY = 'GGRAzZM9wnuLNCWQb6JYykRyfp4pXjHvp35JEmaps51Z';
 export const PRODUCTION_KEEPER = 'AZn8PqCeQLKyKLDUgy67NsvLtTiFzDY9S491fGC15iAL';
 export const KNOWN_PRODUCTION_AUTHORITY = 'Fmb7DLU6fTrQEGh8g6HSsYz3MviMjjS6nnB9n2TATdzw';
-/** Fresh staging program. The Pinocchio artifact accepts only this id. */
-export const STAGING_PROGRAM_ID = 'HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk';
+/** Certified fresh deployment candidate. The Pinocchio artifact accepts only this id. */
+export const STAGING_PROGRAM_ID = '6dHMWQd1M2ZZSmrkQLGZcFpHnvHi8rcH68QqQJ4Kj4r8';
 /** Staging program whose ProgramData cannot be reused. Fresh staging must reject it. */
 export const CLOSED_STAGING_PROGRAM_ID = '54Ji1Z32wH4NfDqpd3WMTbSBeK119ptAMmYcQirCUmmU';
 /** Earlier retired staging program. Fresh staging must reject it. */

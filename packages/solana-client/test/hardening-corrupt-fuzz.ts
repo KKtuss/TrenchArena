@@ -68,6 +68,7 @@ import {
   prizeVaultPda,
   replayPda,
   treasuryDepositPda,
+  cardsPrizeReservePda,
 } from '../src/pdas';
 import {
   chargeMatchFeeIx,
@@ -78,10 +79,11 @@ import {
   payPrizeIx,
   depositTreasurySolIx,
   seatMatchOpponentIx,
+  setCardsPrizeWinnerIx,
 } from '../src/instructions';
-import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '../src/token';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '../src/token';
 
-const PROGRAM_ID = new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W');
+const PROGRAM_ID = new PublicKey('6dHMWQd1M2ZZSmrkQLGZcFpHnvHi8rcH68QqQJ4Kj4r8');
 // dist/test -> repo root is ../../../.. ; source test/ -> ../../..
 const ROOT = existsSync(join(__dirname, '../../../../target/deploy/arena_escrow_pinocchio.so'))
   ? join(__dirname, '../../../..')
@@ -97,6 +99,7 @@ const DISC = {
   PrizeReserve: Buffer.from([0xa0, 0x94, 0xbb, 0xf2, 0x2b, 0x20, 0x7b, 0x32]),
   Replay: Buffer.from([0x26, 0xe4, 0xcc, 0x2e, 0xfb, 0x1c, 0x7c, 0x69]),
   TreasuryDeposit: Buffer.from([0xc3, 0xa0, 0x6e, 0x76, 0x52, 0x6f, 0xe7, 0xae]),
+  CardsPrizeReserve: Buffer.from([0xb5, 0x15, 0x86, 0x05, 0x7d, 0x1d, 0x88, 0xb1]),
 } as const;
 
 type AccountKind =
@@ -106,7 +109,8 @@ type AccountKind =
   | 'PrizeReserve'
   | 'Replay'
   | 'TreasuryDeposit'
-  | 'TokenAccount';
+  | 'TokenAccount'
+  | 'CardsPrizeReserve';
 
 type CorruptCase = {
   id: string;
@@ -155,7 +159,7 @@ function packConfig(input: {
   keeper: PublicKey;
   bump: number;
 }): Buffer {
-  const buf = Buffer.alloc(273);
+  const buf = Buffer.alloc(305);
   DISC.Config.copy(buf, 0);
   writePk(buf, 8, input.authority);
   writePk(buf, 40, input.feeVault);
@@ -184,7 +188,7 @@ function packMatch(input: {
   status: number;
   bump: number;
 }): Buffer {
-  const buf = Buffer.alloc(102);
+  const buf = Buffer.alloc(133);
   DISC.MatchEscrow.copy(buf, 0);
   input.roomId.copy(buf, 8);
   writePk(buf, 24, input.creator);
@@ -207,7 +211,7 @@ function packEntry(input: {
   status: number;
   bump: number;
 }): Buffer {
-  const buf = Buffer.alloc(106);
+  const buf = Buffer.alloc(138);
   DISC.EntryEscrow.copy(buf, 0);
   input.tournamentId.copy(buf, 8);
   writePk(buf, 24, input.player);
@@ -216,6 +220,31 @@ function packEntry(input: {
   u64(input.price).copy(buf, 96);
   buf[104] = input.status;
   buf[105] = input.bump;
+  return buf;
+}
+
+function packCardsReserve(input: {
+  tournamentId: Buffer;
+  funder: PublicKey;
+  winner: PublicKey;
+  amount: bigint;
+  status: number;
+  winnerSet: boolean;
+  bump: number;
+  fundKey?: Buffer;
+  payKey?: Buffer;
+}): Buffer {
+  const buf = Buffer.alloc(163);
+  DISC.CardsPrizeReserve.copy(buf, 0);
+  input.tournamentId.copy(buf, 8);
+  writePk(buf, 24, input.funder);
+  writePk(buf, 56, input.winner);
+  u64(input.amount).copy(buf, 88);
+  buf[96] = input.status;
+  buf[97] = input.winnerSet ? 1 : 0;
+  buf[98] = input.bump;
+  (input.fundKey ?? Buffer.alloc(32)).copy(buf, 99);
+  (input.payKey ?? Buffer.alloc(32)).copy(buf, 131);
   return buf;
 }
 
@@ -296,7 +325,7 @@ const LAYOUT: Record<
   }
 > = {
   Config: {
-    dataLen: 273,
+    dataLen: 305,
     bump: 272, // mutated for coverage; not must-reject on seat probe (Anchor parity)
     bools: [],
     criticalPubkeys: [
@@ -305,7 +334,7 @@ const LAYOUT: Record<
     criticalBools: [],
   },
   MatchEscrow: {
-    dataLen: 101,
+    dataLen: 133,
     bump: 100,
     status: 99,
     bools: [96, 97, 98],
@@ -314,7 +343,7 @@ const LAYOUT: Record<
     criticalBools: [98], // fee_charged must stay false
   },
   EntryEscrow: {
-    dataLen: 106,
+    dataLen: 138,
     bump: 105,
     status: 104,
     bools: [],
@@ -349,6 +378,16 @@ const LAYOUT: Record<
     bools: [],
     criticalPubkeys: [{ start: 8, len: 32 }],
     criticalBools: [],
+  },
+  CardsPrizeReserve: {
+    dataLen: 163,
+    bump: 98,
+    status: 96,
+    bools: [97],
+    criticalPubkeys: [
+      { start: 8, len: 16 },
+    ],
+    criticalBools: [97],
   },
   TokenAccount: {
     dataLen: 165,
@@ -582,6 +621,8 @@ type Fixtures = {
   replayBump: number;
   treasuryDeposit: PublicKey;
   treasuryBump: number;
+  cardsReserve: PublicKey;
+  cardsBump: number;
   player1Ata: PublicKey;
   golden: Record<AccountKind, Buffer>;
   watchKeys: PublicKey[];
@@ -610,7 +651,13 @@ function buildFixtures(): Fixtures {
   const [prizeVault] = prizeVaultPda(PROGRAM_ID, tournamentId);
   const [replay, replayBump] = replayPda(PROGRAM_ID, settlementKey);
   const [treasuryDeposit, treasuryBump] = treasuryDepositPda(PROGRAM_ID, claimKey);
-  const player1Ata = getAssociatedTokenAddressSync(pokeMint.publicKey, player1.publicKey, true);
+  const [cardsReserve, cardsBump] = cardsPrizeReservePda(PROGRAM_ID, tournamentId);
+  const player1Ata = getAssociatedTokenAddressSync(
+    pokeMint.publicKey,
+    player1.publicKey,
+    true,
+    TOKEN_2022_PROGRAM_ID,
+  );
 
   const golden: Record<AccountKind, Buffer> = {
     Config: packConfig({
@@ -664,6 +711,16 @@ function buildFixtures(): Fixtures {
       owner: player1.publicKey,
       amount: 1_000_000n,
     }),
+    CardsPrizeReserve: packCardsReserve({
+      tournamentId,
+      funder: keeper.publicKey,
+      winner: PublicKey.default,
+      amount: 100n,
+      status: 0,
+      winnerSet: false,
+      bump: cardsBump,
+      fundKey: createHash('sha256').update('cards-fund').digest(),
+    }),
   };
 
   return {
@@ -694,9 +751,11 @@ function buildFixtures(): Fixtures {
     replayBump,
     treasuryDeposit,
     treasuryBump,
+    cardsReserve,
+    cardsBump,
     player1Ata,
     golden,
-    watchKeys: [config, matchEscrow, entryEscrow, prizeReserve, replay, treasuryDeposit, player1Ata],
+    watchKeys: [config, matchEscrow, entryEscrow, prizeReserve, replay, treasuryDeposit, player1Ata, cardsReserve],
   };
 }
 
@@ -720,13 +779,14 @@ function installUniverseFixed(
   const data = (kind: AccountKind) =>
     corrupt && corrupt.kind === kind ? corrupt.data : fx.golden[kind];
 
-  setProgAccount(svm, fx.config, data('Config'), rent(273));
+  setProgAccount(svm, fx.config, data('Config'), rent(305));
   setProgAccount(svm, fx.feeVault, Buffer.alloc(0), rent0 + 50_000_000);
   setProgAccount(svm, fx.treasuryVault, Buffer.alloc(0), rent0 + 2_000_000_000);
   setProgAccount(svm, fx.operatorVault, Buffer.alloc(0), rent0 + 200_000_000);
-  setProgAccount(svm, fx.matchEscrow, data('MatchEscrow'), rent(102));
+  setProgAccount(svm, fx.matchEscrow, data('MatchEscrow'), rent(133));
   setProgAccount(svm, fx.matchVault, Buffer.alloc(0), rent0 + 200_000_000);
-  setProgAccount(svm, fx.entryEscrow, data('EntryEscrow'), rent(106));
+  setProgAccount(svm, fx.entryEscrow, data('EntryEscrow'), rent(138));
+  setProgAccount(svm, fx.cardsReserve, data('CardsPrizeReserve'), rent(163));
   setProgAccount(svm, entryVaultOf(fx), Buffer.alloc(0), rent0 + 10_000);
   setProgAccount(svm, fx.prizeReserve, data('PrizeReserve'), rent(67));
   setProgAccount(svm, fx.prizeVault, Buffer.alloc(0), rent0 + 50_000_000);
@@ -743,17 +803,16 @@ function installUniverseFixed(
     fx.player1Ata,
     data('TokenAccount'),
     rent(165),
-    TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
   );
-  // Mint account minimal (owner token program)
   const mintData = Buffer.alloc(82);
-  mintData[0] = 1; // mint authority option COption::Some needs 36 bytes — keep uninitialized-safe
-  // Use a simple initialized mint layout: supply/decimals
-  mintData[45] = 6; // decimals at typical offset — enough for burn/transfer checks that only read mint key match
+  mintData[0] = 1;
+  mintData[44] = 6;
+  mintData[45] = 1;
   svm.setAccount(fx.pokeMint.publicKey, {
     lamports: rent(82),
     data: mintData,
-    owner: TOKEN_PROGRAM_ID,
+    owner: TOKEN_2022_PROGRAM_ID,
     executable: false,
     rentEpoch: 0,
   });
@@ -885,6 +944,19 @@ function probeFor(
           player: fx.player1.publicKey,
         }),
       };
+    case 'CardsPrizeReserve':
+      return {
+        name: 'set_cards_prize_winner',
+        payer: fx.authority,
+        target: fx.cardsReserve,
+        ix: setCardsPrizeWinnerIx({
+          programId: PROGRAM_ID,
+          authority: fx.authority.publicKey,
+          config: fx.config,
+          winner: fx.player2.publicKey,
+          tournamentId: fx.tournamentId,
+        }),
+      };
     default:
       throw new Error('unknown kind');
   }
@@ -908,7 +980,7 @@ function runProbe(svm: SvmInstance, fx: Fixtures, kind: AccountKind, corrupted: 
       svm,
       fx.matchEscrow,
       open,
-      Number(svm.minimumBalanceForRentExemption(102n)),
+      Number(svm.minimumBalanceForRentExemption(133n)),
     );
   }
   // For Replay probe, also need fee_charged Active match:
@@ -920,7 +992,7 @@ function runProbe(svm: SvmInstance, fx: Fixtures, kind: AccountKind, corrupted: 
       svm,
       fx.matchEscrow,
       active,
-      Number(svm.minimumBalanceForRentExemption(102n)),
+      Number(svm.minimumBalanceForRentExemption(133n)),
     );
   }
   const probe = probeFor(kind, fx);
@@ -957,7 +1029,6 @@ function runCampaign(): {
   const pinocchioSo = join(ROOT, 'target/deploy/arena_escrow_pinocchio.so');
   const anchorSo = join(ROOT, 'target/deploy/arena_escrow.so');
   assert.ok(existsSync(pinocchioSo), 'pinocchio .so missing');
-  assert.ok(existsSync(anchorSo), 'anchor .so missing');
 
   const fx = buildFixtures();
   const allKinds: AccountKind[] = [
@@ -968,6 +1039,7 @@ function runCampaign(): {
     'Replay',
     'TreasuryDeposit',
     'TokenAccount',
+    'CardsPrizeReserve',
   ];
   const kindFilter = (process.env.POKEARENA_CORRUPT_KIND ?? '').trim();
   const kinds: AccountKind[] = kindFilter
@@ -1112,7 +1184,75 @@ function runCampaign(): {
   return { seed: SEED, cases, summary };
 }
 
+function runExplicitRejects(): { id: string; ok: boolean; err: string | null }[] {
+  const pinocchioSo = join(ROOT, 'target/deploy/arena_escrow_pinocchio.so');
+  const fx = buildFixtures();
+  const svm = loadSvm(pinocchioSo);
+  const rows: { id: string; ok: boolean; err: string | null }[] = [];
+
+  const stale: Array<{ id: string; kind: AccountKind; size: number }> = [
+    { id: 'stale-config-273', kind: 'Config', size: 273 },
+    { id: 'stale-match-102', kind: 'MatchEscrow', size: 102 },
+    { id: 'stale-entry-106', kind: 'EntryEscrow', size: 106 },
+    { id: 'stale-cards-missing-pay-key', kind: 'CardsPrizeReserve', size: 131 },
+    { id: 'match-missing-settlement-key', kind: 'MatchEscrow', size: 101 },
+    { id: 'entry-missing-burn-key', kind: 'EntryEscrow', size: 106 },
+  ];
+  for (const row of stale) {
+    const truncated = Buffer.from(fx.golden[row.kind].subarray(0, row.size));
+    const result = runProbe(svm, fx, row.kind, truncated);
+    rows.push({ id: row.id, ok: result.ok, err: result.err });
+  }
+
+  const classic = Buffer.from(fx.golden.TokenAccount);
+  installUniverseFixed(svm, fx, { kind: 'TokenAccount', data: classic });
+  svm.setAccount(fx.player1Ata, {
+    lamports: Number(svm.minimumBalanceForRentExemption(165n)),
+    data: classic,
+    owner: TOKEN_PROGRAM_ID,
+    executable: false,
+    rentEpoch: 0,
+  });
+  const probe = probeFor('TokenAccount', fx);
+  const tx = new Transaction({
+    feePayer: probe.payer.publicKey,
+    recentBlockhash: svm.latestBlockhash(),
+  }).add(probe.ix);
+  tx.sign(probe.payer);
+  const classicResult = svm.sendTransaction(tx);
+  svm.expireBlockhash?.();
+  rows.push({
+    id: 'token-classic-spl-owner',
+    ok: txOk(classicResult),
+    err: errText(classicResult),
+  });
+
+  installUniverseFixed(svm, fx);
+  svm.setAccount(fx.config, {
+    lamports: Number(svm.minimumBalanceForRentExemption(305n)),
+    data: fx.golden.Config,
+    owner: SystemProgram.programId,
+    executable: false,
+    rentEpoch: 0,
+  });
+  const cfgProbe = probeFor('Config', fx);
+  const cfgTx = new Transaction({
+    feePayer: cfgProbe.payer.publicKey,
+    recentBlockhash: svm.latestBlockhash(),
+  }).add(cfgProbe.ix);
+  cfgTx.sign(cfgProbe.payer);
+  const cfgResult = svm.sendTransaction(cfgTx);
+  rows.push({
+    id: 'config-wrong-owner',
+    ok: txOk(cfgResult),
+    err: errText(cfgResult),
+  });
+  return rows;
+}
+
 function writeAndAssert(report: ReturnType<typeof runCampaign>): void {
+  const extras = runExplicitRejects();
+  const extraAccepts = extras.filter((row) => row.ok);
   mkdirSync(OUT_DIR, { recursive: true });
   const out = process.env.POKEARENA_CORRUPT_OUT
     ? process.env.POKEARENA_CORRUPT_OUT
@@ -1126,8 +1266,9 @@ function writeAndAssert(report: ReturnType<typeof runCampaign>): void {
         note: 'Executes identical .so artifacts as local-validator genesis load; setAccount enables byte mutations.',
         seed: report.seed,
         casesPerType: CASES_PER_TYPE,
-        accountKinds: 7,
+        accountKinds: 8,
         summary: report.summary,
+        explicitRejects: extras,
         failures: report.cases.filter((c) => c.unexpectedAccept || c.acceptMismatch || c.pinocchio.mutatedOther),
         cases: report.cases,
       },
@@ -1135,8 +1276,14 @@ function writeAndAssert(report: ReturnType<typeof runCampaign>): void {
       2,
     ),
   );
-  console.log(JSON.stringify({ out, seed: report.seed, summary: report.summary }, null, 2));
+  console.log(JSON.stringify({
+    out,
+    seed: report.seed,
+    summary: report.summary,
+    explicitRejects: extras.map((row) => ({ id: row.id, rejected: !row.ok })),
+  }, null, 2));
 
+  assert.equal(extraAccepts.length, 0, `stale/wrong-owner/token-program cases accepted: ${extraAccepts.map((r) => r.id).join(',')}`);
   assert.equal(report.summary.unexpectedAccept, 0, 'unexpected accept of must-reject corruption');
   assert.equal(report.summary.pinocchioMutatedOther, 0, 'pinocchio mutated non-target accounts');
   const hardMismatch = report.cases.filter((c) => c.acceptMismatch && c.unexpectedAccept);

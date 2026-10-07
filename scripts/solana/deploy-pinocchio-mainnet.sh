@@ -9,10 +9,21 @@
 # The script prints the plan and stops before sending a transaction unless
 # --confirm-mainnet is present. It never generates keypairs and never passes
 # --final, so a successful deploy keeps an upgrade authority.
+#
+# The program id and artifact hash are pinned to the certified fresh candidate.
 set -euo pipefail
 
-EXPECTED_PROGRAM_ID="41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W"
+EXPECTED_PROGRAM_ID="6dHMWQd1M2ZZSmrkQLGZcFpHnvHi8rcH68QqQJ4Kj4r8"
+EXPECTED_ELF_BYTES=131408
+EXPECTED_ELF_SHA256="03154ec42a2cfc75866a5cf28cd27254d2c7cf63ee03910d415096027ef04837"
 MAINNET_GENESIS="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+FORBIDDEN_PROGRAM_IDS=(
+  "HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk"
+  "54Ji1Z32wH4NfDqpd3WMTbSBeK119ptAMmYcQirCUmmU"
+  "6nVegJd8zVaV8RfLL6VQ6AQoB53FPsZSTGfidevdKM98"
+  "41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W"
+  "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke"
+)
 # Headroom for chunked upload fees and a modest priority fee. Rent is separate.
 FEE_RESERVE_LAMPORTS=50000000
 PROGRAM_ACCOUNT_DATA_LEN=36
@@ -31,6 +42,14 @@ die() {
   exit 1
 }
 
+require_clean_source() {
+  command -v git >/dev/null 2>&1 || die "required command not found: git"
+  git -C "$ROOT" diff --quiet || die "source tree has unstaged changes. Commit the certified source first."
+  git -C "$ROOT" diff --cached --quiet || die "source tree has staged changes. Commit the certified source first."
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] \
+    || die "source tree has uncommitted or untracked files. Use the clean certified commit."
+}
+
 sol_format() {
   awk -v lamports="$1" 'BEGIN { printf "%.9f", lamports / 1000000000 }'
 }
@@ -46,6 +65,8 @@ for arg in "$@"; do
     *) die "unknown argument: $arg" ;;
   esac
 done
+
+require_clean_source
 
 CLUSTER="$(printf '%s' "${POKEARENA_SOLANA_CLUSTER:-}" | tr '[:upper:]' '[:lower:]')"
 RPC="${POKEARENA_SOLANA_RPC:-}"
@@ -78,8 +99,9 @@ require_cmd python3
 
 PROGRAM_PUBKEY="$(solana-keygen pubkey "$PROGRAM_KEYPAIR")"
 PAYER_PUBKEY="$(solana-keygen pubkey "$DEPLOY_KEYPAIR")"
-[[ "$PROGRAM_PUBKEY" == "$EXPECTED_PROGRAM_ID" ]] || die "program keypair pubkey is $PROGRAM_PUBKEY, expected $EXPECTED_PROGRAM_ID."
-[[ "$PAYER_PUBKEY" != "$EXPECTED_PROGRAM_ID" ]] || die "deployer pubkey must not be the program ID."
+[[ "$PROGRAM_PUBKEY" == "$EXPECTED_PROGRAM_ID" ]] \
+  || die "program keypair pubkey is $PROGRAM_PUBKEY, expected certified program ID $EXPECTED_PROGRAM_ID."
+[[ "$PAYER_PUBKEY" != "$PROGRAM_PUBKEY" ]] || die "deployer pubkey must not be the program ID."
 
 rpc_result() {
   python3 - "$RPC" "$1" "$2" <<'PY'
@@ -118,6 +140,28 @@ fi
 BYTES="$(wc -c < "$PINOCCHIO_SO" | tr -d '[:space:]')"
 SHA256="$(sha256sum "$PINOCCHIO_SO" | awk '{print $1}')"
 [[ "$BYTES" =~ ^[1-9][0-9]*$ ]] || die "artifact size is invalid: $BYTES"
+[[ "$BYTES" -eq "$EXPECTED_ELF_BYTES" ]] \
+  || die "artifact size is $BYTES bytes, expected certified size $EXPECTED_ELF_BYTES."
+[[ "$SHA256" == "$EXPECTED_ELF_SHA256" ]] \
+  || die "artifact SHA-256 is $SHA256, expected certified hash $EXPECTED_ELF_SHA256."
+python3 - "$PINOCCHIO_SO" "$PROGRAM_PUBKEY" <<'PY'
+import pathlib, sys
+alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+text = sys.argv[2]
+value = 0
+for char in text:
+    value = value * 58 + alphabet.index(char)
+pad = len(text) - len(text.lstrip("1"))
+raw = value.to_bytes((value.bit_length() + 7) // 8, "big") if value else b""
+raw = (b"\x00" * pad) + raw
+if len(raw) != 32:
+    sys.stderr.write(f"program pubkey did not decode to 32 bytes: {len(raw)}\n")
+    raise SystemExit(1)
+blob = pathlib.Path(sys.argv[1]).read_bytes()
+if raw not in blob:
+    sys.stderr.write("built ELF does not contain the program keypair pubkey.\n")
+    raise SystemExit(1)
+PY
 
 PROGRAMDATA_LEN=$((BYTES + PROGRAMDATA_METADATA_LEN))
 PROGRAM_ACCOUNT_RENT="$(rpc_result getMinimumBalanceForRentExemption "[$PROGRAM_ACCOUNT_DATA_LEN]")"
@@ -129,7 +173,7 @@ BALANCE="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<
 BALANCE="${BALANCE//[^0-9]/}"
 
 set +e
-SHOW_OUTPUT="$(solana program show "$EXPECTED_PROGRAM_ID" --url "$RPC" 2>&1)"
+SHOW_OUTPUT="$(solana program show "$PROGRAM_PUBKEY" --url "$RPC" 2>&1)"
 SHOW_STATUS=$?
 set -e
 
@@ -159,7 +203,7 @@ echo "Pinocchio mainnet deployment plan"
 echo "  Artifact:          $PINOCCHIO_SO"
 echo "  Size:              $BYTES bytes"
 echo "  SHA-256:           $SHA256"
-echo "  Program ID:        $EXPECTED_PROGRAM_ID"
+echo "  Program ID:        $PROGRAM_PUBKEY"
 echo "  Program keypair:   $PROGRAM_KEYPAIR"
 echo "  Payer:             $PAYER_PUBKEY"
 echo "  Payer keypair:     $DEPLOY_KEYPAIR"

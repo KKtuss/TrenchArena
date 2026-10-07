@@ -1,5 +1,6 @@
-#![no_std]
+#![cfg_attr(feature = "bpf-entrypoint", no_std)]
 
+pub mod cards;
 pub mod error;
 pub mod helpers;
 pub mod process;
@@ -7,12 +8,13 @@ pub mod state;
 
 use pinocchio::{account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey, ProgramResult};
 
-/// Program ID: 26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke
+/// Program ID: 6dHMWQd1M2ZZSmrkQLGZcFpHnvHi8rcH68QqQJ4Kj4r8
 ///
-/// Hardcoded bytes (pinocchio 0.8.4 has no `declare_id!`; keep in sync with Anchor).
+/// Hardcoded bytes (pinocchio 0.8.4 has no `declare_id!`). The deploy script
+/// selects the program keypair separately and must not hardcode this id.
 pub const ID: Pubkey = [
-    16, 79, 145, 191, 175, 75, 170, 188, 180, 85, 162, 212, 237, 28, 62, 156, 64, 164, 115, 60,
-    104, 204, 179, 170, 170, 187, 118, 24, 168, 173, 77, 205,
+    83, 149, 213, 181, 86, 206, 134, 195, 242, 127, 247, 149, 76, 39, 76, 198, 149, 178, 255,
+    118, 142, 170, 26, 16, 11, 199, 26, 78, 8, 27, 238, 221,
 ];
 
 #[inline(always)]
@@ -35,13 +37,13 @@ pub fn process_instruction(
 #[cfg(feature = "bpf-entrypoint")]
 use pinocchio::{default_allocator, program_entrypoint};
 
-#[cfg(feature = "bpf-entrypoint")]
+#[cfg(all(feature = "bpf-entrypoint", not(test)))]
 program_entrypoint!(process_instruction);
 
-#[cfg(feature = "bpf-entrypoint")]
+#[cfg(all(feature = "bpf-entrypoint", not(test)))]
 default_allocator!();
 
-#[cfg(feature = "bpf-entrypoint")]
+#[cfg(all(feature = "bpf-entrypoint", not(test)))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     loop {}

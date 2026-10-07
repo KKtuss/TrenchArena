@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-arena_escrow = "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke"
+arena_escrow = "41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W"
 
 [programs.devnet]
-arena_escrow = "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke"
+arena_escrow = "41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W"
 
 # SAFETY: no production program is selected in this checked-in deployment config.
 # A future production deployment must generate and review a separate Anchor config
