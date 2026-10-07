@@ -46,9 +46,9 @@ require_clean_source() {
   command -v git >/dev/null 2>&1 || die "required command not found: git"
   # Ignore checkout-only CRLF/LF normalization so a clean Windows checkout
   # remains deployable from WSL. Content changes are still detected.
-  [[ -z "$(git -C "$ROOT" diff --ignore-space-at-eol --name-only)" ]] \
+  [[ -z "$(git -C "$ROOT" -c core.autocrlf=true diff --name-only)" ]] \
     || die "source tree has unstaged changes. Commit the certified source first."
-  [[ -z "$(git -C "$ROOT" diff --cached --ignore-space-at-eol --name-only)" ]] \
+  [[ -z "$(git -C "$ROOT" -c core.autocrlf=true diff --cached --name-only)" ]] \
     || die "source tree has staged changes. Commit the certified source first."
   [[ -z "$(git -C "$ROOT" ls-files --others --exclude-standard)" ]] \
     || die "source tree has uncommitted or untracked files. Use the clean certified commit."
