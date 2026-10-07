@@ -5285,7 +5285,7 @@
   display: grid;
   grid-template-columns: 16.5rem minmax(0, 1fr);
   gap: 1rem;
-  align-items: stretch;
+  align-items: start;
 }
 
 .pa-profile-identity {
@@ -5294,7 +5294,7 @@
   align-content: stretch;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0.85rem;
-  height: 100%;
+  height: 18.5rem;
   text-align: center;
 }
 
@@ -5368,6 +5368,11 @@
   min-width: 0;
 }
 
+.pa-profile-modules {
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
 .pa-profile-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -5395,9 +5400,13 @@
 .pa-profile-stat strong.flat { color: #8ea0c0; }
 
 .pa-profile-team {
-  display: grid;
-  justify-items: start;
-  gap: 0.55rem;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 0.2rem;
 }
 
 .pa-profile-team strong {
@@ -5408,11 +5417,113 @@
   text-transform: uppercase;
 }
 
+.pa-profile-team-panel {
+  display: flex;
+  min-height: 12rem;
+  height: 12rem;
+  flex-direction: column;
+}
+
+.pa-profile-team-panel > header {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: start;
+  column-gap: 1rem;
+}
+
+.pa-profile-team-heading {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.pa-profile-team-heading > small {
+  margin-bottom: 1rem;
+  color: #8ea0c0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.pa-profile-team-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.pa-profile-team-format {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  position: absolute;
+  top: 2.2rem;
+  right: 0;
+}
+
+.pa-profile-team-panel > header .pa-btn {
+  grid-column: 2;
+  grid-row: 1;
+  margin-top: 0;
+}
+
+.pa-profile-team-roster {
+  display: grid;
+  place-items: end center;
+  width: 100%;
+  min-height: 6rem;
+  margin-top: auto;
+}
+
+.pa-profile-team-roster .ps-team {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-items: center;
+  width: 100%;
+  gap: 0.25rem;
+}
+
+.pa-profile-team-roster .ps-icon-wrap,
+.pa-profile-team-roster .ps-icon-empty {
+  display: grid;
+  place-items: center;
+  justify-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 5.2rem;
+}
+
+.pa-profile-team-roster .ps-icon-wrap .ps-icon,
+.pa-profile-team-roster .ps-icon-empty {
+  transform: scale(2.6);
+}
+
 .pa-profile-team span,
 .pa-profile-team p {
   margin: 0;
   color: #8ea0c0;
   font-size: 0.82rem;
+}
+
+.pa-profile-record-panel {
+  grid-column: 1 / -1;
+  height: 10rem;
+  padding-bottom: 0.85rem;
+}
+
+.pa-profile-record-rows {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem 1.25rem;
+}
+
+.pa-profile-record-rows > div {
+  min-width: 0;
+  padding: 0.45rem 0;
+  border-top: 1px solid #13213d;
 }
 
 .pa-profile-history {
@@ -5550,6 +5661,10 @@
 
   .pa-profile {
     grid-template-columns: 1fr;
+  }
+
+  .pa-profile-identity {
+    height: auto;
   }
 }
 
@@ -6128,5 +6243,33 @@
     letter-spacing: 0;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+}
+
+@media (max-width: 720px) {
+  .pa-profile-team-panel,
+  .pa-profile-record-panel {
+    min-height: 0;
+    height: auto;
+  }
+
+  .pa-profile-team-roster .ps-team {
+    gap: 0.2rem;
+  }
+
+  .pa-profile-team-roster .ps-icon-wrap,
+  .pa-profile-team-roster .ps-icon-empty {
+    height: 4.3rem;
+  }
+
+  .pa-profile-record-rows {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .pa-profile-team-roster .ps-icon-wrap .ps-icon,
+  .pa-profile-team-roster .ps-icon-empty {
+    transform: scale(1.8);
   }
 }

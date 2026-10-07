@@ -8,6 +8,7 @@ import { TrainerName } from '@/components/profile-trainer';
 import { TeamStrip } from '@/components/showdown-visuals';
 import { TrainerSetup } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
+import { isDemoAuthEnabled } from '@/lib/demo-auth';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
 import type { FightHistoryCursor, FightHistoryEntry } from '@/lib/protocol';
 import { readAllFormatTeams, readSavedTeam, type SavedTeam } from '@/lib/team';
@@ -53,6 +54,10 @@ export default function ProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [team, setTeam] = useState<SavedTeam | null>(null);
+  const localPreview = (!playerId || previewSession)
+    && isDemoAuthEnabled()
+    && process.env.NEXT_PUBLIC_POKEARENA_LOCAL_TEST_MODE === 'true';
+  const profilePlayerId = playerId ?? (localPreview ? LOCAL_PREVIEW_PLAYER_ID : null);
 
   const load = useCallback(async (before?: FightHistoryCursor) => {
     if (!playerId) return;
@@ -80,8 +85,9 @@ export default function ProfilePage() {
   }, [client, playerId]);
 
   useEffect(() => {
-    setTeam(playerId ? lockedTeam(playerId) : null);
-  }, [playerId]);
+    const saved = profilePlayerId ? lockedTeam(profilePlayerId) : null;
+    setTeam(saved ?? (localPreview ? LOCAL_PREVIEW_TEAM : null));
+  }, [localPreview, profilePlayerId]);
 
   useEffect(() => {
     if (!playerId) {
@@ -134,7 +140,7 @@ export default function ProfilePage() {
         <p className="pa-lead">Your trainer, record, and the fights behind it.</p>
       </header>
 
-      {!playerId ? (
+      {!playerId && !localPreview ? (
         <p className="pa-lead">Connect a wallet to open your profile.</p>
       ) : (
         <>
@@ -143,10 +149,12 @@ export default function ProfilePage() {
               <img src={trainerSpriteSrc(trainerSpriteId)} alt="" width={128} height={128} />
               <div className="pa-profile-foot">
                 <div>
-                  <small>{previewSession ? 'Browser preview' : 'Trainer'}</small>
-                  <strong>{trainerUsername ?? playerLabel}</strong>
+                  <small>{previewSession || localPreview ? 'Browser preview' : 'Trainer'}</small>
+                  <strong>{localPreview ? 'Preview 1' : trainerUsername ?? playerLabel}</strong>
                   <em>
-                    {previewSession
+                    {localPreview
+                      ? 'Local UI preview'
+                      : previewSession
                       ? 'No extension on this browser'
                       : walletAddress
                         ? shortenAddress(walletAddress, 6)
@@ -192,18 +200,25 @@ export default function ProfilePage() {
                 </article>
               </div>
 
-              <div className="pa-split">
-                <article className="pa-vault">
+              <div className="pa-split pa-profile-modules">
+                <article className="pa-vault pa-profile-team-panel">
                   <header>
-                    <h2>Most used team</h2>
-                    <span className="ok">{team?.validated ? 'Locked' : 'Not locked'}</span>
+                    <div className="pa-profile-team-heading">
+                      <small>Most used team</small>
+                      <div className="pa-profile-team-title-row">
+                        <h2>{team?.name || 'Most used team'}</h2>
+                      </div>
+                    </div>
+                    {team ? <span className="pa-profile-team-format">{formatRuleset(team.rulesetId)}</span> : null}
+                    {team ? (
+                      <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/teams">Open My Teams</Link>
+                    ) : null}
                   </header>
                   {team ? (
                     <div className="pa-profile-team">
-                      <strong>{team.name || 'Untitled team'}</strong>
-                      <span>{formatRuleset(team.rulesetId)}</span>
-                      <TeamStrip species={team.species} slots={6} />
-                      <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/teams">Open My Teams</Link>
+                      <div className="pa-profile-team-roster">
+                        <TeamStrip species={team.species} slots={6} />
+                      </div>
                     </div>
                   ) : (
                     <div className="pa-profile-team">
@@ -212,22 +227,22 @@ export default function ProfilePage() {
                     </div>
                   )}
                 </article>
-                <article className="pa-vault">
-                  <header>
-                    <h2>Record book</h2>
-                    <span className="ok">{stats.fights} fights</span>
-                  </header>
-                  <div className="pa-econ-rows">
-                    <div><span>Balance</span><strong>{balance}</strong></div>
-                    <div><span>Last fight</span><strong>{stats.last}</strong></div>
-                    <div><span>Casual</span><strong>{stats.modes.casual}</strong></div>
-                    <div><span>Competitive</span><strong>{stats.modes.competitive}</strong></div>
-                    <div><span>Tournaments</span><strong>{stats.modes.tournament}</strong></div>
-                    <div><span>Forfeits</span><strong>{stats.forfeits}</strong></div>
-                  </div>
-                </article>
               </div>
             </div>
+            <article className="pa-vault pa-profile-record-panel">
+              <header>
+                <h2>Record book</h2>
+                <span className="ok">{stats.fights} fights</span>
+              </header>
+              <div className="pa-econ-rows pa-profile-record-rows">
+                <div><span>Balance</span><strong>{balance}</strong></div>
+                <div><span>Last fight</span><strong>{stats.last}</strong></div>
+                <div><span>Casual</span><strong>{stats.modes.casual}</strong></div>
+                <div><span>Competitive</span><strong>{stats.modes.competitive}</strong></div>
+                <div><span>Tournaments</span><strong>{stats.modes.tournament}</strong></div>
+                <div><span>Forfeits</span><strong>{stats.forfeits}</strong></div>
+              </div>
+            </article>
           </section>
 
           <section className="pa-profile-history">
@@ -269,7 +284,7 @@ export default function ProfilePage() {
         </>
       )}
 
-      {editing && playerId ? (
+      {editing && (playerId || localPreview) ? (
         <TrainerSetup
           required={false}
           initialUsername={trainerUsername ?? ''}
@@ -294,6 +309,23 @@ function lockedTeam(playerId: string): SavedTeam | null {
   if (current && (current.species.length > 0 || current.paste.trim())) return current;
   const saved = readAllFormatTeams(playerId);
   return saved.find(team => team.validated) ?? saved[0] ?? null;
+}
+
+const LOCAL_PREVIEW_PLAYER_ID = 'demo-player-1';
+const LOCAL_PREVIEW_TEAM: SavedTeam = {
+  id: 'local-preview-team',
+  name: 'Demo Circuit',
+  paste: '',
+  species: ['Pikachu', 'Charizard', 'Venusaur', 'Blastoise', 'Gengar', 'Mewtwo'],
+  validated: true,
+  rulesetId: 'gen9ou',
+};
+
+function formatRuleset(rulesetId?: string): string {
+  if (!rulesetId || rulesetId === 'gen9ou') return 'Gen 9 OU';
+  const cup = /^gen(\d+)cup$/.exec(rulesetId);
+  if (cup) return `Gen ${cup[1]} Cup`;
+  return rulesetId;
 }
 
 function summarize(entries: readonly FightHistoryEntry[]) {
@@ -343,13 +375,6 @@ function streakLabel(entries: readonly FightHistoryEntry[]): string {
     count += 1;
   }
   return `${count}${winning ? 'W' : 'L'}`;
-}
-
-function formatRuleset(rulesetId?: string): string {
-  if (!rulesetId || rulesetId === 'gen9ou') return 'Gen 9 OU';
-  const cup = /^gen(\d+)cup$/.exec(rulesetId);
-  if (cup) return `Gen ${cup[1]} Cup`;
-  return rulesetId;
 }
 
 function formatWhen(completedAt: number): string {
