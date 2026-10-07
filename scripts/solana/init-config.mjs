@@ -40,12 +40,11 @@ function requireEnv(name) {
 
 const {
   initializeConfigIx,
+  setCardsMintIx,
   configPda,
   feeVaultPda,
   treasuryVaultPda,
   operatorVaultPda,
-  depositTreasurySolIx,
-  sha256Key,
 } = loadClient();
 
 const rpc = process.env.POKEARENA_SOLANA_RPC || 'http://127.0.0.1:8899';
@@ -64,6 +63,7 @@ const authority = loadKeypair(join(keyDir, 'authority.json'));
 const keeper = loadKeypair(join(keyDir, 'keeper.json'));
 const programId = new PublicKey(requireEnv('POKEARENA_PROGRAM_ID'));
 const pokeMint = new PublicKey(requireEnv('POKEARENA_POKE_MINT'));
+const cardsMint = new PublicKey(requireEnv('POKEARENA_CARDS_MINT'));
 const [feeVault] = feeVaultPda(programId);
 const [treasuryVault] = treasuryVaultPda(programId);
 const [operatorVault] = operatorVaultPda(programId);
@@ -99,34 +99,12 @@ if (existing) {
     feePayer: authority.publicKey,
     blockhash,
     lastValidBlockHeight,
-  }).add(ix);
+  }).add(ix, setCardsMintIx({
+    programId,
+    authority: authority.publicKey,
+    cardsMint,
+  }));
   const sig = await sendAndConfirmTransaction(connection, tx, [authority]);
   console.log('initialize_config ok', sig);
 }
-
-const seedLamports = Number(process.env.POKEARENA_TREASURY_SEED_LAMPORTS || 2_000_000_000);
-if (seedLamports > 0) {
-  const claimKey = sha256Key(['treasury-seed', String(Date.now())]);
-  const ix = depositTreasurySolIx({
-    programId,
-    authority: authority.publicKey,
-    payer: authority.publicKey,
-    config: configAddress,
-    treasuryVault,
-    operatorVault,
-    claimKey,
-    grossLamports: seedLamports,
-  });
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-  const tx = new Transaction({
-    feePayer: authority.publicKey,
-    blockhash,
-    lastValidBlockHeight,
-  }).add(ix);
-  try {
-    const sig = await sendAndConfirmTransaction(connection, tx, [authority]);
-    console.log('treasury seed deposit ok', sig, 'gross', seedLamports);
-  } catch (error) {
-    console.warn('treasury seed skipped/failed:', error instanceof Error ? error.message : error);
-  }
-}
+console.log('No SOL treasury seed is performed; tournament prizes use explicit CARDS funding.');

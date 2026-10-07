@@ -76,6 +76,7 @@ const {
   assertProductionKeypairPath,
   assertNotLocalTestPubkey,
   assertPokeMintAccount,
+  assertCardsMintAccount,
   deriveInitAccounts,
   assessInitialization,
   initializationRentLamports,
@@ -83,6 +84,7 @@ const {
   minimumTreasuryGrossLamports,
   initDecision,
   initializeConfigIx,
+  setCardsMintIx,
 } = client;
 
 let request;
@@ -103,6 +105,7 @@ try {
   assertNotLocalTestPubkey('Keeper', request.keeper, localPubkeys);
   assertNotLocalTestPubkey('Quote authority', request.quoteAuthority, localPubkeys);
   assertNotLocalTestPubkey('POKE mint', request.pokeMint, localPubkeys);
+  assertNotLocalTestPubkey('CARDS mint', request.cardsMint, localPubkeys);
 } catch (error) {
   die(error instanceof Error ? error.message : String(error));
 }
@@ -135,6 +138,14 @@ if (!mintUnset) {
     die(error instanceof Error ? error.message : String(error));
   }
 }
+const cardsMintKey = new PublicKey(request.cardsMint);
+const cardsMint = await connection.getAccountInfo(cardsMintKey);
+if (!cardsMint) die('CARDS mint account was not found on mainnet.');
+try {
+  assertCardsMintAccount(cardsMint.owner, cardsMint.data);
+} catch (error) {
+  die(error instanceof Error ? error.message : String(error));
+}
 
 const accounts = deriveInitAccounts(programId);
 const [configInfo, feeInfo, treasuryInfo, operatorInfo] = await connection.getMultipleAccountsInfo([
@@ -148,6 +159,7 @@ const assessment = assessInitialization({
   programId: request.programId,
   authority: authority.publicKey.toBase58(),
   pokeMint: request.pokeMint,
+  cardsMint: request.cardsMint,
   quoteAuthority: request.quoteAuthority,
   keeper: request.keeper,
   buybackBps: request.buybackBps,
@@ -190,6 +202,7 @@ console.log('  Keeper signs later settlements. It does not sign initialize_confi
 console.log(`  Quote authority:    ${request.quoteAuthority}`);
 console.log(`  POKE mint:          ${mintUnset ? 'unset (System Program sentinel, stored as the zero pubkey)' : request.pokeMint}`);
 console.log(`  POKE decimals:      ${mintUnset ? 'not configured' : '6'}`);
+console.log(`  CARDS mint:         ${request.cardsMint}`);
 console.log(`  Buyback bps:        ${request.buybackBps}`);
 console.log(`  Min buyback:        ${request.minBuybackLamports} lamports`);
 console.log('  Fee bps:            200 (fixed by the program)');
@@ -240,7 +253,11 @@ const tx = new Transaction({
   feePayer: authority.publicKey,
   blockhash,
   lastValidBlockHeight,
-}).add(ix);
+}).add(ix, setCardsMintIx({
+  programId,
+  authority: authority.publicKey,
+  cardsMint: cardsMintKey,
+}));
 console.log(`==> Sending initialize_config. Config authority remains ${authority.publicKey.toBase58()}.`);
 const signature = await sendAndConfirmTransaction(connection, tx, [authority]);
 console.log(`initialize_config confirmed ${signature}`);

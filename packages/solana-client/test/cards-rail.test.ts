@@ -31,6 +31,7 @@ import {
   closeFinalCardsPrizeIx,
   closeSettledMatchIx,
   configPda,
+  decodeConfigAccount,
   createMatchEscrowIx,
   depositSolWagerIx,
   feeVaultPda,
@@ -196,12 +197,14 @@ function boot(svm: Svm, authority: Keypair, keeper: PublicKey, cardsMint: Public
       buybackBps: 0,
       minBuybackLamports: 50_000_000,
     }),
-  ]);
-  assert.equal(failed(init), false, logs(init));
-  const set = send(svm, authority, [
     setCardsMintIx({ programId: PROGRAM_ID, authority: authority.publicKey, cardsMint }),
   ]);
-  assert.equal(failed(set), false, logs(set));
+  assert.equal(failed(init), false, logs(init));
+  const config = svm.getAccount(configPda(PROGRAM_ID)[0]);
+  assert.ok(config, 'config account missing after initialization');
+  assert.equal(config.owner.toBase58(), PROGRAM_ID.toBase58());
+  assert.equal(config.data.length, 305);
+  assert.equal(decodeConfigAccount(config.data).cardsMint, cardsMint.toBase58());
 }
 
 test('client CARDS builders keep proven discriminators, PDAs, and classic SPL', () => {
@@ -253,6 +256,20 @@ test('client CARDS builders keep proven discriminators, PDAs, and classic SPL', 
   assert.equal(pay.keys.length, 10);
   assert.equal(pay.keys[8].pubkey.equals(TOKEN_PROGRAM_ID), true);
   assert.equal(pay.keys[4].isWritable, false);
+});
+
+test('atomic initialization stores the configured CARDS mint in the 305-byte config', { skip: !svmReady() && (loadError ?? 'artifact missing') }, () => {
+  const svm = loadSvm();
+  const authority = Keypair.generate();
+  const keeper = Keypair.generate();
+  const cardsMint = Keypair.generate().publicKey;
+  installMint(svm, cardsMint);
+
+  boot(svm, authority, keeper.publicKey, cardsMint);
+
+  const config = svm.getAccount(configPda(PROGRAM_ID)[0]);
+  assert.ok(config);
+  assert.equal(decodeConfigAccount(config.data).cardsMint, cardsMint.toBase58());
 });
 
 test('CARDS fund, pay, release, treasury, fee claim, and match close', { skip: !svmReady() && (loadError ?? 'artifact missing') }, () => {

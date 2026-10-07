@@ -3,7 +3,8 @@
 //!
 //! CARDS accounts and CPIs use classic SPL Token. POKE stays on Token-2022
 //! in `process.rs` / `helpers.rs`. `pay_cards_prize` transfers the stored
-//! CARDS amount. The 50/35/15 split stays off-chain.
+//! CARDS amount. Tournament payout allocation is champion-only in the
+//! application layer; this program transfers the stored reserve amount.
 
 use pinocchio::{
     account_info::AccountInfo,
