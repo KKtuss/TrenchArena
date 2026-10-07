@@ -1,7 +1,15 @@
+import {
+  CASUAL_FEE_BPS as DB_CASUAL_FEE_BPS,
+  TOURNAMENT_DEV_OPS_BPS as DB_TOURNAMENT_DEV_OPS_BPS,
+  TOURNAMENT_TREASURY_BPS as DB_TOURNAMENT_TREASURY_BPS,
+  previewCasual as previewCasualMath,
+  previewTournament as previewTournamentMath,
+} from '@pokearena/db';
+
 export const POKE_SYMBOL = 'POKE';
-export const CASUAL_FEE_BPS = 200;
-export const TOURNAMENT_TREASURY_BPS = 9000;
-export const TOURNAMENT_DEV_OPS_BPS = 1000;
+export const CASUAL_FEE_BPS = DB_CASUAL_FEE_BPS;
+export const TOURNAMENT_TREASURY_BPS = DB_TOURNAMENT_TREASURY_BPS;
+export const TOURNAMENT_DEV_OPS_BPS = DB_TOURNAMENT_DEV_OPS_BPS;
 export const DEFAULT_TOURNAMENT_ENTRY_POKE = 50_000;
 /** Test faucet top-up target for every wallet that authenticates when the faucet is on. */
 export const DEFAULT_DEV_BALANCE_POKE = 10_000_000;
@@ -12,7 +20,7 @@ export type DemoPlayerId = 'demo-player-1' | 'demo-player-2';
 export type PlayerId = string;
 
 export interface CasualEconomicsPreview {
-  symbol: typeof POKE_SYMBOL;
+  symbol: typeof POKE_SYMBOL | 'SOL';
   collateral: number;
   totalPot: number;
   protocolFee: number;
@@ -41,7 +49,7 @@ export interface MockPayoutResult {
   reason: 'casual-win' | 'casual-forfeit' | 'casual-tie' | 'tournament-win' | 'refund';
 }
 
-/** SOL prize payout for chain-economy cups (treasury reserve → pay_prize). */
+/** SOL settlement result for the separate 1v1 wager rail. */
 export interface ChainPayoutResult {
   symbol: 'SOL';
   rail: 'sol_chain';
@@ -50,6 +58,16 @@ export interface ChainPayoutResult {
   mocked?: false;
   protocolFee?: number;
   reason?: 'casual-win' | 'casual-forfeit' | 'casual-tie' | 'tournament-win' | 'refund';
+  settlementKey: string;
+  settlementKeyHex: string;
+}
+
+export interface CardsPayoutResult {
+  symbol: 'CARDS';
+  rail: 'cards_chain';
+  winnerId: string;
+  amount: number;
+  cardsAmountRaw: number;
   settlementKey: string;
   settlementKeyHex: string;
 }
@@ -109,43 +127,11 @@ export class MockEconomics {
   }
 
   previewCasual(collateral: number): CasualEconomicsPreview {
-    if (!Number.isInteger(collateral) || collateral <= 0) {
-      throw new Error('Collateral must be a positive integer POKE value.');
-    }
-    const totalPot = collateral * 2;
-    const protocolFee = Math.floor((totalPot * CASUAL_FEE_BPS) / 10_000);
-    const winnerPayout = totalPot - protocolFee;
-    return {
-      symbol: POKE_SYMBOL,
-      collateral,
-      totalPot,
-      protocolFee,
-      feeRateBps: CASUAL_FEE_BPS,
-      winnerPayout,
-    };
+    return previewCasualMath(collateral);
   }
 
   previewTournament(entryFee: number, playerCount: number): TournamentEconomicsPreview {
-    if (!Number.isInteger(entryFee) || entryFee < 0) {
-      throw new Error('Tournament entry fee must be a non-negative integer.');
-    }
-    if (!Number.isInteger(playerCount) || playerCount < 0) {
-      throw new Error('Tournament player count must be a non-negative integer.');
-    }
-    const totalEntries = entryFee * playerCount;
-    const treasuryShare = Math.floor((totalEntries * TOURNAMENT_TREASURY_BPS) / 10_000);
-    const devOpsShare = totalEntries - treasuryShare;
-    return {
-      symbol: POKE_SYMBOL,
-      entryFee,
-      playerCount,
-      totalEntries,
-      treasuryShare,
-      treasuryBps: TOURNAMENT_TREASURY_BPS,
-      devOpsShare,
-      devOpsBps: TOURNAMENT_DEV_OPS_BPS,
-      prizePool: treasuryShare,
-    };
+    return previewTournamentMath(entryFee, playerCount);
   }
 
   lockCollateral(playerId: string, amount: number): void {

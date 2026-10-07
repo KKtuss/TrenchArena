@@ -1,11 +1,11 @@
 import {
   SHOWDOWN_SPRITE_CDN,
-  SHOWDOWN_SPRITES,
-  fullSpriteId,
   itemIconOffset,
   pokemonIconOffset,
+  showdownSpriteSrc,
   typeIconSrc,
 } from '@/lib/showdown-visuals';
+import { getTrainerSprite, trainerSpriteSrc } from '@/lib/trainer-profile';
 
 import './showdown-visuals.css';
 
@@ -36,11 +36,11 @@ export function PokemonSprite({
   dexNum?: number | null;
   framed?: boolean;
 }) {
-  const file = fullSpriteId(name);
-  const sprite = file ? (
+  const spriteSrc = showdownSpriteSrc(name);
+  const sprite = spriteSrc ? (
     <img
       className="ps-sprite"
-      src={`${SHOWDOWN_SPRITE_CDN}/sprites/gen5/${file}.png`}
+      src={spriteSrc}
       alt={name}
       loading="lazy"
       decoding="async"
@@ -66,12 +66,18 @@ export function TrainerSprite({
   spriteId?: string | null;
 }) {
   const fallback = side === 'left' ? 'blue-gen3' : side === 'right' ? 'red-gen3' : 'unknown';
-  const trainer = spriteId || fallback;
+  const trainer = getTrainerSprite(spriteId ?? fallback);
+  const fallbackSrc = trainerSpriteSrc(fallback);
   return (
     <img
       className="ps-trainer-img"
-      src={`${SHOWDOWN_SPRITES}/trainers/${trainer}.png`}
+      src={trainerSpriteSrc(trainer.id)}
       alt={label}
+      onError={event => {
+        if (event.currentTarget.dataset.fallback === 'true') return;
+        event.currentTarget.dataset.fallback = 'true';
+        event.currentTarget.src = fallbackSrc;
+      }}
     />
   );
 }
@@ -93,9 +99,9 @@ export function ItemIcon({ name }: { name: string }) {
 }
 
 export function TypeMark({ type }: { type: string }) {
-  return (
-    <img className="ps-type" src={typeIconSrc(type)} alt="" />
-  );
+  const normalized = type.trim();
+  if (!normalized) return null;
+  return <img className="ps-type" src={typeIconSrc(normalized)} alt="" />;
 }
 
 export function TeamStrip({

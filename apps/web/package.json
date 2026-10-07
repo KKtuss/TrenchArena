@@ -13,6 +13,8 @@
     "test": "node --import tsx --test test/**/*.test.ts"
   },
   "dependencies": {
+    "@pokearena/solana-client": "workspace:*",
+    "@pokearena/tournament": "workspace:*",
     "@solana/web3.js": "^1.98.4",
     "next": "15.5.4",
     "react": "19.1.1",

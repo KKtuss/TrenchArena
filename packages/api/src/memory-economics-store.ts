@@ -126,7 +126,14 @@ export class InMemoryEconomicsStore implements EconomicsStore {
   }
 
   async createCasualRoomWithHold(input: CasualRoomCreateInput): Promise<void> {
-    await this.withLock(input.id, async () => {
+    await this.withLock('casual-active-room-cap', async () => {
+      const players = [input.creatorId, input.invitedPlayerId].filter(
+        (playerId): playerId is string => Boolean(playerId),
+      );
+      if (players.some(playerId => this.hasActiveCasualRoom(playerId))) {
+        throw new Error('Each player may only have one active casual room.');
+      }
+      await this.withLock(input.id, async () => {
       const rail = input.rail ?? 'legacy_poke';
       if (rail !== 'sol_chain') {
         await this.reserve(creatorHoldKey(input.id), input.creatorId, input.collateral);
@@ -139,17 +146,22 @@ export class InMemoryEconomicsStore implements EconomicsStore {
         creatorId: input.creatorId,
         ...(input.invitedPlayerId ? { invitedPlayerId: input.invitedPlayerId } : {}),
         collateral: input.collateral,
-        status: rail === 'sol_chain' ? 'pending_deposit' : 'open',
+        status: 'open',
         rail,
         ...(input.collateralLamports != null
           ? { collateralLamports: input.collateralLamports }
           : {}),
       });
+      });
     });
   }
 
   async acceptCasualRoomWithHold(input: CasualRoomAcceptInput): Promise<void> {
-    await this.withLock(input.roomId, async () => {
+    await this.withLock('casual-active-room-cap', async () => {
+      if (this.hasActiveCasualRoom(input.opponentId, input.roomId)) {
+        throw new Error('Each player may only have one active casual room.');
+      }
+      await this.withLock(input.roomId, async () => {
       const room = this.rooms.get(input.roomId);
       if (!room) throw new Error(`Unknown casual room: ${input.roomId}`);
       if (room.status === 'full' && room.opponentId === input.opponentId) {
@@ -167,6 +179,7 @@ export class InMemoryEconomicsStore implements EconomicsStore {
       }
       room.opponentId = input.opponentId;
       room.status = 'full';
+      });
     });
   }
 
@@ -316,6 +329,19 @@ export class InMemoryEconomicsStore implements EconomicsStore {
     } finally {
       release();
     }
+  }
+
+  private hasActiveCasualRoom(playerId: string, excludeRoomId?: string): boolean {
+    return [...this.rooms.values()].some(room => (
+      room.id !== excludeRoomId
+      &&
+      room.status !== 'completed'
+      && room.status !== 'cancelled'
+      && (
+        room.creatorId === playerId
+        || room.opponentId === playerId
+      )
+    ));
   }
 }
 

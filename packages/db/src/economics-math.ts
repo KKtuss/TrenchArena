@@ -26,11 +26,17 @@ export interface TournamentEconomicsPreview {
 
 /** Same integer fee math as `MockEconomics.previewCasual`. */
 export function previewCasual(collateral: number): CasualEconomicsPreview {
-  if (!Number.isInteger(collateral) || collateral <= 0) {
+  if (!Number.isSafeInteger(collateral) || collateral <= 0) {
     throw new Error('Collateral must be a positive integer POKE value.');
   }
-  const totalPot = collateral * 2;
-  const protocolFee = Math.floor((totalPot * CASUAL_FEE_BPS) / 10_000);
+  const totalPotBig = BigInt(collateral) * 2n;
+  if (totalPotBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Casual total pot exceeds safe integer range.');
+  }
+  const totalPot = Number(totalPotBig);
+  const protocolFee = Number(
+    (totalPotBig * BigInt(CASUAL_FEE_BPS)) / 10_000n,
+  );
   const winnerPayout = totalPot - protocolFee;
   return {
     symbol: POKE_SYMBOL,
@@ -48,14 +54,20 @@ export function previewCasual(collateral: number): CasualEconomicsPreview {
  * the SOL treasury via `previewTreasuryDeposit`.
  */
 export function previewTournament(entryFee: number, playerCount: number): TournamentEconomicsPreview {
-  if (!Number.isInteger(entryFee) || entryFee < 0) {
+  if (!Number.isSafeInteger(entryFee) || entryFee < 0) {
     throw new Error('Tournament entry fee must be a non-negative integer.');
   }
-  if (!Number.isInteger(playerCount) || playerCount < 0) {
+  if (!Number.isSafeInteger(playerCount) || playerCount < 0) {
     throw new Error('Tournament player count must be a non-negative integer.');
   }
-  const totalEntries = entryFee * playerCount;
-  const treasuryShare = Math.floor((totalEntries * TOURNAMENT_TREASURY_BPS) / 10_000);
+  const totalEntriesBig = BigInt(entryFee) * BigInt(playerCount);
+  if (totalEntriesBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Tournament total entries exceed safe integer range.');
+  }
+  const totalEntries = Number(totalEntriesBig);
+  const treasuryShare = Number(
+    (totalEntriesBig * BigInt(TOURNAMENT_TREASURY_BPS)) / 10_000n,
+  );
   const devOpsShare = totalEntries - treasuryShare;
   return {
     symbol: POKE_SYMBOL,
@@ -79,10 +91,13 @@ export function previewTreasuryDeposit(grossLamports: number): {
   operatorLamports: number;
   operatorBps: number;
 } {
-  if (!Number.isInteger(grossLamports) || grossLamports <= 0) {
+  if (!Number.isSafeInteger(grossLamports) || grossLamports <= 0) {
     throw new Error('Gross treasury deposit must be a positive integer lamport amount.');
   }
-  const treasuryLamports = Math.floor((grossLamports * TOURNAMENT_TREASURY_BPS) / 10_000);
+  const grossBig = BigInt(grossLamports);
+  const treasuryLamports = Number(
+    (grossBig * BigInt(TOURNAMENT_TREASURY_BPS)) / 10_000n,
+  );
   return {
     symbol: 'SOL',
     grossLamports,

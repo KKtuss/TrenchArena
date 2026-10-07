@@ -383,7 +383,7 @@ export function CompetitivePaths({ chain = false }: { chain?: boolean }) {
         <p>
           {chain
             ? 'Compete for SOL prizes funded by the Tournament Treasury. A fixed POKE burn is paid after the field fills.'
-            : 'Compete for a POKE prize funded by held entry fees (90% to the champion). Casual collateral never enters this loop.'}
+            : 'Compete for a POKE prize funded by held entry fees. 1st, 2nd, and 3rd split that prize 50/35/15. Casual collateral never enters this loop.'}
         </p>
         <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/tournaments">Browse cups</Link>
       </article>
@@ -421,11 +421,11 @@ export function TournamentEconomicsBlock({
       {!compact ? (
         <>
           <div><span>Field size</span><strong>{economics ? `${economics.playerCount} trainers` : '—'}</strong></div>
-          <div><span>Prize distribution</span><strong>Champion payout</strong></div>
+          <div><span>Prize distribution</span><strong>50% / 35% / 15%</strong></div>
           <p className="economy-note">
             {chain
-              ? 'Prize is SOL reserved from the Tournament Treasury. Burn fee is separate and not the prize source.'
-              : 'Prize is 90% of held entry fees paid to the champion. Displayed figure is provisional until the field settles.'}
+              ? 'Prize is SOL reserved from the Tournament Treasury, paid 50/35/15. Burn fee is separate and not the prize source.'
+              : '90% of held entry fees form the prize pool, paid 50/35/15. Displayed figure is provisional until the field settles.'}
           </p>
         </>
       ) : (

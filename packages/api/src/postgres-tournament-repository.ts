@@ -112,6 +112,7 @@ export class PostgresTournamentRepository implements AsyncTournamentRepository {
     const match = await this.mapErrors(() => this.store.commitMatchOutcome({
       match: toDurableMatch(input.match),
       ...(input.nextMatch ? { nextMatch: toDurableMatch(input.nextMatch) } : {}),
+      ...(input.placementMatch ? { placementMatch: toDurableMatch(input.placementMatch) } : {}),
       ...(input.tournament ? { tournament: toDurableTournament(input.tournament) } : {}),
     }));
     return fromDurableMatch(match);
@@ -158,7 +159,8 @@ function toDurableTournament(tournament: Tournament): DurableTournament {
     ...(tournament.rail === undefined ? {} : { rail: tournament.rail }),
     ...(tournament.entryAtoms === undefined ? {} : { entryAtoms: tournament.entryAtoms }),
     ...(tournament.entryQuoteId === undefined ? {} : { entryQuoteId: tournament.entryQuoteId }),
-    ...(tournament.prizeLamports === undefined ? {} : { prizeLamports: tournament.prizeLamports }),
+    ...(tournament.prizeCardsRaw === undefined ? {} : { prizeCardsRaw: tournament.prizeCardsRaw }),
+    ...(tournament.scheduledKey === undefined ? {} : { scheduledKey: tournament.scheduledKey }),
     players: tournament.players.map(toDurablePlayer),
     matchIds: [...tournament.matchIds],
     ...(tournament.winner ? { winner: tournament.winner } : {}),
@@ -187,7 +189,8 @@ function fromDurableTournament(tournament: DurableTournament): Tournament {
     ...(tournament.rail === undefined ? {} : { rail: tournament.rail }),
     ...(tournament.entryAtoms === undefined ? {} : { entryAtoms: tournament.entryAtoms }),
     ...(tournament.entryQuoteId === undefined ? {} : { entryQuoteId: tournament.entryQuoteId }),
-    ...(tournament.prizeLamports === undefined ? {} : { prizeLamports: tournament.prizeLamports }),
+    ...(tournament.prizeCardsRaw === undefined ? {} : { prizeCardsRaw: tournament.prizeCardsRaw }),
+    ...(tournament.scheduledKey === undefined ? {} : { scheduledKey: tournament.scheduledKey }),
     players: tournament.players.map(fromDurablePlayer),
     matchIds: tournament.matchIds.map(id => id as TournamentMatchId),
     ...(tournament.winner ? { winner: tournament.winner as TournamentPlayerId } : {}),

@@ -23,7 +23,7 @@ async function openReadyRoom(casual: CasualRoomService, collateral = COLLATERAL)
   return casual.getRoom(room.id);
 }
 
-test('one balance cannot reserve two casual rooms', async () => {
+test('one player cannot occupy two active casual rooms', async () => {
   const economics = new MockEconomics();
   const casual = new CasualRoomService({ economics });
   const first = await casual.createRoom({
@@ -38,7 +38,7 @@ test('one balance cannot reserve two casual rooms', async () => {
     roomType: 'open',
     battleSize: '1v1',
     collateral: 6_000_000,
-  }), /Collateral exceeds/);
+  }), /one active casual room/);
   assert.equal(casual.listOpenRooms().length, 1);
   assert.equal(economics.getBalance('demo-player-1'), 10_000_000 - 6_000_000);
   assert.equal(economics.hasHold(`casual:${first.id}:creator`), true);

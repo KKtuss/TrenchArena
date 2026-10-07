@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Bootstrap a local validator with POKE mint, vaults, and arena-escrow config.
-# Requires: solana, spl-token, solana-keygen, anchor (for deploy), node.
+# Local validator testing only. Mainnet program deployment is
+# scripts/solana/deploy-pinocchio-mainnet.sh, which deploys the Pinocchio artifact.
+# Requires: solana, spl-token, solana-keygen, node.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/scripts/solana/.local.env"
 RPC="${POKEARENA_SOLANA_RPC:-http://127.0.0.1:8899}"
+if [[ ! "$RPC" =~ ^https?://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?/?$ ]]; then
+  echo "bootstrap-local.sh is local-validator testing only and will not use $RPC." >&2
+  echo "Mainnet Pinocchio deployment: scripts/solana/deploy-pinocchio-mainnet.sh" >&2
+  exit 1
+fi
 KEYDIR="${POKEARENA_SOLANA_KEYS:-$ROOT/scripts/solana/keys}"
 mkdir -p "$KEYDIR"
 
@@ -29,16 +36,22 @@ for k in "$AUTHORITY" "$KEEPER" "$PLAYER1" "$PLAYER2"; do
   solana airdrop 100 "$(solana-keygen pubkey "$k")" --url "$RPC" >/dev/null || true
 done
 
-# Prefer genesis-loaded program (see start-validator.sh --bpf-program). Redeploy only if requested.
+# Local Anchor oracle artifact only. Production mainnet deploy must not use this file.
 PROGRAM_SO="$ROOT/target/deploy/arena_escrow.so"
-PROGRAM_ID="${POKEARENA_PROGRAM_ID:-26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke}"
-if [[ -f "$ROOT/target/deploy/arena_escrow-keypair.json" ]]; then
-  PROGRAM_ID="$(solana-keygen pubkey "$ROOT/target/deploy/arena_escrow-keypair.json")"
-fi
+PROGRAM_ID="${POKEARENA_PROGRAM_ID:-41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W}"
+PROGRAM_KEYPAIR="${POKEARENA_PROGRAM_KEYPAIR:-}"
 if [[ "${POKEARENA_FORCE_DEPLOY:-}" == "1" && -f "$PROGRAM_SO" ]]; then
+  [[ -n "$PROGRAM_KEYPAIR" && -f "$PROGRAM_KEYPAIR" ]] || {
+    echo "POKEARENA_FORCE_DEPLOY=1 requires POKEARENA_PROGRAM_KEYPAIR for the new program ID." >&2
+    exit 1
+  }
+  [[ "$(solana-keygen pubkey "$PROGRAM_KEYPAIR")" == "$PROGRAM_ID" ]] || {
+    echo "POKEARENA_PROGRAM_KEYPAIR does not match POKEARENA_PROGRAM_ID." >&2
+    exit 1
+  }
   echo "Force-deploying arena_escrow…"
   solana program deploy "$PROGRAM_SO" --url "$RPC" --keypair "$AUTHORITY" \
-    --program-id "$ROOT/target/deploy/arena_escrow-keypair.json" || true
+    --program-id "$PROGRAM_KEYPAIR" || true
 elif solana program show "$PROGRAM_ID" --url "$RPC" >/dev/null 2>&1; then
   echo "Program $PROGRAM_ID already present (genesis or prior deploy)."
 elif [[ -f "$PROGRAM_SO" ]]; then

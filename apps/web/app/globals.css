@@ -4880,6 +4880,13 @@ main:has(.is-cup-hub) {
   background: rgba(28, 10, 12, 0.94);
 }
 
+.pa-toast-invitation {
+  border: 1px solid rgba(89, 196, 255, 0.6);
+  color: #d8f3ff;
+  background: rgba(9, 24, 38, 0.96);
+  animation: pa-toast-invitation 1.5s ease-in-out;
+}
+
 .pa-toast span {
   font-size: 0.86rem;
   line-height: 1.35;
@@ -4913,6 +4920,44 @@ main:has(.is-cup-hub) {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes pa-toast-invitation {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  22% {
+    transform: translateX(-5px);
+  }
+  32% {
+    transform: translateX(5px);
+  }
+  42% {
+    transform: translateX(-4px);
+  }
+  52% {
+    transform: translateX(4px);
+  }
+  62% {
+    transform: translateX(-2px);
+  }
+  72%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pa-toast,
+  .pa-toast-invitation {
+    animation: none;
+    transform: none;
   }
 }
 

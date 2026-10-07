@@ -7,6 +7,7 @@ import type {
   TournamentPlayer,
 } from './types';
 
+import { nextTournamentAfterMatchCommit } from './bracket';
 import { InMemoryTournamentRepository, type TournamentRepository } from './repository';
 
 /**
@@ -22,6 +23,7 @@ export interface TournamentEntryLedger {
 export interface MatchOutcomeInput {
   match: TournamentMatch;
   nextMatch?: TournamentMatch;
+  placementMatch?: TournamentMatch;
   tournament?: Tournament;
 }
 
@@ -264,8 +266,24 @@ export class InMemoryAsyncTournamentRepository implements AsyncTournamentReposit
         throw new Error('A completed match cannot receive a different result.');
       }
       this.inner.saveMatch(clone(input.match));
-      if (input.nextMatch) this.inner.saveMatch(clone(input.nextMatch));
-      if (input.tournament) this.inner.saveTournament(clone(input.tournament));
+      if (input.nextMatch) {
+        const existing = this.inner.getMatch(input.nextMatch.id);
+        if (!existing) throw new Error(`Unknown tournament match: ${input.nextMatch.id}`);
+        this.inner.saveMatch(mergePlacement(existing, input.nextMatch));
+      }
+      if (input.placementMatch) {
+        const existing = this.inner.getMatch(input.placementMatch.id);
+        if (!existing) throw new Error(`Unknown tournament match: ${input.placementMatch.id}`);
+        this.inner.saveMatch(mergePlacement(existing, input.placementMatch));
+      }
+      const tournament = this.inner.getTournament(input.match.tournamentId);
+      if (tournament) {
+        const matches = tournament.matchIds
+          .map(id => this.inner.getMatch(id))
+          .filter((match): match is TournamentMatch => Boolean(match));
+        const next = nextTournamentAfterMatchCommit(tournament, matches, Date.now());
+        if (next) this.inner.saveTournament(clone(next));
+      }
       return clone(input.match);
     });
   }
@@ -288,6 +306,19 @@ export class InMemoryAsyncTournamentRepository implements AsyncTournamentReposit
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function mergePlacement(existing: TournamentMatch, incoming: TournamentMatch): TournamentMatch {
+  if (isTerminalMatch(existing.status)) return clone(existing);
+  const player1 = incoming.player1 ?? existing.player1;
+  const player2 = incoming.player2 ?? existing.player2;
+  return {
+    ...existing,
+    ...(player1 ? { player1 } : {}),
+    ...(player2 ? { player2 } : {}),
+    status: existing.status === 'pending' && player1 && player2 ? 'ready' : existing.status,
+    updatedAt: incoming.updatedAt,
+  };
 }
 
 function isTerminalMatch(status: string): boolean {

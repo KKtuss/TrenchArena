@@ -40,7 +40,8 @@ export interface DurableTournament {
   rail?: 'legacy_poke' | 'sol_chain';
   entryAtoms?: number;
   entryQuoteId?: string;
-  prizeLamports?: number;
+  prizeCardsRaw?: number;
+  scheduledKey?: string;
   players: DurableTournamentPlayer[];
   matchIds: string[];
   winner?: string;
@@ -63,6 +64,7 @@ export interface RegisterTournamentPlayerInput {
 export interface MatchOutcomeInput {
   match: DurableTournamentMatch;
   nextMatch?: DurableTournamentMatch;
+  placementMatch?: DurableTournamentMatch;
   tournament?: DurableTournament;
 }
 

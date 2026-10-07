@@ -1,4 +1,10 @@
 export { TournamentService } from './service';
+export { isThirdPlaceMatch, readTournamentPlaces } from './bracket';
+export {
+  tournamentRotationCapacity,
+  tournamentRotationEvent,
+  type TournamentRotationDefinition,
+} from './rotation';
 export {
   InMemoryTournamentRepository,
   type TournamentRepository,

@@ -24,6 +24,11 @@ export interface RecoverDurableStateInput {
   /** Test hook: invoked before settling a completed tournament. */
   beforeSettleTournament?: (tournamentId: string) => Promise<void> | void;
   /**
+   * Reconciles a completed on-chain tournament whose prize intent may still be
+   * pending after a process interruption.
+   */
+  recoverSolChainTournament?: (tournament: DurableTournament) => Promise<void>;
+  /**
    * Required when a `sol_chain` casual room is still open. Returns stakes
    * on-chain and leaves the database room completed or cancelled.
    * Must not invent a winner.
@@ -137,6 +142,7 @@ async function runRecovery(input: RecoverDurableStateInput): Promise<RecoveryRep
       log,
       beforeSettleTournament: input.beforeSettleTournament,
       afterSettleTournament: input.afterSettleTournament,
+      recoverSolChainTournament: input.recoverSolChainTournament,
     });
 
     await releaseOrphanReservedHolds({
@@ -286,11 +292,18 @@ async function settleCompletedTournaments(input: {
   log: (event: RecoveryLogEvent) => void;
   beforeSettleTournament?: RecoverDurableStateInput['beforeSettleTournament'];
   afterSettleTournament?: RecoverDurableStateInput['afterSettleTournament'];
+  recoverSolChainTournament?: RecoverDurableStateInput['recoverSolChainTournament'];
 }): Promise<void> {
   for (const tournament of input.tournaments) {
     if (tournament.status === 'cancelled') continue;
     if (tournament.status !== 'completed' || !tournament.winner) continue;
-    if (tournament.rail === 'sol_chain') continue;
+    if (tournament.rail === 'sol_chain') {
+      if (input.recoverSolChainTournament) {
+        await input.recoverSolChainTournament(tournament);
+        input.report.settledTournamentIds.push(tournament.id);
+      }
+      continue;
+    }
     const settlementKey = `${TOURNAMENT_SETTLEMENT_PREFIX}${tournament.id}`;
     const alreadySettled = Boolean(await input.economics.getSettlement(settlementKey));
     const registered = tournament.players.filter(player => player.status === 'registered');

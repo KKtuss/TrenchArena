@@ -10,7 +10,7 @@ let s = new LiteSVM();
 if (s.withTransactionHistory) s = s.withTransactionHistory(0n);
 console.log('loading');
 s.addProgramFromFile(
-  new PublicKey('26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke'),
+  new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W'),
   so,
 );
 console.log('ok');
@@ -22,7 +22,7 @@ console.log('pinocchio size', fs.statSync(soP).size);
 let s2 = new LiteSVM();
 if (s2.withTransactionHistory) s2 = s2.withTransactionHistory(0n);
 s2.addProgramFromFile(
-  new PublicKey('26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke'),
+  new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W'),
   soP,
 );
 console.log('pinocchio ok');

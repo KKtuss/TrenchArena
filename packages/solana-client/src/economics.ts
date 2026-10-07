@@ -18,6 +18,18 @@ export interface TreasurySplitPreview {
   operatorBps: number;
 }
 
+export interface LegacyPokeTournamentPreview {
+  symbol: 'POKE';
+  entryFee: number;
+  playerCount: number;
+  totalEntries: number;
+  treasuryShare: number;
+  treasuryBps: number;
+  devOpsShare: number;
+  devOpsBps: number;
+  prizePool: number;
+}
+
 function requireNonNegativeLamports(name: string, lamports: number): void {
   if (!Number.isSafeInteger(lamports) || lamports < 0) {
     throw new Error(`${name} must be a non-negative integer lamport amount.`);
@@ -72,8 +84,14 @@ export function previewSolCasual(collateralLamports: number): SolCasualPreview {
   if (!Number.isSafeInteger(collateralLamports) || collateralLamports <= 0) {
     throw new Error('Collateral must be a positive integer lamport amount.');
   }
-  const totalPotLamports = collateralLamports * 2;
-  const protocolFeeLamports = Math.floor((totalPotLamports * CASUAL_FEE_BPS) / BPS_DENOM);
+  const totalPotBig = BigInt(collateralLamports) * 2n;
+  if (totalPotBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Total pot exceeds safe integer range.');
+  }
+  const totalPotLamports = Number(totalPotBig);
+  const protocolFeeLamports = Number(
+    (totalPotBig * BigInt(CASUAL_FEE_BPS)) / BigInt(BPS_DENOM),
+  );
   return {
     symbol: 'SOL',
     collateralLamports,
@@ -88,7 +106,10 @@ export function previewTreasurySplit(grossLamports: number): TreasurySplitPrevie
   if (!Number.isSafeInteger(grossLamports) || grossLamports <= 0) {
     throw new Error('Gross amount must be a positive integer lamport amount.');
   }
-  const treasuryLamports = Math.floor((grossLamports * TREASURY_BPS) / BPS_DENOM);
+  const grossBig = BigInt(grossLamports);
+  const treasuryLamports = Number(
+    (grossBig * BigInt(TREASURY_BPS)) / BigInt(BPS_DENOM),
+  );
   return {
     symbol: 'SOL',
     grossLamports,
@@ -96,6 +117,41 @@ export function previewTreasurySplit(grossLamports: number): TreasurySplitPrevie
     treasuryBps: TREASURY_BPS,
     operatorLamports: grossLamports - treasuryLamports,
     operatorBps: OPERATOR_BPS,
+  };
+}
+
+/**
+ * Legacy mock-tournament display math. Chain tournaments do not use this
+ * formula: they burn the fixed POKE entry amount and pay a SOL prize reserve.
+ */
+export function previewLegacyPokeTournament(
+  entryFee: number,
+  playerCount: number,
+): LegacyPokeTournamentPreview {
+  if (!Number.isSafeInteger(entryFee) || entryFee < 0) {
+    throw new Error('Tournament entry fee must be a non-negative integer.');
+  }
+  if (!Number.isSafeInteger(playerCount) || playerCount < 0) {
+    throw new Error('Tournament player count must be a non-negative integer.');
+  }
+  const totalEntriesBig = BigInt(entryFee) * BigInt(playerCount);
+  if (totalEntriesBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Tournament total entries exceed safe integer range.');
+  }
+  const totalEntries = Number(totalEntriesBig);
+  const treasuryShare = Number(
+    (totalEntriesBig * BigInt(TREASURY_BPS)) / BigInt(BPS_DENOM),
+  );
+  return {
+    symbol: 'POKE',
+    entryFee,
+    playerCount,
+    totalEntries,
+    treasuryShare,
+    treasuryBps: TREASURY_BPS,
+    devOpsShare: totalEntries - treasuryShare,
+    devOpsBps: OPERATOR_BPS,
+    prizePool: treasuryShare,
   };
 }
 

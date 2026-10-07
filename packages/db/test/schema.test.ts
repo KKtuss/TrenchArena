@@ -31,6 +31,10 @@ test('migrations are ordered, checksummed, and encode the durability contract', 
   assert.equal(files[4]?.fileName, '005_chain_intents.sql');
   assert.equal(files[5]?.fileName, '006_asset_accounts.sql');
   assert.equal(files[6]?.fileName, '007_treasury_ledger.sql');
+  assert.equal(files.some(file => file.fileName === '015_tournament_place_payouts.sql'), true);
+  assert.equal(files.some(file => file.fileName === '016_tournament_scheduler.sql'), true);
+  assert.equal(files.some(file => file.fileName.startsWith('011_tournament')), false);
+  assert.equal(files.some(file => file.fileName.startsWith('012_tournament')), false);
   assert.equal(files[0]?.id, '001_initial.sql');
   assert.equal(files[0]?.checksum, checksumBuffer(files[0].sql));
   const sql = files.map(file => file.sql).join('\n');

@@ -1,14 +1,42 @@
-import { resolve, relative, isAbsolute, sep } from 'node:path';
-
 import { PublicKey } from '@solana/web3.js';
 
 import { CASUAL_FEE_BPS, OPERATOR_BPS, TREASURY_BPS } from './constants';
 import { configPda, feeVaultPda, operatorVaultPda, treasuryVaultPda } from './pdas';
 import { POKE_MINT_DECIMALS, TOURNAMENT_FIELD_SIZE } from './poke-units';
-import { TOKEN_PROGRAM_ID } from './token';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from './token';
 
-/** Production Pinocchio program. Deployment and initialization both use this ID. */
-export const MAINNET_PROGRAM_ID = '41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W';
+/** Immutable production ID; staging must never target it. */
+export const PRODUCTION_PROGRAM_ID = '41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W';
+export const PRODUCTION_UPGRADE_AUTHORITY = 'GGRAzZM9wnuLNCWQb6JYykRyfp4pXjHvp35JEmaps51Z';
+export const PRODUCTION_KEEPER = 'AZn8PqCeQLKyKLDUgy67NsvLtTiFzDY9S491fGC15iAL';
+export const KNOWN_PRODUCTION_AUTHORITY = 'Fmb7DLU6fTrQEGh8g6HSsYz3MviMjjS6nnB9n2TATdzw';
+/** Fresh staging program. The Pinocchio artifact accepts only this id. */
+export const STAGING_PROGRAM_ID = 'HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk';
+/** Staging program whose ProgramData cannot be reused. Fresh staging must reject it. */
+export const CLOSED_STAGING_PROGRAM_ID = '54Ji1Z32wH4NfDqpd3WMTbSBeK119ptAMmYcQirCUmmU';
+/** Earlier retired staging program. Fresh staging must reject it. */
+export const DEAD_STAGING_PROGRAM_ID = '6nVegJd8zVaV8RfLL6VQ6AQoB53FPsZSTGfidevdKM98';
+export const DEAD_STAGING_DEPLOYER = 'AXHoz3WVjyK1chetSrcWMnDDq8VZjvfoUW5yMyKNRpki';
+export const DEAD_STAGING_AUTHORITY = 'Bs919SY62WM6J22HZo1GPnSnxpL7B66JFXtjwCDC1fNJ';
+export const DEAD_STAGING_KEEPER = '8Z1iUEpFmLeTFZquJXF66pEcSWYfRZMaztQHcbYwWgK8';
+/** Shared Pump CARDS prize mint. Not a staging signer. */
+export const MAINNET_CARDS_MINT = 'CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp';
+/** Initializer and unit-test program id. This is the fresh staging program. */
+export const MAINNET_PROGRAM_ID = STAGING_PROGRAM_ID;
+
+const RETIRED_STAGING_PUBKEYS = new Set([
+  CLOSED_STAGING_PROGRAM_ID,
+  DEAD_STAGING_PROGRAM_ID,
+  DEAD_STAGING_DEPLOYER,
+  DEAD_STAGING_AUTHORITY,
+  DEAD_STAGING_KEEPER,
+]);
+const PRODUCTION_PUBKEYS = new Set([
+  PRODUCTION_PROGRAM_ID,
+  PRODUCTION_UPGRADE_AUTHORITY,
+  PRODUCTION_KEEPER,
+  KNOWN_PRODUCTION_AUTHORITY,
+]);
 export const MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 export const UPGRADEABLE_LOADER_ID = 'BPFLoaderUpgradeab1e11111111111111111111111';
 
@@ -16,11 +44,13 @@ export const UPGRADEABLE_LOADER_ID = 'BPFLoaderUpgradeab1e1111111111111111111111
 export const CONFIG_DISCRIMINATOR = Buffer.from([
   0x9b, 0x0c, 0xaa, 0xe0, 0x1e, 0xfa, 0xcc, 0x82,
 ]);
-export const CONFIG_ACCOUNT_SPACE = 273;
+export const CONFIG_ACCOUNT_SPACE = 305;
 export const VAULT_ACCOUNT_SPACE = 8;
 export const REPLAY_ACCOUNT_SPACE = 42;
 export const PRIZE_RESERVE_ACCOUNT_SPACE = 67;
 export const PRIZE_VAULT_ACCOUNT_SPACE = 0;
+export const CARDS_PRIZE_RESERVE_ACCOUNT_SPACE = 163;
+export const CARDS_PRIZE_VAULT_ACCOUNT_SPACE = 165;
 
 /** One base-fee signature. A tournament pay transaction includes set-winner and pay. */
 export const SIGNATURE_FEE_LAMPORTS = 5_000;
@@ -41,6 +71,7 @@ export interface MainnetInitRequest {
   rpc: string;
   programId: string;
   pokeMint: string;
+  cardsMint: string;
   keeper: string;
   quoteAuthority: string;
   authorityKeypairPath: string;
@@ -62,6 +93,7 @@ export interface DecodedConfig {
   treasuryVault: string;
   operatorVault: string;
   pokeMint: string;
+  cardsMint: string;
   quoteAuthority: string;
   keeper: string;
   feeBps: bigint;
@@ -158,6 +190,11 @@ function requireExplicitInt(name: string, raw: string | undefined, max: number):
  * A treasury-seed variable is rejected so the local 2 SOL deposit cannot run here.
  */
 export function readMainnetInitRequest(env: NodeJS.ProcessEnv): MainnetInitRequest {
+  if (!['1', 'true', 'yes', 'on'].includes((env.POKEARENA_STAGING ?? '').trim().toLowerCase())) {
+    throw new MainnetInitError(
+      'POKEARENA_STAGING=true is required. This worktree is staging-only and will not initialize production.',
+    );
+  }
   if (env.POKEARENA_TREASURY_SEED_LAMPORTS?.trim()) {
     throw new MainnetInitError(
       'POKEARENA_TREASURY_SEED_LAMPORTS is set. This initialization does not deposit treasury SOL. Unset it and fund the treasury later with an explicit amount.',
@@ -170,26 +207,49 @@ export function readMainnetInitRequest(env: NodeJS.ProcessEnv): MainnetInitReque
   }
   assertMainnetEndpoint(env.POKEARENA_SOLANA_CLUSTER, env.POKEARENA_SOLANA_RPC);
   const programId = requirePubkey('POKEARENA_PROGRAM_ID', env.POKEARENA_PROGRAM_ID);
-  if (programId !== MAINNET_PROGRAM_ID) {
-    throw new MainnetInitError(
-      `POKEARENA_PROGRAM_ID is ${programId}. Mainnet initialization only accepts ${MAINNET_PROGRAM_ID}.`,
-    );
-  }
+  assertFreshStagingIdentity('POKEARENA_PROGRAM_ID', programId);
   const authorityKeypairPath = env.POKEARENA_AUTHORITY_KEYPAIR?.trim() ?? '';
   if (!authorityKeypairPath) {
     throw new MainnetInitError(
-      'Set POKEARENA_AUTHORITY_KEYPAIR to the production config-authority keypair. This initialization does not choose or create one.',
+      'Set POKEARENA_AUTHORITY_KEYPAIR to the fresh staging config-authority keypair. This initialization does not choose or create one.',
     );
+  }
+  const cardsMint = requirePubkey('POKEARENA_CARDS_MINT', env.POKEARENA_CARDS_MINT);
+  if (cardsMint !== MAINNET_CARDS_MINT) {
+    throw new MainnetInitError(
+      `POKEARENA_CARDS_MINT is ${cardsMint}. Staging prizes use the shared CARDS mint ${MAINNET_CARDS_MINT}.`,
+    );
+  }
+  const pokeMint = readOptionalPokeMint(env.POKEARENA_POKE_MINT);
+  if (pokeMint !== PublicKey.default.toBase58()) {
+    throw new MainnetInitError(
+      'POKEARENA_POKE_MINT must stay unset. The fresh staging POKE mint is not created by this initialization.',
+    );
+  }
+  const keeper = requirePubkey('POKEARENA_KEEPER', env.POKEARENA_KEEPER);
+  const quoteAuthority = requirePubkey('POKEARENA_QUOTE_AUTHORITY', env.POKEARENA_QUOTE_AUTHORITY);
+  assertFreshStagingIdentity('POKEARENA_KEEPER', keeper);
+  assertFreshStagingIdentity('POKEARENA_QUOTE_AUTHORITY', quoteAuthority);
+  if (keeper === programId) {
+    throw new MainnetInitError('Keeper must be distinct from the program ID.');
+  }
+  if (quoteAuthority === programId) {
+    throw new MainnetInitError('Quote authority must be distinct from the program ID.');
+  }
+  const buybackBps = requireExplicitInt('POKEARENA_BUYBACK_BPS', env.POKEARENA_BUYBACK_BPS, 10_000);
+  if (buybackBps !== 0) {
+    throw new MainnetInitError('POKEARENA_BUYBACK_BPS must be 0. Fresh staging does not enable buyback.');
   }
   return {
     cluster: (env.POKEARENA_SOLANA_CLUSTER ?? '').trim().toLowerCase(),
     rpc: env.POKEARENA_SOLANA_RPC!.trim(),
     programId,
-    pokeMint: readOptionalPokeMint(env.POKEARENA_POKE_MINT),
-    keeper: requirePubkey('POKEARENA_KEEPER', env.POKEARENA_KEEPER),
-    quoteAuthority: requirePubkey('POKEARENA_QUOTE_AUTHORITY', env.POKEARENA_QUOTE_AUTHORITY),
+    pokeMint,
+    cardsMint,
+    keeper,
+    quoteAuthority,
     authorityKeypairPath,
-    buybackBps: requireExplicitInt('POKEARENA_BUYBACK_BPS', env.POKEARENA_BUYBACK_BPS, 10_000),
+    buybackBps,
     minBuybackLamports: requireExplicitInt(
       'POKEARENA_MIN_BUYBACK_LAMPORTS',
       env.POKEARENA_MIN_BUYBACK_LAMPORTS,
@@ -199,17 +259,45 @@ export function readMainnetInitRequest(env: NodeJS.ProcessEnv): MainnetInitReque
 }
 
 export function assertProductionKeypairPath(keypairPath: string, repoRoot: string): void {
-  const resolved = resolve(keypairPath);
-  const keysDir = resolve(repoRoot, 'scripts', 'solana', 'keys');
-  const fromKeys = relative(keysDir, resolved);
-  const outsideKeys = fromKeys === '..'
-    || fromKeys.startsWith(`..${sep}`)
-    || fromKeys.startsWith('../')
-    || fromKeys.startsWith('..\\')
-    || isAbsolute(fromKeys);
-  if (!outsideKeys) {
+  const resolved = absolutePath(keypairPath);
+  const keysDir = absolutePath(`${repoRoot}/scripts/solana/keys`);
+  if (isInsidePath(resolved, keysDir)) {
     throw new MainnetInitError(
       `Refusing local test keypair ${resolved}. Mainnet initialization does not use scripts/solana/keys.`,
+    );
+  }
+}
+
+function absolutePath(value: string): string {
+  const slash = value.replace(/\\/g, '/');
+  const rooted = /^[A-Za-z]:\//.test(slash) || slash.startsWith('/')
+    ? slash
+    : `${process.cwd().replace(/\\/g, '/')}/${slash}`;
+  const drive = /^[A-Za-z]:/.test(rooted) ? rooted.slice(0, 2) : '';
+  const parts: string[] = [];
+  for (const part of (drive ? rooted.slice(2) : rooted).split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return `${drive ? `${drive}/` : rooted.startsWith('/') ? '/' : ''}${parts.join('/')}`;
+}
+
+function isInsidePath(child: string, parent: string): boolean {
+  const left = child.toLowerCase();
+  const right = parent.toLowerCase().replace(/\/$/, '');
+  return left === right || left.startsWith(`${right}/`);
+}
+
+export function assertFreshStagingIdentity(role: string, pubkey: string): void {
+  if (RETIRED_STAGING_PUBKEYS.has(pubkey)) {
+    throw new MainnetInitError(
+      `${role} ${pubkey} is a retired staging identity. Fresh staging must use a new key.`,
+    );
+  }
+  if (PRODUCTION_PUBKEYS.has(pubkey)) {
+    throw new MainnetInitError(
+      `${role} ${pubkey} is a production program, upgrade authority, or keeper. Staging initialization rejects it.`,
     );
   }
 }
@@ -224,8 +312,8 @@ export function assertNotLocalTestPubkey(
       `${role} ${pubkey} matches a local test key. Use a production key.`,
     );
   }
-  if (pubkey === MAINNET_PROGRAM_ID) {
-    throw new MainnetInitError(`${role} must not be the program ID.`);
+  if (pubkey === PRODUCTION_PROGRAM_ID || pubkey === STAGING_PROGRAM_ID) {
+    throw new MainnetInitError(`${role} must not be a production or staging program ID.`);
   }
 }
 
@@ -243,19 +331,130 @@ export function deriveInitAccounts(programId: PublicKey): InitAccounts {
   };
 }
 
+const MINT_BASE = 82;
+const ACCOUNT_TYPE_AT = 165;
+const TLV_AT = 166;
+const MAX_POKE_MINT = 1024;
+const MINT_ACCOUNT_TYPE = 1;
+const EXT_METADATA_POINTER = 18;
+const EXT_TOKEN_METADATA = 19;
+const POINTER_LEN = 64;
+
+/** 412-byte launch layout: MetadataPointer (64) plus a 174-byte TokenMetadata body. */
+export const REFERENCE_POKE_METADATA_LENGTH = 174;
+
+/**
+ * Bare 82-byte Token-2022 mint, or the launch layout: Mint account type,
+ * zero padding, MetadataPointer and TokenMetadata, and no other extension.
+ * MetadataPointer and TokenMetadata do not add Transfer or Burn accounts.
+ */
 export function assertPokeMintAccount(owner: PublicKey, data: Uint8Array): void {
-  if (!owner.equals(TOKEN_PROGRAM_ID)) {
+  if (!owner.equals(TOKEN_2022_PROGRAM_ID)) {
     throw new MainnetInitError(
-      'POKEARENA_POKE_MINT is not a classic SPL token mint. The program accepts Tokenkeg mint accounts.',
+      'POKEARENA_POKE_MINT is not a Token-2022 mint. POKE requires Token-2022.',
     );
   }
-  if (data.length < 82) {
-    throw new MainnetInitError('POKEARENA_POKE_MINT account is too small to be a token mint.');
+  if (data.length < MINT_BASE) {
+    throw new MainnetInitError('POKE mint account is too small to be a Token-2022 mint.');
+  }
+  if (data.length > MAX_POKE_MINT) {
+    throw new MainnetInitError(`POKE mint account is ${data.length} bytes. The supported maximum is ${MAX_POKE_MINT}.`);
   }
   const decimals = data[44];
   if (decimals !== POKE_MINT_DECIMALS) {
     throw new MainnetInitError(
       `POKE mint decimals are ${decimals}. Production initialization requires ${POKE_MINT_DECIMALS} decimals.`,
+    );
+  }
+  if (data[45] !== 1) {
+    throw new MainnetInitError('POKE mint is not initialized.');
+  }
+  if (data.length === MINT_BASE) return;
+  if (data.length < TLV_AT || data[ACCOUNT_TYPE_AT] !== MINT_ACCOUNT_TYPE) {
+    throw new MainnetInitError('POKE mint extension header is not a Token-2022 mint.');
+  }
+  for (let index = MINT_BASE; index < ACCOUNT_TYPE_AT; index += 1) {
+    if (data[index] !== 0) {
+      throw new MainnetInitError('POKE mint extension padding is not empty.');
+    }
+  }
+  let offset = TLV_AT;
+  let pointer = false;
+  let metadata = false;
+  while (offset < data.length) {
+    if (data.length - offset < 4) {
+      throw new MainnetInitError('POKE mint extension data is truncated.');
+    }
+    const kind = data[offset]! | (data[offset + 1]! << 8);
+    const extLen = data[offset + 2]! | (data[offset + 3]! << 8);
+    const next = offset + 4 + extLen;
+    if (next > data.length) {
+      throw new MainnetInitError('POKE mint extension data is truncated.');
+    }
+    if (kind === EXT_METADATA_POINTER) {
+      if (pointer || extLen !== POINTER_LEN) {
+        throw new MainnetInitError('POKE mint MetadataPointer extension is invalid.');
+      }
+      pointer = true;
+    } else if (kind === EXT_TOKEN_METADATA) {
+      if (metadata || extLen === 0) {
+        throw new MainnetInitError('POKE mint TokenMetadata extension is invalid.');
+      }
+      metadata = true;
+    } else {
+      throw new MainnetInitError(`POKE mint extension ${kind} is not supported.`);
+    }
+    offset = next;
+  }
+  if (!pointer || !metadata) {
+    throw new MainnetInitError('POKE mint extensions are incomplete.');
+  }
+}
+
+/** Token-2022 mint bytes matching the reference launch extension structure. */
+export function referencePokeMintData(options: {
+  decimals?: number;
+  initialized?: boolean;
+  metadataLength?: number;
+  extraExtension?: { type: number; length: number };
+  supply?: bigint;
+} = {}): Buffer {
+  const metadataLength = options.metadataLength ?? REFERENCE_POKE_METADATA_LENGTH;
+  const extra = options.extraExtension;
+  const length = TLV_AT + 4 + POINTER_LEN + 4 + metadataLength + (extra ? 4 + extra.length : 0);
+  const data = Buffer.alloc(length);
+  data.writeUInt32LE(1, 0);
+  data.writeBigUInt64LE(options.supply ?? 1_000_000_000_000n, 36);
+  data[44] = options.decimals ?? POKE_MINT_DECIMALS;
+  data[45] = options.initialized === false ? 0 : 1;
+  data[ACCOUNT_TYPE_AT] = MINT_ACCOUNT_TYPE;
+  let offset = TLV_AT;
+  data.writeUInt16LE(EXT_METADATA_POINTER, offset);
+  data.writeUInt16LE(POINTER_LEN, offset + 2);
+  offset += 4 + POINTER_LEN;
+  data.writeUInt16LE(EXT_TOKEN_METADATA, offset);
+  data.writeUInt16LE(metadataLength, offset + 2);
+  offset += 4 + metadataLength;
+  if (extra) {
+    data.writeUInt16LE(extra.type, offset);
+    data.writeUInt16LE(extra.length, offset + 2);
+  }
+  return data;
+}
+
+export function assertCardsMintAccount(owner: PublicKey, data: Uint8Array): void {
+  if (!owner.equals(TOKEN_PROGRAM_ID)) {
+    throw new MainnetInitError(
+      'POKEARENA_CARDS_MINT is not a classic SPL token mint. CARDS requires Tokenkeg.',
+    );
+  }
+  if (data.length < 82) {
+    throw new MainnetInitError('POKEARENA_CARDS_MINT account is too small to be a token mint.');
+  }
+  const decimals = data[44];
+  if (decimals !== POKE_MINT_DECIMALS) {
+    throw new MainnetInitError(
+      `CARDS mint decimals are ${decimals}. Production initialization requires ${POKE_MINT_DECIMALS} decimals.`,
     );
   }
 }
@@ -290,6 +489,7 @@ export function decodeConfigAccount(data: Uint8Array): DecodedConfig {
     buybackBps: readU64(data, 256),
     minBuybackLamports: readU64(data, 264),
     bump: data[272] ?? 0,
+    cardsMint: readPubkey(data, 273),
   };
 }
 
@@ -309,6 +509,7 @@ export function packConfigAccount(config: DecodedConfig): Buffer {
   data.writeBigUInt64LE(config.buybackBps, 256);
   data.writeBigUInt64LE(config.minBuybackLamports, 264);
   data[272] = config.bump;
+  new PublicKey(config.cardsMint).toBuffer().copy(data, 273);
   return data;
 }
 
@@ -330,6 +531,7 @@ export function assessInitialization(input: {
   programId: string;
   authority: string;
   pokeMint: string;
+  cardsMint: string;
   quoteAuthority: string;
   keeper: string;
   buybackBps: number;
@@ -378,6 +580,7 @@ export function assessInitialization(input: {
     ['treasury vault', decoded.treasuryVault, input.accounts.treasuryVault],
     ['operator vault', decoded.operatorVault, input.accounts.operatorVault],
     ['POKE mint', decoded.pokeMint, input.pokeMint],
+    ['CARDS mint', decoded.cardsMint, input.cardsMint],
     ['quote authority', decoded.quoteAuthority, input.quoteAuthority],
     ['keeper', decoded.keeper, input.keeper],
     ['fee bps', decoded.feeBps.toString(), String(CASUAL_FEE_BPS)],
@@ -407,15 +610,15 @@ export interface KeeperSettlementCost {
 }
 
 /**
- * SOL the keeper spends as fee payer. Prize SOL stays in the treasury vault.
- * Replay, prize-reserve, and prize-vault rent is spent and not reclaimed.
+ * SOL the keeper spends up front as fee payer. CARDS prize funds stay in the
+ * CARDS vault. Close later returns match, entry, and prize rent to the creator,
+ * player, or config authority. The keeper does not receive that rent.
  */
 export function keeperSettlementCost(rentLamports: (space: number) => number): KeeperSettlementCost {
   const replayRent = rentLamports(REPLAY_ACCOUNT_SPACE);
-  const perTournamentLamports = rentLamports(PRIZE_RESERVE_ACCOUNT_SPACE)
-    + rentLamports(PRIZE_VAULT_ACCOUNT_SPACE)
-    + (TOURNAMENT_FIELD_SIZE * replayRent)
-    + replayRent
+  const perTournamentLamports = rentLamports(CARDS_PRIZE_RESERVE_ACCOUNT_SPACE)
+    + rentLamports(CARDS_PRIZE_VAULT_ACCOUNT_SPACE)
+    + ((TOURNAMENT_FIELD_SIZE + 2) * replayRent)
     + (TOURNAMENT_KEEPER_TRANSACTIONS * SIGNATURE_FEE_LAMPORTS);
   const perCasualMatchLamports = replayRent + (CASUAL_KEEPER_TRANSACTIONS * SIGNATURE_FEE_LAMPORTS);
   return {

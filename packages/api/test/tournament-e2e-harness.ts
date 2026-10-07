@@ -536,16 +536,22 @@ export async function driveBracketToCompletion(
           actualSlotWinner,
         );
         const loser = settled.winner === settled.player1 ? settled.player2 : settled.player1;
-        const stillAlive = (await service.getBracket(tournamentId)).some(candidate => (
+        const remaining = await service.getBracket(tournamentId);
+        const finalRound = Math.max(...remaining.map(candidate => candidate.round));
+        const unfinished = remaining.filter(candidate => (
           !isSettled(candidate)
           && (candidate.player1 === loser || candidate.player2 === loser)
         ));
+        const onlyThirdPlace = unfinished.length > 0 && unfinished.every(candidate => (
+          candidate.role === 'third-place'
+          || (candidate.round === finalRound && candidate.bracketPosition === 1)
+        ));
         report.check(
           `${label}/${roundLabel}-eliminate-${match.bracketPosition}`,
-          `Loser ${loser} is eliminated from unfinished matches`,
-          !stillAlive,
-          false,
-          stillAlive,
+          `Loser ${loser} is eliminated from unfinished matches or assigned to third place`,
+          unfinished.length === 0 || onlyThirdPlace,
+          unfinished.length === 0 ? 'eliminated' : 'third-place',
+          unfinished.length === 0 ? 'eliminated' : unfinished.map(candidate => candidate.role ?? 'third-place').join(','),
         );
       }
     }

@@ -1,31 +1,32 @@
 import { readFileSync } from 'node:fs';
-import { Keypair, PublicKey, SystemProgram, Transaction, type TransactionInstruction } from '@solana/web3.js';
+import { timingSafeEqual } from 'node:crypto';
+import { Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 import {
   ArenaChainClient,
   assertPassportEligible,
   burnPokeEntryIx,
+  createAssociatedTokenAccountIdempotentIx,
   chargeMatchFeeIx,
   createMatchEscrowIx,
   depositPokeEntryIx,
   depositSolWagerIx,
-  payPrizeIx,
+  payCardsPrizeIx,
   refundPokeEntryIx,
   refundSolWagerIx,
-  reservePrizeIx,
+  fundCardsPrizeIx,
   seatMatchOpponentIx,
-  setPrizeWinnerIx,
+  setCardsPrizeWinnerIx,
   settleMatchTieIx,
   settleMatchWinIx,
+  releaseCardsPrizeIx,
   type SentTransaction,
   evaluatePassport,
   loadChainConfig,
-  passportAtoms,
   previewSolCasual,
   previewTreasurySplit,
   sha256Key,
   IX,
   isRetryableRpcError,
-  tournamentEntryAtoms,
   type ArenaChainConfig,
   type IntentVerification,
   type MatchEscrowState,
@@ -33,10 +34,22 @@ import {
   type PokeUsdQuote,
   type SolCasualPreview,
   TOURNAMENT_BURN_FEE_ATOMS,
+  POKE_MINT_DECIMALS,
   assertTournamentBurnFeeAtoms,
   uuidToBytes,
 } from '@pokearena/solana-client';
 import type { ChainIntentRow, DurableCasualRoom, EconomicsStore, PostgresChainStore } from '@pokearena/db';
+import { encodeBase58 } from './wallet-auth';
+import { AsyncLimiter } from './async-limit';
+import { settleCardsPlace, splitCardsPrize } from './tournament-cards-payout';
+import { decimalToScaled } from './play-token-math';
+import {
+  DEFAULT_MIN_LIQUIDITY_USD,
+  JupiterTokenPriceOracle,
+  readNonNegativeInt,
+  resolveJupiterPriceEndpoint,
+  type TokenPriceOracle,
+} from './play-token-oracle';
 
 /**
  * Background escrow check after a deposit signature has already opened the lobby.
@@ -65,6 +78,9 @@ export function assessDepositEscrow(input: {
   }
   return deposited ? 'matched' : 'lagging';
 }
+
+/** Independent tx.confirm verifications. Not a single global queue. */
+export const INTENT_VERIFICATION_CONCURRENCY = 3;
 
 /** What a background escrow read may do. It cannot close a lobby on lag or an RPC error. */
 export function depositEscrowFollowUp(
@@ -96,17 +112,47 @@ export class SettlementUnknownError extends Error {
   }
 }
 
+export function assertStagingFundingSmokeAccess(
+  env: NodeJS.ProcessEnv,
+  token: string,
+): void {
+  if (
+    env.POKEARENA_ENV === 'production'
+    || env.POKEARENA_STAGING !== 'true'
+  ) {
+    throw new Error('Tournament funding smoke harness is staging-only.');
+  }
+  const expected = env.POKEARENA_STAGING_SMOKE_TOKEN?.trim();
+  if (!expected || !token) throw new Error('Tournament funding smoke authorization is required.');
+  const actualBytes = Buffer.from(token);
+  const expectedBytes = Buffer.from(expected);
+  if (
+    actualBytes.length !== expectedBytes.length
+    || !timingSafeEqual(actualBytes, expectedBytes)
+  ) {
+    throw new Error('Tournament funding smoke authorization failed.');
+  }
+}
+
 export class ChainEconomyService {
   readonly config: ArenaChainConfig;
   readonly client: ArenaChainClient | null;
   private readonly chainStore: PostgresChainStore | null;
   private readonly env: NodeJS.ProcessEnv;
   private readonly injectedKeeper?: Keypair;
+  private creatorRewardFunder?: {
+    fundTournament(input: { tournamentId: string; amountRaw: number }): Promise<{ signature: string }>;
+  };
   private readonly submitKeeperOverride?: (
     instructions: TransactionInstruction[],
   ) => Promise<SentTransaction>;
+  private readonly injectedPriceOracle?: TokenPriceOracle;
+  private ownedPriceOracle?: TokenPriceOracle;
   private readonly depositConfirmations = new Map<string, Promise<{ status: string; error?: string }>>();
+  private readonly matchOperations = new Map<string, Promise<unknown>>();
   private readonly depositWatchers = new Map<string, Promise<{ status: string }>>();
+  private readonly intentVerifications = new Map<string, Promise<{ status: string; error?: string }>>();
+  private readonly verificationLimiter = new AsyncLimiter(INTENT_VERIFICATION_CONCURRENCY);
   private solDepositResolved?: (
     intent: ChainIntentRow,
     outcome: { status: string; signature: string },
@@ -117,14 +163,19 @@ export class ChainEconomyService {
     chainStore?: PostgresChainStore | null;
     client?: ArenaChainClient | null;
     keeper?: Keypair;
+    creatorRewardFunder?: {
+      fundTournament(input: { tournamentId: string; amountRaw: number }): Promise<{ signature: string }>;
+    };
     submitKeeper?: (
       instructions: TransactionInstruction[],
     ) => Promise<SentTransaction>;
+    priceOracle?: TokenPriceOracle;
   } = {}) {
     this.env = options.env ?? process.env;
     this.config = loadChainConfig(this.env);
     this.injectedKeeper = options.keeper;
     this.submitKeeperOverride = options.submitKeeper;
+    this.injectedPriceOracle = options.priceOracle;
     if (this.config.chainEconomyEnabled && !this.keeperKeypair().publicKey.equals(this.config.keeper)) {
       throw new Error('POKEARENA_KEEPER_KEYPAIR does not match POKEARENA_KEEPER.');
     }
@@ -132,6 +183,13 @@ export class ChainEconomyService {
       ? options.client
       : (this.config.chainEconomyEnabled ? new ArenaChainClient(this.config) : null);
     this.chainStore = options.chainStore ?? null;
+    this.creatorRewardFunder = options.creatorRewardFunder;
+  }
+
+  attachCreatorRewardFunder(funder: {
+    fundTournament(input: { tournamentId: string; amountRaw: number }): Promise<{ signature: string }>;
+  }): void {
+    this.creatorRewardFunder = funder;
   }
 
   get enabled(): boolean {
@@ -141,6 +199,57 @@ export class ChainEconomyService {
   /** SOL wagers can run while this is false. POKE burns stay closed. */
   get pokeConfigured(): boolean {
     return this.enabled && !this.config.pokeMint.equals(PublicKey.default);
+  }
+
+  get cardsConfigured(): boolean {
+    return this.enabled && !this.config.cardsMint.equals(PublicKey.default);
+  }
+
+  tournamentPrizeCardsRaw(): number {
+    const raw = Number(this.env.POKEARENA_TOURNAMENT_PRIZE_CARDS_RAW ?? 0);
+    if (!Number.isSafeInteger(raw) || raw <= 0) {
+      throw new Error('POKEARENA_TOURNAMENT_PRIZE_CARDS_RAW must be a positive raw CARDS amount.');
+    }
+    return raw;
+  }
+
+  async runStagingTournamentFundingSmoke(input: {
+    tournamentId: string;
+    prizeCardsRaw: number;
+    authorization: string;
+  }): Promise<{
+    tournamentId: string;
+    amountRaw: number;
+    reserveIntentId: string;
+    status: string;
+    creatorTransferSignature?: string;
+    prizeSignature?: string;
+  }> {
+    assertStagingFundingSmokeAccess(this.env, input.authorization);
+    if (!Number.isSafeInteger(input.prizeCardsRaw) || input.prizeCardsRaw <= 0) {
+      throw new Error('Staging tournament funding amount must be a positive raw CARDS amount.');
+    }
+    await this.reserveTournamentCardsPrize({
+      tournamentId: input.tournamentId,
+      prizeCardsRaw: input.prizeCardsRaw,
+    });
+    const intent = await this.chainStore!.getIntentByScope(
+      'cards_prize_fund',
+      input.tournamentId,
+    );
+    if (!intent) throw new Error('Staging tournament funding intent was not persisted.');
+    return {
+      tournamentId: input.tournamentId,
+      amountRaw: input.prizeCardsRaw,
+      reserveIntentId: intent.id,
+      status: intent.status,
+      ...(typeof intent.metadata.creatorTransferSignature === 'string'
+        ? { creatorTransferSignature: intent.metadata.creatorTransferSignature }
+        : {}),
+      ...(typeof intent.metadata.prizeSignature === 'string'
+        ? { prizeSignature: intent.metadata.prizeSignature }
+        : {}),
+    };
   }
 
   /** Fired when a deposit watcher reaches a terminal signature after the first response. */
@@ -165,6 +274,49 @@ export class ChainEconomyService {
   resolveQuote(env: NodeJS.ProcessEnv = process.env): PokeUsdQuote {
     this.requireEnabled();
     return this.client!.resolveQuote(env);
+  }
+
+  /**
+   * Passport authorization uses the configured POKE mint and a live quote.
+   * Local tests keep the mock quote. An operator-set env price cannot authorize.
+   */
+  async resolvePassportQuote(env: NodeJS.ProcessEnv = this.env): Promise<PokeUsdQuote> {
+    this.requirePokeEconomy();
+    if (this.config.cluster === 'localnet') return this.resolveQuote(env);
+    const price = await this.priceOracle().getUsdPrice(this.config.pokeMint.toBase58());
+    if (!price.available || !price.priceUsd) {
+      throw new Error(`Live POKE quote is unavailable (${price.reason}).`);
+    }
+    const micro = decimalToScaled(price.priceUsd, 6);
+    if (micro === null || micro <= 0n || micro > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('Live POKE quote is not a usable USD price.');
+    }
+    const observedAt = Date.parse(price.timestamp);
+    return {
+      priceMicroUsd: Number(micro),
+      decimals: POKE_MINT_DECIMALS,
+      observedAt: Number.isFinite(observedAt) ? observedAt : Date.now(),
+      source: 'oracle',
+      confidenceBps: 0,
+      quoteId: `oracle:${price.mint}:${price.blockId ?? observedAt}`,
+    };
+  }
+
+  private priceOracle(): TokenPriceOracle {
+    if (this.injectedPriceOracle) return this.injectedPriceOracle;
+    if (!this.ownedPriceOracle) {
+      const endpoint = resolveJupiterPriceEndpoint(this.env);
+      this.ownedPriceOracle = new JupiterTokenPriceOracle({
+        endpoint: endpoint.url,
+        headers: endpoint.headers,
+        minLiquidityUsd: readNonNegativeInt(
+          this.env.PLAY_TOKEN_MIN_LIQUIDITY_USD,
+          DEFAULT_MIN_LIQUIDITY_USD,
+          1_000_000_000_000,
+        ),
+      });
+    }
+    return this.ownedPriceOracle;
   }
 
   async persistQuote(quote: PokeUsdQuote): Promise<void> {
@@ -235,15 +387,24 @@ export class ChainEconomyService {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
-  async getPassport(playerId: string, env: NodeJS.ProcessEnv = process.env): Promise<PassportStatus> {
+  async getPassport(
+    playerId: string,
+    env: NodeJS.ProcessEnv = process.env,
+    options?: { liquidAtoms?: bigint },
+  ): Promise<PassportStatus> {
     this.requirePokeEconomy();
-    const quote = this.resolveQuote(env);
+    const quote = await this.resolvePassportQuote(env);
     await this.persistQuote(quote);
     const owner = new PublicKey(playerId);
     const held = this.chainStore
       ? BigInt(await this.chainStore.sumReservedEntryAtoms(playerId))
       : 0n;
-    return this.client!.getPassportStatus({ owner, heldEntryAtoms: held, quote });
+    return this.client!.getPassportStatus({
+      owner,
+      heldEntryAtoms: held,
+      quote,
+      ...(options?.liquidAtoms !== undefined ? { liquidAtoms: options.liquidAtoms } : {}),
+    });
   }
 
   async assertCanPlay(playerId: string, env: NodeJS.ProcessEnv = process.env): Promise<PassportStatus> {
@@ -382,7 +543,31 @@ export class ChainEconomyService {
   }): Promise<{ status: string; error?: string }> {
     this.requireEnabled();
     if (!this.chainStore) throw new Error('Chain store is required.');
-    const intent = await this.chainStore.getIntent(input.intentId);
+    const existing = this.intentVerifications.get(input.intentId);
+    if (existing) return existing;
+    let settle: (value: { status: string; error?: string }) => void = () => undefined;
+    let fail: (error: unknown) => void = () => undefined;
+    const job = new Promise<{ status: string; error?: string }>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    this.intentVerifications.set(input.intentId, job);
+    void this.verificationLimiter.run(() => this.loadAndConfirm(input))
+      .then(settle, fail)
+      .finally(() => {
+        if (this.intentVerifications.get(input.intentId) === job) {
+          this.intentVerifications.delete(input.intentId);
+        }
+      });
+    return job;
+  }
+
+  private async loadAndConfirm(input: {
+    intentId: string;
+    signature: string;
+    signedTransaction?: number[];
+  }): Promise<{ status: string; error?: string }> {
+    const intent = await this.chainStore!.getIntent(input.intentId);
     if (!intent) throw new Error(`Unknown chain intent: ${input.intentId}`);
     if (intent.status === 'confirmed') {
       console.info('[pokearena-deposit]', {
@@ -393,28 +578,60 @@ export class ChainEconomyService {
       });
       return { status: 'confirmed' };
     }
-    if (intent.kind === 'sol_wager_deposit') {
-      const inflight = this.depositConfirmations.get(intent.id);
+    return this.confirmIntentOnce(intent, input);
+  }
+
+  private async confirmIntentOnce(
+    intent: ChainIntentRow,
+    input: { intentId: string; signature: string; signedTransaction?: number[] },
+  ): Promise<{ status: string; error?: string }> {
+    const current = await this.chainStore!.getIntent(intent.id) ?? intent;
+    if (current.status === 'confirmed') return { status: 'confirmed' };
+    if (current.kind === 'sol_wager_deposit') {
+      const inflight = this.depositConfirmations.get(current.id);
       if (inflight) return inflight;
-      const job = this.confirmSolDeposit(intent, input.signature, input.signedTransaction).finally(() => {
-        this.depositConfirmations.delete(intent.id);
+      const job = this.confirmSolDeposit(current, input.signature, input.signedTransaction).finally(() => {
+        this.depositConfirmations.delete(current.id);
       });
-      this.depositConfirmations.set(intent.id, job);
+      this.depositConfirmations.set(current.id, job);
       return job;
     }
-    const expected = this.expectedVerification(intent);
+    const storedSignature = typeof current.metadata.signature === 'string'
+      ? current.metadata.signature
+      : '';
+    const signaturePinned = storedSignature.length > 0
+      && current.status !== 'failed'
+      && current.status !== 'expired'
+      && current.status !== 'cancelled';
+    const signature = signaturePinned ? storedSignature : input.signature;
+    if (!signaturePinned && signature) {
+      await this.rememberIntent(current.id, { signature });
+    }
+    const expected = this.expectedVerification(current);
     const confirmed = expected
-      ? await this.client!.verifyIntentTransaction(input.signature, expected)
-      : await this.client!.confirmSignature(input.signature);
-    await this.chainStore.setIntentStatus(input.intentId, confirmed.status, {
-      signature: input.signature,
+      ? await this.client!.verifyIntentTransaction(signature, expected)
+      : await this.client!.confirmSignature(signature);
+    if (confirmed.status !== 'confirmed' && isRetryableRpcError(confirmed.error ?? '')) {
+      console.warn('[pokearena-rpc]', {
+        operation: 'confirmIntent',
+        classified: 'retryable',
+        intentId: current.id,
+        kind: current.kind,
+        ...(current.roomId ? { roomId: current.roomId } : {}),
+        ...(current.tournamentId ? { tournamentId: current.tournamentId } : {}),
+        signature,
+        message: confirmed.error,
+      });
+    }
+    await this.chainStore!.setIntentStatus(input.intentId, confirmed.status, {
+      signature,
       slot: confirmed.slot,
       error: confirmed.error,
     });
-    if (confirmed.status === 'confirmed' && intent.kind === 'poke_entry_deposit') {
-      await this.chainStore.markEntryReserved(intent.tournamentId!, intent.playerId!);
+    if (confirmed.status === 'confirmed' && current.kind === 'poke_entry_deposit') {
+      await this.chainStore!.markEntryReserved(current.tournamentId!, current.playerId!);
     }
-    return { status: confirmed.status };
+    return { status: confirmed.status, ...(confirmed.error ? { error: confirmed.error } : {}) };
   }
 
   async createPokeEntryDepositIntent(input: {
@@ -428,12 +645,36 @@ export class ChainEconomyService {
   }): Promise<{
     intentId: string;
     serializedTx: number[];
+    signature?: string;
     entryAtoms: string;
     quote: PokeUsdQuote;
     passport: PassportStatus;
   }> {
     this.requirePokeEconomy();
     if (!this.chainStore) throw new Error('Chain store is required for POKE entries.');
+    const scopeId = `${input.tournamentId}:${input.playerId}`;
+    const existing = await this.chainStore.getIntentByScope('poke_entry_deposit', scopeId);
+    const storedSignature = typeof existing?.metadata.signature === 'string'
+      ? existing.metadata.signature
+      : '';
+    if (
+      existing
+      && storedSignature
+      && existing.status !== 'failed'
+      && existing.status !== 'expired'
+      && existing.status !== 'cancelled'
+    ) {
+      const quote = this.resolveQuote();
+      await this.persistQuote(quote);
+      return {
+        intentId: existing.id,
+        serializedTx: [],
+        signature: storedSignature,
+        entryAtoms: existing.amount.toString(),
+        quote,
+        passport: await this.getPassport(input.playerId),
+      };
+    }
     const quote = this.resolveQuote();
     await this.persistQuote(quote);
     if (
@@ -443,30 +684,19 @@ export class ChainEconomyService {
     ) {
       assertTournamentBurnFeeAtoms(input.entryAtoms);
     }
-    const entryAtoms = input.fixedBurnFee
-      ? BigInt(TOURNAMENT_BURN_FEE_ATOMS)
-      : input.entryAtoms !== undefined
-      ? BigInt(input.entryAtoms)
-      : tournamentEntryAtoms(quote);
-    const quoteId = input.quoteId ?? quote.quoteId;
-    const passportRequired = passportAtoms(quote);
-    const owner = new PublicKey(input.playerId);
-    if (!input.fixedBurnFee) {
-      const liquid = await this.client!.getPokeBalance(owner);
-      const held = BigInt(await this.chainStore.sumReservedEntryAtoms(input.playerId));
-      const afterEntry = liquid > entryAtoms ? liquid - entryAtoms : 0n;
-      const qualifyingAfter = afterEntry > held ? afterEntry - held : 0n;
-      if (qualifyingAfter < passportRequired) {
-        throw new Error(
-          'Entering this cup would drop your POKE passport below $20. Hold enough POKE for entry plus the passport.',
-        );
-      }
+    if (
+      input.entryAtoms !== undefined
+      && input.entryAtoms !== TOURNAMENT_BURN_FEE_ATOMS
+    ) {
+      throw new Error('Tournament entry is exactly 10000 POKE and is separate from the passport check.');
     }
+    const entryAtoms = BigInt(TOURNAMENT_BURN_FEE_ATOMS);
+    const quoteId = input.quoteId ?? quote.quoteId;
+    const owner = new PublicKey(input.playerId);
     const playerPokeAta = input.playerPokeAta
       ? new PublicKey(input.playerPokeAta)
       : await this.client!.getPokeAta(owner);
 
-    const scopeId = `${input.tournamentId}:${input.playerId}`;
     const quoteIdBytes = sha256Key([quoteId]);
     const intent = await this.chainStore.createIntent({
       kind: 'poke_entry_deposit',
@@ -593,7 +823,7 @@ export class ChainEconomyService {
   async lockTournament(input: {
     tournamentId: string;
     playerIds: string[];
-    prizeLamports: number;
+    prizeCardsRaw: number;
   }): Promise<void> {
     this.requirePokeEconomy();
     if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
@@ -614,7 +844,7 @@ export class ChainEconomyService {
         throw new Error(`POKE entry is not burnable for ${playerId}.`);
       }
     }
-    await this.reserveTournamentPrize(input);
+    await this.reserveTournamentCardsPrize(input);
     for (const playerId of input.playerIds) {
       const deposit = await this.chainStore.getIntentByScope(
         'poke_entry_deposit',
@@ -683,52 +913,124 @@ export class ChainEconomyService {
 
   }
 
-  private async reserveTournamentPrize(input: {
+  private async reconcileRecordedPrizeFunding(
+    reserve: ChainIntentRow,
+    tournamentBytes: Uint8Array,
+    amount: number,
+    signature: string,
+  ): Promise<void> {
+    const connection = this.client?.connection;
+    if (!connection?.getSignatureStatuses) {
+      throw new Error('CARDS prize funding signature is still unconfirmed.');
+    }
+    const status = await connection.getSignatureStatuses([signature]);
+    const value = status.value[0];
+    if (value?.err) {
+      await this.chainStore!.setIntentStatus(reserve.id, 'failed', {
+        signature,
+        error: 'CARDS prize funding transaction failed.',
+      });
+      throw new Error('CARDS prize funding transaction failed.');
+    }
+    const confirmed = value?.confirmationStatus === 'confirmed' || value?.confirmationStatus === 'finalized';
+    if (!confirmed) {
+      if (reserve.status !== 'pending') {
+        await this.chainStore!.setIntentStatus(reserve.id, 'pending', { signature });
+      }
+      throw new Error('CARDS prize funding signature is still unconfirmed.');
+    }
+    const state = await this.client!.getCardsPrizeReserveState(tournamentBytes);
+    if (state.status !== 0 || state.cardsAmount !== BigInt(amount)) {
+      throw new Error('CARDS prize funding signature is still unconfirmed.');
+    }
+    await this.chainStore!.setIntentStatus(reserve.id, 'confirmed', { signature });
+  }
+
+  private async reserveTournamentCardsPrize(input: {
     tournamentId: string;
-    prizeLamports: number;
+    prizeCardsRaw: number;
   }): Promise<void> {
+    this.requirePokeEconomy();
+    if (!this.cardsConfigured) throw new Error('CARDS prize mint is not configured.');
     if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
     const reserve = await this.chainStore.createIntent({
-      kind: 'prize_reserve',
+      kind: 'cards_prize_fund',
       scopeId: input.tournamentId,
-      asset: 'SOL',
-      amount: input.prizeLamports,
-      idempotencyKey: `prize_reserve:${input.tournamentId}`,
+      asset: 'CARDS',
+      amount: input.prizeCardsRaw,
+      idempotencyKey: `cards_prize_fund:${input.tournamentId}`,
       tournamentId: input.tournamentId,
     });
+    const tournamentBytes = uuidToBytes(input.tournamentId);
     if (reserve.status !== 'confirmed') {
-      const existingReserve = await this.client!.getPrizeReserveState(uuidToBytes(input.tournamentId))
-        .catch(() => undefined);
-      if (existingReserve?.status === 0 && existingReserve.amount === BigInt(input.prizeLamports)) {
-        await this.chainStore.setIntentStatus(reserve.id, 'confirmed');
-      } else {
-        const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
-          this.buildReservePrizeIx({
-            tournamentId: input.tournamentId,
-            amountLamports: input.prizeLamports,
-          }),
-        ]);
-        if (result.status !== 'confirmed') {
-          await this.chainStore.setIntentStatus(reserve.id, result.status, {
-            signature: result.signature || undefined,
-            slot: result.slot,
-            error: result.error,
-          });
-          throw new Error(result.error ?? 'Prize reserve failed.');
-        }
-        const state = await this.client!.getPrizeReserveState(uuidToBytes(input.tournamentId));
-        if (state.status !== 0 || state.amount !== BigInt(input.prizeLamports)) {
-          throw new Error('Prize reserve was not reflected on-chain.');
-        }
-        await this.chainStore.setIntentStatus(reserve.id, 'confirmed', {
-          signature: result.signature,
-          slot: result.slot,
+      if (this.creatorRewardFunder && reserve.metadata.creatorTransfer !== 'confirmed') {
+        const funded = await this.creatorRewardFunder.fundTournament({
+          tournamentId: input.tournamentId,
+          amountRaw: input.prizeCardsRaw,
         });
+        reserve.metadata = {
+          ...reserve.metadata,
+          creatorTransfer: 'confirmed',
+          creatorTransferSignature: funded.signature,
+        };
+        await this.rememberIntent(reserve.id, {
+          creatorTransfer: 'confirmed',
+          creatorTransferSignature: funded.signature,
+        });
+      }
+      const prizeSignature = typeof reserve.metadata.prizeSignature === 'string'
+        ? reserve.metadata.prizeSignature
+        : '';
+      if (prizeSignature) {
+        await this.reconcileRecordedPrizeFunding(reserve, tournamentBytes, input.prizeCardsRaw, prizeSignature);
+      } else {
+        const existingReserve = await this.client!.getCardsPrizeReserveState(tournamentBytes)
+          .catch(() => undefined);
+        if (
+          existingReserve?.status === 0
+          && existingReserve.cardsAmount === BigInt(input.prizeCardsRaw)
+        ) {
+          await this.chainStore.setIntentStatus(reserve.id, 'confirmed');
+        } else {
+          const fundingKey = sha256Key(['cards-fund', input.tournamentId, String(input.prizeCardsRaw)]);
+          const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
+            fundCardsPrizeIx({
+              programId: this.config.programId,
+              fundingAuthority: this.keeperPublicKey(),
+              config: this.client!.configAddress,
+              cardsMint: this.config.cardsMint,
+              fundingCards: this.client!.getCardsAta(this.keeperPublicKey()),
+              tournamentId: tournamentBytes,
+              amount: input.prizeCardsRaw,
+              fundingKey,
+            }),
+          ]);
+          if (result.signature) {
+            reserve.metadata = { ...reserve.metadata, prizeSignature: result.signature };
+            await this.rememberIntent(reserve.id, { prizeSignature: result.signature });
+          }
+          if (result.status !== 'confirmed') {
+            await this.chainStore.setIntentStatus(reserve.id, result.status, {
+              signature: result.signature || undefined,
+              slot: result.slot,
+              error: result.error,
+            });
+            throw new Error(`CARDS funding unavailable: ${result.error ?? 'CARDS prize funding failed.'}`);
+          }
+          const state = await this.client!.getCardsPrizeReserveState(tournamentBytes);
+          if (state.status !== 0 || state.cardsAmount !== BigInt(input.prizeCardsRaw)) {
+            throw new Error('CARDS prize funding was not reflected on-chain.');
+          }
+          await this.chainStore.setIntentStatus(reserve.id, 'confirmed', {
+            signature: result.signature,
+            slot: result.slot,
+          });
+        }
       }
     }
     await this.chainStore.recordPrizeReserve({
       tournamentId: input.tournamentId,
-      amountLamports: input.prizeLamports,
+      amountCardsRaw: input.prizeCardsRaw,
       status: 'reserved',
       reserveIntentId: reserve.id,
     });
@@ -786,55 +1088,87 @@ export class ChainEconomyService {
     await this.chainStore.markEntryRefunded(input.tournamentId, input.playerId);
   }
 
-  async payTournamentPrize(input: {
+  async payTournamentCardsPrize(input: {
     tournamentId: string;
     winnerId: string;
-  }): Promise<import('./mock-economics').ChainPayoutResult> {
+  }): Promise<import('./mock-economics').CardsPayoutResult> {
     this.requirePokeEconomy();
+    if (!this.cardsConfigured) throw new Error('CARDS prize mint is not configured.');
     if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
     const intent = await this.chainStore.createIntent({
-      kind: 'prize_pay',
+      kind: 'cards_prize_pay',
       scopeId: input.tournamentId,
       playerId: input.winnerId,
-      asset: 'SOL',
+      asset: 'CARDS',
       amount: 0,
-      idempotencyKey: `prize_pay:${input.tournamentId}`,
+      idempotencyKey: `cards_prize_pay:${input.tournamentId}`,
       tournamentId: input.tournamentId,
     });
     const tournamentBytes = uuidToBytes(input.tournamentId);
-    const reserve = await this.client!.getPrizeReserveState(tournamentBytes);
+    const reserve = await this.client!.getCardsPrizeReserveState(tournamentBytes);
+    if (reserve.status === 2) {
+      throw new Error('Tournament CARDS prize was released and cannot be paid.');
+    }
     if (reserve.status === 1 && !reserve.winner.equals(new PublicKey(input.winnerId))) {
       throw new Error('Tournament prize was already paid to a different recipient.');
     }
     if (reserve.status === 1) {
-      if (intent.status !== 'confirmed') await this.chainStore.setIntentStatus(intent.id, 'confirmed');
+      if (intent.status !== 'confirmed') {
+        const signature = typeof intent.metadata.signature === 'string'
+          ? intent.metadata.signature
+          : undefined;
+        await this.chainStore.setIntentStatus(intent.id, 'confirmed', signature ? { signature } : {});
+      }
       await this.chainStore.recordPrizeReserve({
         tournamentId: input.tournamentId,
-        amountLamports: Number(reserve.amount),
+        amountCardsRaw: Number(reserve.cardsAmount),
         status: 'paid',
         settleIntentId: intent.id,
         winnerId: input.winnerId,
       });
     }
     if (reserve.status !== 1) {
-      const settlementKey = sha256Key(['prize', input.tournamentId, input.winnerId]);
-      const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
-        setPrizeWinnerIx({
-          programId: this.config.programId,
-          authority: this.keeperPublicKey(),
-          config: this.client!.configAddress,
-          winner: new PublicKey(input.winnerId),
-          tournamentId: tournamentBytes,
+      const settlementKey = sha256Key(['cards-prize', input.tournamentId, input.winnerId]);
+      const winner = new PublicKey(input.winnerId);
+      if (reserve.winnerSet && !reserve.winner.equals(winner)) {
+        throw new Error('Tournament prize winner is already authoritatively set to another recipient.');
+      }
+      const payoutInstructions: TransactionInstruction[] = [
+        createAssociatedTokenAccountIdempotentIx({
+          payer: this.keeperPublicKey(),
+          owner: winner,
+          mint: this.config.cardsMint,
         }),
-        payPrizeIx({
+        ...(reserve.winnerSet
+          ? []
+          : [setCardsPrizeWinnerIx({
+              programId: this.config.programId,
+              authority: this.keeperPublicKey(),
+              config: this.client!.configAddress,
+              winner,
+              tournamentId: tournamentBytes,
+            })]),
+        payCardsPrizeIx({
           programId: this.config.programId,
           authority: this.keeperPublicKey(),
           config: this.client!.configAddress,
-          winner: new PublicKey(input.winnerId),
+          cardsMint: this.config.cardsMint,
+          winner,
+          winnerCards: this.client!.getCardsAta(winner),
           tournamentId: tournamentBytes,
           settlementKey,
         }),
-      ]);
+      ];
+      const result = await this.submitKeeperTransaction(this.keeperKeypair(), payoutInstructions);
+      if (result.signature) {
+        // Keep the landed transaction identity durable before the final
+        // confirmation/update step. Recovery can then confirm the same
+        // settlement without creating a second payout transaction.
+        await this.rememberIntent(intent.id, {
+          signature: result.signature,
+          settlementPhase: 'submitted',
+        });
+      }
       if (result.status !== 'confirmed') {
         await this.chainStore.setIntentStatus(intent.id, result.status, {
           signature: result.signature || undefined,
@@ -843,7 +1177,7 @@ export class ChainEconomyService {
         });
         throw new Error(result.error ?? 'Tournament prize payment failed.');
       }
-      const paid = await this.client!.getPrizeReserveState(tournamentBytes);
+      const paid = await this.client!.getCardsPrizeReserveState(tournamentBytes);
       if (
         paid.status !== 1
         || !paid.winnerSet
@@ -857,20 +1191,471 @@ export class ChainEconomyService {
       });
       await this.chainStore.recordPrizeReserve({
         tournamentId: input.tournamentId,
-        amountLamports: Number(paid.amount),
+        amountCardsRaw: Number(paid.cardsAmount),
         status: 'paid',
         settleIntentId: intent.id,
         winnerId: input.winnerId,
       });
     }
     return {
-      symbol: 'SOL',
-      rail: 'sol_chain',
+      symbol: 'CARDS',
+      rail: 'cards_chain',
       winnerId: input.winnerId,
-      amount: Number(reserve.amount),
-      settlementKey: `prize_pay:${input.tournamentId}`,
-      settlementKeyHex: sha256Key(['prize', input.tournamentId, input.winnerId]).toString('hex'),
+      amount: Number(reserve.cardsAmount),
+      cardsAmountRaw: Number(reserve.cardsAmount),
+      settlementKey: `cards_prize_pay:${input.tournamentId}`,
+      settlementKeyHex: sha256Key(['cards-prize', input.tournamentId, input.winnerId]).toString('hex'),
     };
+  }
+
+  /**
+   * Collect the reserved CARDS vault once to the keeper, then pay 50/35/15.
+   * Two-player cups keep payTournamentCardsPrize and never call this.
+   */
+  async payTournamentCardsPodium(input: {
+    tournamentId: string;
+    firstId: string;
+    secondId: string;
+    thirdId: string;
+  }): Promise<import('./mock-economics').CardsPayoutResult> {
+    this.requirePokeEconomy();
+    if (!this.cardsConfigured) throw new Error('CARDS prize mint is not configured.');
+    if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
+    if (new Set([input.firstId, input.secondId, input.thirdId]).size !== 3) {
+      throw new Error('Podium places must be three different players.');
+    }
+    const store = this.chainStore as PostgresChainStore & {
+      withAdvisoryLock?: <T>(key: string, work: () => Promise<T>) => Promise<T>;
+    };
+    if (typeof store.withAdvisoryLock !== 'function') {
+      throw new Error('Tournament podium payout requires a database lock.');
+    }
+    return store.withAdvisoryLock(`prize_pay:${input.tournamentId}`, () => this.payTournamentCardsPodiumLocked(input));
+  }
+
+  private async payTournamentCardsPodiumLocked(input: {
+    tournamentId: string;
+    firstId: string;
+    secondId: string;
+    thirdId: string;
+  }): Promise<import('./mock-economics').CardsPayoutResult> {
+    const keeperId = this.keeperPublicKey().toBase58();
+    const collected = await this.payTournamentCardsPrize({
+      tournamentId: input.tournamentId,
+      winnerId: keeperId,
+    });
+    const payIntent = await this.chainStore!.getIntentByScope('cards_prize_pay', input.tournamentId);
+    const storedPool = metadataUnsigned(payIntent?.metadata, 'cardsPoolRaw');
+    const reported = BigInt(collected.cardsAmountRaw);
+    const pool = storedPool > 0n ? storedPool : reported;
+    if (pool <= 0n) throw new Error('Tournament CARDS prize vault is empty.');
+    if (storedPool === 0n && payIntent) {
+      await this.rememberIntent(payIntent.id, { cardsPoolRaw: pool.toString() });
+    }
+    const shares = splitCardsPrize(pool);
+    const places = [
+      { place: 1 as const, playerId: input.firstId, amount: shares.first },
+      { place: 2 as const, playerId: input.secondId, amount: shares.second },
+      { place: 3 as const, playerId: input.thirdId, amount: shares.third },
+    ];
+    for (const place of places) {
+      await this.payCardsPlace(input.tournamentId, place.place, place.playerId, place.amount);
+    }
+    return {
+      symbol: 'CARDS',
+      rail: 'cards_chain',
+      winnerId: input.firstId,
+      amount: Number(shares.first),
+      cardsAmountRaw: Number(pool),
+      settlementKey: `prize_pay:${input.tournamentId}`,
+      settlementKeyHex: sha256Key(['cards-prize', input.tournamentId, input.firstId]).toString('hex'),
+    };
+  }
+
+  private async payCardsPlace(
+    tournamentId: string,
+    place: 1 | 2 | 3,
+    playerId: string,
+    amount: bigint,
+  ): Promise<void> {
+    const chainStore = this.chainStore;
+    if (!chainStore) throw new Error('Chain store is required for tournament chain actions.');
+    const scopeId = `${tournamentId}:${place}`;
+    await settleCardsPlace({
+      place,
+      playerId,
+      amount,
+      loadOrCreate: async () => {
+        const intent = await chainStore.createIntent({
+          kind: 'prize_pay',
+          scopeId,
+          playerId,
+          asset: 'CARDS',
+          amount: Number(amount),
+          idempotencyKey: `prize_pay:${tournamentId}:${place}`,
+          tournamentId,
+        });
+        return {
+          id: intent.id,
+          status: intent.status,
+          ...(intent.playerId ? { playerId: intent.playerId } : {}),
+          amount: intent.amount,
+          metadata: intent.metadata,
+        };
+      },
+      remember: (intentId, patch) => this.rememberIntent(intentId, patch),
+      setStatus: async (intentId, status, signature) => {
+        await chainStore.setIntentStatus(intentId, status, signature ? { signature } : {});
+      },
+      reload: async intent => {
+        const current = await chainStore.getIntentByScope('prize_pay', scopeId);
+        return current
+          ? {
+            id: current.id,
+            status: current.status,
+            ...(current.playerId ? { playerId: current.playerId } : {}),
+            amount: current.amount,
+            metadata: current.metadata,
+          }
+          : intent;
+      },
+      reconcile: signature => this.cardsSignatureOutcome(signature),
+      blockhashExpired: () => this.cardsPlaceBlockhashExpired(scopeId),
+      mayStillLand: signature => this.cardsSignatureMayStillLand(signature, scopeId),
+      rebroadcast: serializedTx => this.rebroadcastKeeperTransaction(serializedTx),
+      submit: async persistSigned => {
+        const player = new PublicKey(playerId);
+        const keeper = this.keeperPublicKey();
+        const result = await this.submitKeeperReplayable([
+          createAssociatedTokenAccountIdempotentIx({
+            payer: keeper,
+            owner: player,
+            mint: this.config.cardsMint,
+          }),
+          cardsTransferIx({
+            source: this.client!.getCardsAta(keeper),
+            destination: this.client!.getCardsAta(player),
+            owner: keeper,
+            amount,
+          }),
+        ], persistSigned);
+        if (result.status === 'confirmed' || result.status === 'failed' || result.status === 'pending' || result.status === 'expired') {
+          return {
+            status: result.status,
+            ...(result.signature ? { signature: result.signature } : {}),
+            ...(result.error ? { error: result.error } : {}),
+          };
+        }
+        return { status: 'failed', ...(result.error ? { error: result.error } : {}) };
+      },
+    });
+  }
+
+  private async cardsSignatureOutcome(signature: string): Promise<'confirmed' | 'failed' | 'unknown'> {
+    const connection = this.client?.connection;
+    if (!connection?.getSignatureStatuses) return 'unknown';
+    try {
+      const status = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      const value = status.value[0];
+      if (!value) return 'unknown';
+      if (value.err) return 'failed';
+      if (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized') return 'confirmed';
+      return 'unknown';
+    } catch (error) {
+      if (isRetryableRpcError(error)) return 'unknown';
+      throw error;
+    }
+  }
+
+  async releaseTournamentCardsPrize(tournamentId: string): Promise<void> {
+    this.requirePokeEconomy();
+    if (!this.cardsConfigured) throw new Error('CARDS prize mint is not configured.');
+    if (!this.chainStore) throw new Error('Chain store is required for tournament chain actions.');
+    const intent = await this.chainStore.createIntent({
+      kind: 'cards_prize_release',
+      scopeId: tournamentId,
+      asset: 'CARDS',
+      amount: 0,
+      idempotencyKey: `cards_prize_release:${tournamentId}`,
+      tournamentId,
+    });
+    if (intent.status === 'confirmed') return;
+    const tournamentBytes = uuidToBytes(tournamentId);
+    const reserve = await this.client!.getCardsPrizeReserveState(tournamentBytes);
+    if (reserve.status === 2) {
+      await this.chainStore.setIntentStatus(intent.id, 'confirmed');
+      return;
+    }
+    if (reserve.status !== 0 || reserve.winnerSet) {
+      throw new Error('CARDS prize is not releasable after winner assignment or payout.');
+    }
+    const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
+      releaseCardsPrizeIx({
+        programId: this.config.programId,
+        authority: this.keeperPublicKey(),
+        config: this.client!.configAddress,
+        cardsMint: this.config.cardsMint,
+        funderCards: this.client!.getCardsAta(reserve.funder),
+        tournamentId: tournamentBytes,
+      }),
+    ]);
+    if (result.status !== 'confirmed') {
+      await this.chainStore.setIntentStatus(intent.id, result.status, {
+        signature: result.signature || undefined,
+        slot: result.slot,
+        error: result.error,
+      });
+      throw new Error(result.error ?? 'CARDS prize release failed.');
+    }
+    await this.chainStore.setIntentStatus(intent.id, 'confirmed', {
+      signature: result.signature,
+      slot: result.slot,
+    });
+    await this.chainStore.recordPrizeReserve({
+      tournamentId,
+      amountCardsRaw: Number(reserve.cardsAmount),
+      status: 'released',
+      settleIntentId: intent.id,
+    });
+  }
+
+  /**
+   * Same-process callers wait here. A store that implements `withMatchOperation`
+   * also locks across API processes. The lock is held for the whole operation,
+   * including the escrow read and the send.
+   */
+  private async withMatchOperation<T>(
+    operation: string,
+    roomId: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${operation}:${roomId}`;
+    const previous = this.matchOperations.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const queued = previous.then(() => gate, () => gate);
+    this.matchOperations.set(key, queued);
+    await previous.catch(() => undefined);
+    try {
+      const store = this.chainStore as (PostgresChainStore & {
+        withMatchOperation?: <R>(op: string, id: string, work: () => Promise<R>) => Promise<R>;
+      }) | null;
+      if (store && typeof store.withMatchOperation === 'function') {
+        return await store.withMatchOperation(operation, roomId, run);
+      }
+      return await run();
+    } finally {
+      release();
+      if (this.matchOperations.get(key) === queued) this.matchOperations.delete(key);
+    }
+  }
+
+  /**
+   * Persist the signature, then broadcast that exact signed transaction.
+   * The test override persists the signature it returns before the caller
+   * interprets success or failure, still inside the operation lock.
+   */
+  private async submitKeeperReplayable(
+    instructions: Parameters<ArenaChainClient['buildTransaction']>[1],
+    persistSigned: (signed: {
+      signature: string;
+      serializedTx: string;
+      lastValidBlockHeight?: number;
+    }) => Promise<void>,
+  ): Promise<SentTransaction> {
+    this.requireEnabled();
+    const authority = this.keeperKeypair();
+    if (this.submitKeeperOverride) {
+      const result = await this.submitKeeperOverride(instructions);
+      if (!result.signature) return result;
+      const serializedTx = typeof (result as { serializedTx?: string }).serializedTx === 'string'
+        ? (result as { serializedTx?: string }).serializedTx!
+        : '';
+      if (!serializedTx) throw new Error('Keeper override returned a signature without signed bytes.');
+      await persistSigned({
+        signature: result.signature,
+        serializedTx,
+        ...((result as { lastValidBlockHeight?: number }).lastValidBlockHeight !== undefined
+          ? { lastValidBlockHeight: (result as { lastValidBlockHeight?: number }).lastValidBlockHeight }
+          : {}),
+      });
+      return result;
+    }
+    const tx = await this.client!.buildTransaction(authority.publicKey, instructions);
+    tx.sign(authority);
+    const raw = tx.signature;
+    if (!raw) throw new Error('Keeper transaction was not signed.');
+    const signature = encodeBase58(raw);
+    const serializedTx = Buffer.from(tx.serialize()).toString('base64');
+    const lastValidBlockHeight = tx.lastValidBlockHeight;
+    await persistSigned({
+      signature,
+      serializedTx,
+      ...(Number.isFinite(lastValidBlockHeight) ? { lastValidBlockHeight } : {}),
+    });
+    try {
+      await this.client!.connection.sendRawTransaction(Buffer.from(serializedTx, 'base64'), {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/blockhash not found|block height exceeded|transaction expired/i.test(message)) {
+        return { signature, status: 'expired', error: message };
+      }
+      if (!/already processed|already confirmed|duplicate/i.test(message)) {
+        return { signature, status: 'pending', error: message };
+      }
+    }
+    try {
+      const confirmation = await this.client!.connection.confirmTransaction({
+        signature,
+        blockhash: tx.recentBlockhash!,
+        lastValidBlockHeight: tx.lastValidBlockHeight!,
+      }, 'confirmed');
+      if (confirmation.value.err) {
+        return { signature, status: 'failed', error: JSON.stringify(confirmation.value.err) };
+      }
+      return { signature, status: 'confirmed' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/block height exceeded|blockhash/i.test(message)) {
+        return { signature, status: 'expired', error: message };
+      }
+      return { signature, status: 'pending', error: message };
+    }
+  }
+
+  private async rebroadcastKeeperTransaction(serializedTx: string): Promise<'submitted' | 'expired' | 'failed'> {
+    try {
+      await this.client!.connection.sendRawTransaction(Buffer.from(serializedTx, 'base64'), {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+      });
+      return 'submitted';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/blockhash not found|block height exceeded|transaction expired/i.test(message)) return 'expired';
+      return 'submitted';
+    }
+  }
+
+  private async cardsPlaceBlockhashExpired(scopeId: string): Promise<boolean> {
+    const current = await this.chainStore?.getIntentByScope('prize_pay', scopeId);
+    const height = Number(current?.metadata?.lastValidBlockHeight);
+    if (!Number.isFinite(height) || height <= 0) return false;
+    try {
+      const now = await this.client!.connection.getBlockHeight('confirmed');
+      return now > height;
+    } catch {
+      return false;
+    }
+  }
+
+  private async cardsSignatureMayStillLand(signature: string, scopeId: string): Promise<boolean> {
+    const current = await this.chainStore?.getIntentByScope('prize_pay', scopeId);
+    const signedAt = Date.parse(String(current?.metadata?.signedAt ?? ''));
+    if (Number.isFinite(signedAt) && Date.now() - signedAt < 120_000) return true;
+    const connection = this.client?.connection;
+    if (!connection) return true;
+    try {
+      const status = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      if (status.value?.[0]) return true;
+      const found = await connection.getTransaction(signature, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0,
+      });
+      if (found) return true;
+      const recent = await connection.getSignaturesForAddress(this.keeperPublicKey(), { limit: 100 });
+      if (recent.some(entry => entry.signature === signature)) return true;
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  private async submitKeeperOnce(
+    instructions: Parameters<ArenaChainClient['buildTransaction']>[1],
+    persistSignature: (signature: string) => Promise<void>,
+  ): Promise<SentTransaction> {
+    this.requireEnabled();
+    const authority = this.keeperKeypair();
+    if (this.submitKeeperOverride) {
+      const result = await this.submitKeeperOverride(instructions);
+      if (result.signature) await persistSignature(result.signature);
+      return result;
+    }
+    const tx = await this.client!.buildTransaction(authority.publicKey, instructions);
+    tx.sign(authority);
+    const raw = tx.signature;
+    if (!raw) throw new Error('Keeper transaction was not signed.');
+    const signature = encodeBase58(raw);
+    await persistSignature(signature);
+    const sender = this.client as ArenaChainClient & {
+      sendSignedAndConfirm?: (transaction: Transaction) => Promise<SentTransaction>;
+    };
+    if (typeof sender.sendSignedAndConfirm === 'function') {
+      return sender.sendSignedAndConfirm(tx);
+    }
+    return this.client!.sendAndConfirm(tx, [authority]);
+  }
+
+  private async recordChainProgress(
+    intentId: string,
+    signature: string,
+    status: 'pending' | 'failed' | 'confirmed',
+    error?: string,
+  ): Promise<void> {
+    const store = this.chainStore as (PostgresChainStore & {
+      appendChainTx?: (input: {
+        intentId: string;
+        signature: string;
+        status: 'pending' | 'failed' | 'confirmed';
+        error?: string;
+      }) => Promise<void>;
+    }) | null;
+    if (!store || typeof store.appendChainTx !== 'function') return;
+    await store.appendChainTx({ intentId, signature, status, ...(error ? { error } : {}) });
+  }
+
+  private async recordNonCanonicalAttempt(
+    intentId: string,
+    signature: string | undefined,
+    error?: string,
+  ): Promise<void> {
+    if (!signature) return;
+    await this.recordChainProgress(intentId, signature, 'failed', error);
+  }
+
+  private async reloadIntent(intent: ChainIntentRow): Promise<ChainIntentRow> {
+    const store = this.chainStore as (PostgresChainStore & {
+      getIntent?: (id: string) => Promise<ChainIntentRow | undefined>;
+    }) | null;
+    if (!store || typeof store.getIntent !== 'function') return intent;
+    return await store.getIntent(intent.id) ?? intent;
+  }
+
+  private async successfulAccountSignature(roomId: string): Promise<string> {
+    return this.signatureForSettledEscrow(roomId, '');
+  }
+
+  private async markFeeConfirmed(intent: ChainIntentRow, signature: string): Promise<void> {
+    if (!this.chainStore) return;
+    const existing = metadataString(intent.metadata, 'signature');
+    if (intent.status === 'confirmed' && existing && signature && existing !== signature) return;
+    if (intent.status !== 'confirmed') {
+      await this.chainStore.setIntentStatus(intent.id, 'confirmed', {
+        ...(signature ? { signature } : {}),
+      });
+      intent.status = 'confirmed';
+    }
+    await this.rememberIntent(intent.id, {
+      feePhase: 'confirmed',
+      ...(signature ? { signature } : {}),
+    });
+    if (signature) intent.metadata = { ...intent.metadata, signature, feePhase: 'confirmed' };
   }
 
   /** Submit a keeper-signed transaction using the configured keeper account. */
@@ -928,6 +1713,10 @@ export class ChainEconomyService {
   }
 
   async prepareCasualStart(roomId: string): Promise<void> {
+    return this.withMatchOperation('sol_match_fee', roomId, () => this.prepareCasualStartLocked(roomId));
+  }
+
+  private async prepareCasualStartLocked(roomId: string): Promise<void> {
     this.requireEnabled();
     if (!this.chainStore) throw new Error('Chain store is required for SOL wagers.');
     const creator = await this.chainStore.getIntentByScope('sol_wager_deposit', `${roomId}:creator`);
@@ -935,51 +1724,100 @@ export class ChainEconomyService {
     if (creator?.status !== 'confirmed' || opponent?.status !== 'confirmed') {
       throw new Error('Both SOL deposits must be confirmed before the match starts.');
     }
-    const roomBytes = uuidToBytes(roomId);
-    const state = await this.client!.getMatchEscrowState(roomBytes);
-    const feeIntent = await this.chainStore.createIntent({
+    const feeAmount = Math.floor((creator.amount * 2 * 200) / 10_000);
+    const created = await this.chainStore.createIntent({
       kind: 'sol_match_fee',
       scopeId: roomId,
       asset: 'SOL',
-      amount: Number((state.collateralLamports * 2n * 200n) / 10_000n),
+      amount: feeAmount,
       idempotencyKey: `sol_match_fee:${roomId}`,
       roomId,
     });
-    if (state.status === 3 && state.feeCharged) {
-      if (feeIntent.status !== 'confirmed') {
-        await this.chainStore.setIntentStatus(feeIntent.id, 'confirmed');
+    const feeIntent = await this.reloadIntent(created);
+    if (feeIntent.status === 'confirmed') return;
+    const storedSignature = metadataString(feeIntent.metadata, 'signature');
+    const phase = metadataString(feeIntent.metadata, 'feePhase');
+    if (storedSignature) {
+      const outcome = await this.signatureOutcome(storedSignature, roomId, feeIntent.id);
+      if (outcome === 'unknown' || outcome === 'pending') {
+        throw new SettlementUnknownError('Fee signature is not confirmed yet.');
       }
+      if (outcome === 'confirmed') {
+        await this.markFeeConfirmed(feeIntent, storedSignature);
+        return;
+      }
+      await this.recordNonCanonicalAttempt(feeIntent.id, storedSignature, 'Fee signature failed on-chain.');
+    } else if (phase === 'submitting' || phase === 'submitted') {
+      const roomBytes = uuidToBytes(roomId);
+      const inflight = await this.readEscrow(roomBytes).catch(() => undefined);
+      if (inflight?.status === 3 && inflight.feeCharged) {
+        await this.markFeeConfirmed(feeIntent, await this.successfulAccountSignature(roomId));
+        return;
+      }
+      throw new SettlementUnknownError('Fee submission is in flight.');
+    }
+    const roomBytes = uuidToBytes(roomId);
+    const state = await this.client!.getMatchEscrowState(roomBytes);
+    if (state.status === 3 && state.feeCharged) {
+      const paying = storedSignature && await this.signatureOutcome(storedSignature, roomId, feeIntent.id) === 'confirmed'
+        ? storedSignature
+        : await this.successfulAccountSignature(roomId);
+      await this.markFeeConfirmed(feeIntent, paying);
       return;
     }
     if (state.status !== 2 || !state.creatorDeposited || !state.opponentDeposited) {
       throw new Error('On-chain match escrow is not funded.');
     }
-    const feeAmount = Number((state.collateralLamports * 2n * 200n) / 10_000n);
-    if (feeIntent.status !== 'confirmed') {
-      const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
-        this.buildChargeMatchFeeIx(roomId),
-      ]);
-      if (result.status !== 'confirmed') {
-        await this.chainStore.setIntentStatus(feeIntent.id, result.status, {
-          signature: result.signature || undefined,
-          slot: result.slot,
-          error: result.error,
-        });
-        throw new Error(result.error ?? 'SOL match fee transaction failed.');
-      }
-      await this.chainStore.setIntentStatus(feeIntent.id, 'confirmed', {
-        signature: result.signature,
-        slot: result.slot,
-      });
+    const latest = await this.reloadIntent(feeIntent);
+    if (latest.status === 'confirmed' || metadataString(latest.metadata, 'feePhase') === 'submitting') {
+      if (latest.status === 'confirmed') return;
+      throw new SettlementUnknownError('Fee submission is in flight.');
     }
+    await this.rememberIntent(feeIntent.id, { feePhase: 'submitting', submittedAt: Date.now() });
+    const result = await this.submitKeeperOnce(
+      [this.buildChargeMatchFeeIx(roomId)],
+      async signature => {
+        await this.rememberIntent(feeIntent.id, { signature, feePhase: 'submitted' });
+        await this.recordChainProgress(feeIntent.id, signature, 'pending');
+      },
+    );
+    if (submissionOutcomeUnknown(result)) {
+      await this.chainStore.setIntentStatus(feeIntent.id, 'pending', {
+        ...(result.signature ? { signature: result.signature } : {}),
+        error: result.error,
+      });
+      throw new SettlementUnknownError(result.error ?? 'Fee outcome is unknown.');
+    }
+    if (result.status !== 'confirmed') {
+      await this.recordNonCanonicalAttempt(feeIntent.id, result.signature, result.error);
+      const landed = await this.readEscrow(roomBytes).catch(error => {
+        if (isRetryableRpcError(error)) return undefined;
+        throw error;
+      });
+      if (landed?.status === 3 && landed.feeCharged) {
+        const paying = await this.successfulAccountSignature(roomId);
+        if (paying && paying !== result.signature) await this.markFeeConfirmed(feeIntent, paying);
+        return;
+      }
+      if (!landed && isRetryableRpcError(result.error ?? '')) {
+        throw new SettlementUnknownError(result.error ?? 'Fee outcome is unknown.');
+      }
+      await this.chainStore.setIntentStatus(feeIntent.id, 'failed', {
+        signature: result.signature || undefined,
+        error: result.error,
+      });
+      await this.rememberIntent(feeIntent.id, { feePhase: 'failed', lastError: result.error ?? 'SOL match fee transaction failed.' });
+      throw new Error(result.error ?? 'SOL match fee transaction failed.');
+    }
+    await this.markFeeConfirmed(feeIntent, result.signature);
     try {
       await this.waitForMatchEscrowState(
         roomBytes,
         after => after.status === 3 && after.feeCharged,
       );
     } catch (error) {
-      const latest = await this.readEscrow(roomBytes).catch(() => undefined);
-      if (!(latest?.status === 3 && latest.feeCharged)) throw error;
+      const after = await this.readEscrow(roomBytes).catch(() => undefined);
+      if (!(after?.status === 3 && after.feeCharged)) throw error;
     }
   }
 
@@ -989,6 +1827,20 @@ export class ChainEconomyService {
     opponentId: string;
     winnerId?: string;
     /** Confirm an already-submitted settlement. Never send another transaction. */
+    observeOnly?: boolean;
+  }): Promise<import('./mock-economics').ChainPayoutResult> {
+    return this.withMatchOperation(
+      'sol_match_settlement',
+      input.roomId,
+      () => this.settleCasualLocked(input),
+    );
+  }
+
+  private async settleCasualLocked(input: {
+    roomId: string;
+    creatorId: string;
+    opponentId: string;
+    winnerId?: string;
     observeOnly?: boolean;
   }): Promise<import('./mock-economics').ChainPayoutResult> {
     this.requireEnabled();
@@ -1057,6 +1909,9 @@ export class ChainEconomyService {
       });
       throw new SettlementUnknownError('Submitted settlement is not on the escrow yet.');
     } else {
+      if (!storedSignature && (phase === 'submitting' || phase === 'submitted')) {
+        throw new SettlementUnknownError('Settlement submission is in flight.');
+      }
       if (!isTie && state.status === 2 && !state.feeCharged) {
         await this.prepareCasualStart(input.roomId);
         state = await this.readSettlementEscrow(input.roomId, intent.id, roomBytes, storedSignature, phase);
@@ -1092,12 +1947,15 @@ export class ChainEconomyService {
               settlementKey,
             });
         await this.rememberIntent(intent.id, {
-          settlementPhase: 'submitted',
+          settlementPhase: 'submitting',
           submittedAt: Date.now(),
         });
         let result: SentTransaction;
         try {
-          result = await this.submitKeeperTransaction(this.keeperKeypair(), [instruction]);
+          result = await this.submitKeeperOnce([instruction], async signature => {
+            await this.rememberIntent(intent.id, { signature, settlementPhase: 'submitted' });
+            await this.recordChainProgress(intent.id, signature, 'pending');
+          });
         } catch (error) {
           if (isRetryableRpcError(error)) {
             this.logSettlementUnknown({
@@ -1142,7 +2000,7 @@ export class ChainEconomyService {
             throw new SettlementUnknownError(result.error ?? 'Settlement outcome is unknown.');
           }
           state = landed;
-          await this.markSettlementConfirmed(intent, result.signature);
+          await this.adoptSettledEscrow(intent, result.signature, result.status === 'confirmed', result.error);
         } else if (result.status !== 'confirmed') {
           const landed = await this.readEscrow(roomBytes).catch(error => {
             if (isRetryableRpcError(error)) return undefined;
@@ -1150,7 +2008,7 @@ export class ChainEconomyService {
           });
           if (landed?.status === 4) {
             state = landed;
-            await this.markSettlementConfirmed(intent, result.signature);
+            await this.adoptSettledEscrow(intent, result.signature, false, result.error);
           } else if (!landed && isRetryableRpcError(result.error ?? '')) {
             throw new SettlementUnknownError(result.error ?? 'Settlement outcome is unknown.');
           } else {
@@ -1451,39 +2309,19 @@ export class ChainEconomyService {
     };
   }
 
-  buildReservePrizeIx(input: { tournamentId: string; amountLamports: number }) {
-    this.requireEnabled();
-    return reservePrizeIx({
-      programId: this.config.programId,
-      authority: this.keeperPublicKey(),
-      config: this.client!.configAddress,
-      treasuryVault: this.config.treasuryVault,
-      tournamentId: uuidToBytes(input.tournamentId),
-      amount: input.amountLamports,
-    });
+  buildReservePrizeIx(_input: { tournamentId: string; amountLamports: number }): never {
+    throw new Error('SOL tournament prizes are disabled. Tournament prizes are CARDS.');
   }
 
-  buildPayPrizeIx(input: { tournamentId: string; winner: string }) {
-    this.requireEnabled();
-    const settlementKey = sha256Key(['prize', input.tournamentId, input.winner]);
-    return {
-      settlementKey,
-      instruction: payPrizeIx({
-        programId: this.config.programId,
-        authority: this.keeperPublicKey(),
-        config: this.client!.configAddress,
-        winner: new PublicKey(input.winner),
-        tournamentId: uuidToBytes(input.tournamentId),
-        settlementKey,
-      }),
-    };
+  buildPayPrizeIx(_input: { tournamentId: string; winner: string }): never {
+    throw new Error('SOL tournament prizes are disabled. Tournament prizes are CARDS.');
   }
 
-  /** Quoted ~$5 POKE entry atoms for the active oracle quote. */
+  /** Fixed 10,000 POKE entry. The passport quote is a separate check. */
   quotedEntryAtoms(env: NodeJS.ProcessEnv = process.env): { atoms: bigint; quote: PokeUsdQuote } {
     this.requirePokeEconomy();
     const quote = this.resolveQuote(env);
-    return { atoms: tournamentEntryAtoms(quote), quote };
+    return { atoms: BigInt(TOURNAMENT_BURN_FEE_ATOMS), quote };
   }
 
   private keeperKeypair(): Keypair {
@@ -1809,7 +2647,10 @@ export class ChainEconomyService {
   }
 
   private async signatureForSettledEscrow(roomId: string, stored: string): Promise<string> {
-    if (stored) return stored;
+    if (stored) {
+      const outcome = await this.signatureOutcome(stored, roomId, '');
+      if (outcome !== 'failed') return stored;
+    }
     const lookup = this.client as (ArenaChainClient & {
       latestSuccessfulSignature?: (address: PublicKey) => Promise<string | undefined>;
     }) | null;
@@ -1832,14 +2673,43 @@ export class ChainEconomyService {
     }
   }
 
+  /**
+   * The escrow is already settled. Keep a failed duplicate off the canonical
+   * receipt and record the paying signature when one is known.
+   */
+  private async adoptSettledEscrow(
+    intent: ChainIntentRow,
+    attempted: string | undefined,
+    attemptedConfirmed: boolean,
+    error?: string,
+  ): Promise<void> {
+    const paying = await this.signatureForSettledEscrow(
+      intent.roomId ?? '',
+      attemptedConfirmed ? attempted ?? '' : '',
+    );
+    if (attempted && paying && paying !== attempted) {
+      await this.recordNonCanonicalAttempt(intent.id, attempted, error);
+    } else if (attempted && !attemptedConfirmed) {
+      await this.recordNonCanonicalAttempt(intent.id, attempted, error);
+    }
+    await this.markSettlementConfirmed(intent, paying || (attemptedConfirmed ? attempted : ''));
+  }
+
   private async markSettlementConfirmed(
     intent: ChainIntentRow | undefined,
     signature?: string,
   ): Promise<void> {
-    if (!intent || !this.chainStore || intent.status === 'confirmed') {
-      if (intent && signature) {
-        await this.rememberIntent(intent.id, { settlementPhase: 'confirmed', signature });
-      }
+    if (!intent || !this.chainStore) return;
+    const existing = metadataString(intent.metadata, 'signature');
+    if (intent.status === 'confirmed') {
+      if (!signature || signature === existing) return;
+      const existingOutcome = existing
+        ? await this.signatureOutcome(existing, intent.roomId ?? '', intent.id)
+        : 'failed';
+      if (existing && existingOutcome !== 'failed') return;
+      await this.rememberIntent(intent.id, { settlementPhase: 'confirmed', signature });
+      await this.chainStore.setIntentStatus(intent.id, 'confirmed', { signature });
+      intent.metadata = { ...intent.metadata, signature, settlementPhase: 'confirmed' };
       return;
     }
     let retained = signature || (typeof intent.metadata.signature === 'string' ? intent.metadata.signature : '');
@@ -1973,6 +2843,38 @@ async function releaseSolRoomRecord(economics: EconomicsStore, room: DurableCasu
     return;
   }
   await economics.cancelCasualRoom(room.id);
+}
+
+function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function metadataUnsigned(metadata: Record<string, unknown> | undefined, key: string): bigint {
+  const value = metadata?.[key];
+  if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  return 0n;
+}
+
+function cardsTransferIx(input: {
+  source: PublicKey;
+  destination: PublicKey;
+  owner: PublicKey;
+  amount: bigint;
+}): TransactionInstruction {
+  const data = Buffer.alloc(9);
+  data.writeUInt8(3, 0);
+  data.writeBigUInt64LE(input.amount, 1);
+  return new TransactionInstruction({
+    programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+    keys: [
+      { pubkey: input.source, isSigner: false, isWritable: true },
+      { pubkey: input.destination, isSigner: false, isWritable: true },
+      { pubkey: input.owner, isSigner: true, isWritable: false },
+    ],
+    data,
+  });
 }
 
 function submissionOutcomeUnknown(result: SentTransaction): boolean {

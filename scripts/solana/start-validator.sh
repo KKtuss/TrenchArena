@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
+# Local solana-test-validator only. Not a mainnet deployment path.
+# The default .so is the Anchor oracle artifact. Pinocchio local runs set
+# POKEARENA_PROGRAM_SO. Mainnet uses scripts/solana/deploy-pinocchio-mainnet.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Prefer a native Linux path in WSL — ledgers on /mnt/<drive> often hit PermissionDenied.
 LEDGER="${POKEARENA_TEST_LEDGER:-/tmp/pokearena-ledger}"
 PROGRAM_SO="${POKEARENA_PROGRAM_SO:-$ROOT/target/deploy/arena_escrow.so}"
-PROGRAM_ID="${POKEARENA_PROGRAM_ID:-26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke}"
+PROGRAM_ID="${POKEARENA_PROGRAM_ID:-41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W}"
 mkdir -p "$LEDGER"
 
 ARGS=(

@@ -18,6 +18,7 @@ import {
 } from '@pokearena/tournament';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { RawData } from 'ws';
+import { TournamentScheduler } from './tournament-scheduler';
 import {
   TOURNAMENT_BURN_FEE_ATOMS,
   uuidToBytes,
@@ -34,6 +35,8 @@ import {
   type PayoutResult,
   type Pool,
   type PostgresChainStore,
+  PostgresCreatorRewardsStore,
+  PostgresTournamentSchedulerStore,
 } from '@pokearena/db';
 
 import { CASUAL_SELECTION_MS, CASUAL_START_COUNTDOWN_MS, CasualRoomService } from './casual-service';
@@ -42,6 +45,7 @@ import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHis
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
 import { assessDepositEscrow, ChainEconomyService, depositEscrowFollowUp, SettlementUnknownError } from './chain-economy';
 import { containRpc, installRpcProcessGuard } from './rpc-guard';
+import { AsyncLimiter } from './async-limit';
 import {
   createPlayTokenEligibilityService,
   type PlayTokenCheckResult,
@@ -60,6 +64,7 @@ import {
   DEFAULT_TOURNAMENT_ENTRY_POKE,
   MockEconomics,
   type ChainPayoutResult,
+  type CardsPayoutResult,
 } from './mock-economics';
 import {
   authorizeOrigin,
@@ -85,6 +90,7 @@ import {
   type RateLimitConfig,
 } from './rate-limit';
 import { publicTournamentForViewer } from './tournament-view';
+import { CreatorRewardFundingError, CreatorRewardsWorker } from './creator-rewards';
 import { TrainerDirectory } from './trainer-directory';
 import {
   assertTournamentBackendMatchesEconomics,
@@ -140,6 +146,9 @@ export interface ApiServerOptions {
   playTokenDebug?: boolean;
   /** Overrides NODE_ENV for the debug-route guard. */
   nodeEnv?: string;
+  /** Optional injected CARDS-only Pump creator-rewards worker. */
+  creatorRewardsWorker?: CreatorRewardsWorker | null;
+  tournamentScheduler?: TournamentScheduler;
 }
 
 export class TeamRequiredError extends Error {
@@ -198,6 +207,9 @@ type TournamentSelectionState = {
 
 const publicDirectory = join(__dirname, '../../public');
 const DEFAULT_DISCONNECT_GRACE_MS = 10_000;
+const SNAPSHOT_COALESCE_MS = 50;
+const DISPLAY_POKE_TTL_MS = 8_000;
+const DISPLAY_POKE_CONCURRENCY = 4;
 
 export class ApiServer {
   readonly tournaments: TournamentService;
@@ -206,7 +218,7 @@ export class ApiServer {
   readonly chainEconomy: ChainEconomyService;
   readonly bindHost: string;
   /** Presentation cache of champion payouts. Settlement rows are authoritative. */
-  private readonly tournamentPayouts = new Map<TournamentId, PayoutResult | ChainPayoutResult>();
+  private readonly tournamentPayouts = new Map<TournamentId, PayoutResult | CardsPayoutResult>();
   private readonly settlementJobs = new Map<TournamentId, Promise<void>>();
   private readonly httpServer: Server;
   private readonly webSockets: WebSocketServer;
@@ -245,7 +257,17 @@ export class ApiServer {
   private readonly tournamentMutationLocks = new Map<string, Promise<void>>();
   private shuttingDown = false;
   private economicsPool: Pool | undefined;
+  private creatorRewardsWorker?: CreatorRewardsWorker | null;
+  private readonly tournamentScheduler?: TournamentScheduler;
 
+  private snapshotCoalesceTimer: ReturnType<typeof setTimeout> | null = null;
+  private snapshotFlush: Promise<void> | null = null;
+  private readonly snapshotWaiters: Array<() => void> = [];
+  private snapshotReconcile = false;
+  private snapshotPassCount = 0;
+  private readonly displayPokeBalances = new Map<string, { value: bigint; expiresAt: number }>();
+  private readonly displayPokeReads = new Map<string, Promise<bigint>>();
+  private readonly displayPokeLimiter = new AsyncLimiter(DISPLAY_POKE_CONCURRENCY);
   constructor(
     tournamentsOrOptions?: TournamentService | ApiServerOptions,
     economics?: EconomicsStore | MockEconomics,
@@ -298,6 +320,8 @@ export class ApiServer {
     this.tournaments = injectedTournaments ?? new TournamentService({ repository });
     this.chainEconomy = options.chainEconomy
       ?? new ChainEconomyService({ chainStore: options.chainStore ?? null });
+    this.creatorRewardsWorker = options.creatorRewardsWorker;
+    this.tournamentScheduler = options.tournamentScheduler;
     this.playTokenDebug = options.playTokenDebug ?? envFlag(process.env.PLAY_TOKEN_ELIGIBILITY_DEBUG);
     this.playToken = options.playToken ?? createPlayTokenEligibilityService({
       env: process.env,
@@ -359,12 +383,40 @@ export class ApiServer {
     this.finalizationTimer.unref?.();
     this.settlementTimer = setInterval(() => {
       containRpc('reconcileSubmittedSettlements', this.reconcileSubmittedSettlements());
+      containRpc('reconcileCompletedTournamentSettlements', this.reconcileCompletedTournamentSettlements());
     }, 8_000);
     this.settlementTimer.unref?.();
   }
 
   attachEconomicsPool(pool: Pool): void {
     this.economicsPool = pool;
+    if (this.creatorRewardsWorker === undefined && this.chainEconomy.client) {
+      const worker = new CreatorRewardsWorker({
+        env: process.env,
+        connection: this.chainEconomy.client.connection,
+        store: new PostgresCreatorRewardsStore(pool),
+      });
+      if (worker.config.enabled) {
+        if (
+          !this.chainEconomy.enabled
+          || !this.chainEconomy.cardsConfigured
+          || !worker.config.cardsMint?.equals(this.chainEconomy.config.cardsMint)
+          || !worker.config.keeper?.equals(this.chainEconomy.config.keeper)
+        ) {
+          throw new Error(
+            'Creator rewards require the enabled chain economy, the configured CARDS mint, and the configured keeper.',
+          );
+        }
+        this.creatorRewardsWorker = worker;
+        this.chainEconomy.attachCreatorRewardFunder(worker);
+        worker.start();
+      }
+    } else {
+      if (this.creatorRewardsWorker?.config.enabled) {
+        this.chainEconomy.attachCreatorRewardFunder(this.creatorRewardsWorker);
+      }
+      this.creatorRewardsWorker?.start();
+    }
   }
 
   static async create(options: ApiServerOptions = {}): Promise<ApiServer> {
@@ -386,6 +438,31 @@ export class ApiServer {
           }
           await chainEconomy.recoverCasualRoom(room, store);
         },
+        recoverSolChainTournament: async tournament => {
+          if (!chainEconomy.pokeConfigured || !chainEconomy.cardsConfigured || !tournament.winner) {
+            throw new Error(`CARDS tournament ${tournament.id} cannot be recovered while chain economy is disabled.`);
+          }
+          const matches = await tournaments.listMatches(tournament.id);
+          const places = readChainPodium(matches);
+          const finalRound = matches.reduce((max, match) => Math.max(max, match.round), 0);
+          const hasThird = matches.some(match => match.round === finalRound && match.bracketPosition === 1);
+          if (hasThird && !places) {
+            throw new Error(`Tournament ${tournament.id} podium is not ready to pay.`);
+          }
+          if (places) {
+            await chainEconomy.payTournamentCardsPodium({
+              tournamentId: tournament.id,
+              firstId: places.firstId,
+              secondId: places.secondId,
+              thirdId: places.thirdId,
+            });
+            return;
+          }
+          await chainEconomy.payTournamentCardsPrize({
+            tournamentId: tournament.id,
+            winnerId: tournament.winner,
+          });
+        },
       });
     } catch (error) {
       await pool.end().catch(() => undefined);
@@ -394,12 +471,54 @@ export class ApiServer {
         : (error instanceof Error ? error.message : String(error));
       throw new EconomicsUnavailableError(`Boot recovery failed before listen: ${detail}`);
     }
+    const tournamentRepository = new PostgresTournamentRepository(tournaments);
+    const tournamentService = new TournamentService({ repository: tournamentRepository });
+    const scheduler = new TournamentScheduler({
+      store: new PostgresTournamentSchedulerStore(pool),
+      tournaments: tournamentService,
+      createTournament: async (definition, scheduledKey) => {
+        let entryFee = DEFAULT_TOURNAMENT_ENTRY_POKE;
+        let chainFields: {
+          rail: 'sol_chain';
+          entryAtoms: number;
+          entryQuoteId: string;
+          prizeCardsRaw: number;
+        } | undefined;
+        if (chainEconomy.pokeConfigured) {
+          if (!chainEconomy.cardsConfigured) {
+            throw new Error('CARDS prize mint is not configured.');
+          }
+          const quote = chainEconomy.resolveQuote();
+          await chainEconomy.persistQuote(quote);
+          entryFee = 0;
+          chainFields = {
+            rail: 'sol_chain',
+            entryAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+            entryQuoteId: quote.quoteId,
+            prizeCardsRaw: chainEconomy.tournamentPrizeCardsRaw(),
+          };
+        }
+        const tournament = await tournamentService.createTournament({
+          title: definition.title,
+          format: 'gen9ou',
+          ruleset: definition.id,
+          maxPlayers: definition.maxPlayers,
+          hostId: 'scheduler',
+          entryFee,
+          scheduledKey,
+          ...(chainFields ?? {}),
+        });
+        await tournamentService.openRegistration(tournament.id);
+      },
+    });
     const server = new ApiServer({
       ...options,
       economics: store,
-      tournamentRepository: new PostgresTournamentRepository(tournaments),
+      tournaments: tournamentService,
+      tournamentRepository,
       chainStore: chain,
       chainEconomy,
+      tournamentScheduler: scheduler,
     });
     server.attachEconomicsPool(pool);
     await server.restoreDurableCasualRooms(store);
@@ -426,6 +545,7 @@ export class ApiServer {
   }
 
   async listen(port = 0): Promise<number> {
+    this.tournamentScheduler?.start();
     await new Promise<void>((resolve, reject) => {
       this.httpServer.once('error', reject);
       this.httpServer.listen(port, this.bindHost, () => resolve());
@@ -450,14 +570,32 @@ export class ApiServer {
     this.sweepAuthState(now);
   }
 
+  /** Visible for tests. Counts coalesced arena-snapshot passes. */
+  get arenaSnapshotPasses(): number {
+    return this.snapshotPassCount;
+  }
+
+  /** Visible for tests. Schedules the same coalesced refresh joins use. */
+  refreshArenaSnapshotsForTests(): Promise<void> {
+    return this.broadcastArenaSnapshots(false);
+  }
+
   async close(): Promise<void> {
     this.shuttingDown = true;
+    this.tournamentScheduler?.stop();
     clearInterval(this.challengeCleanupTimer);
     clearInterval(this.finalizationTimer);
     clearInterval(this.settlementTimer);
+    this.creatorRewardsWorker?.stop();
     this.rateLimiter.stop();
     for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
     this.disconnectTimers.clear();
+    if (this.snapshotCoalesceTimer) {
+      clearTimeout(this.snapshotCoalesceTimer);
+      this.snapshotCoalesceTimer = null;
+    }
+    const snapshotWaiters = this.snapshotWaiters.splice(0);
+    for (const resolve of snapshotWaiters) resolve();
     this.sessionsByPlayer.clear();
     this.pendingChallenges.clear();
     this.challengeByConnection.clear();
@@ -727,6 +865,7 @@ export class ApiServer {
             });
             throw error;
           }
+          this.invalidateDisplayPokeBalance(playerId);
           connection.tournamentIds.add(intent.tournamentId as TournamentId);
           this.send(connection, {
             type: 'tournament.state',
@@ -967,9 +1106,13 @@ export class ApiServer {
         let entryFee = message.entryFee ?? DEFAULT_TOURNAMENT_ENTRY_POKE;
         let chainEntryAtoms: number | undefined;
         let chainQuoteId: string | undefined;
+        const requestedField = message.maxPlayers ?? (this.chainEconomy.pokeConfigured ? 32 : 4);
         if (this.chainEconomy.pokeConfigured) {
-          if ((message.maxPlayers ?? 32) !== 32) {
-            throw new Error('Chain tournaments use a fixed 32-player field.');
+          if (!this.chainEconomy.cardsConfigured) {
+            throw new Error('CARDS prize mint is not configured. Set POKEARENA_CARDS_MINT before creating tournaments.');
+          }
+          if (requestedField !== 16 && requestedField !== 32) {
+            throw new Error('Chain tournaments use a 16-player or 32-player field.');
           }
           const quote = this.chainEconomy.resolveQuote();
           await this.chainEconomy.persistQuote(quote);
@@ -983,7 +1126,7 @@ export class ApiServer {
           title: message.title ?? 'PokeArena Open',
           format: 'gen9ou',
           ruleset: rulesetId,
-          maxPlayers: this.chainEconomy.pokeConfigured ? 32 : (message.maxPlayers ?? 4),
+          maxPlayers: requestedField,
           matchTimeoutMs: 300_000,
           hostId: playerId,
           entryFee,
@@ -992,7 +1135,7 @@ export class ApiServer {
                 rail: 'sol_chain' as const,
                 entryAtoms: chainEntryAtoms,
                 entryQuoteId: chainQuoteId,
-                prizeLamports: Number(process.env.POKEARENA_TOURNAMENT_PRIZE_LAMPORTS ?? 100_000_000),
+                prizeCardsRaw: this.chainEconomy.tournamentPrizeCardsRaw(),
               }
             : {}),
         });
@@ -1048,7 +1191,8 @@ export class ApiServer {
           type: 'tx.intent',
           intent: {
             intentId: entry.intentId,
-            serializedTx: entry.serializedTx,
+            ...(entry.serializedTx.length > 0 ? { serializedTx: entry.serializedTx } : {}),
+            ...(entry.signature ? { signature: entry.signature } : {}),
             kind: 'poke_entry_deposit',
             entryAtoms: entry.entryAtoms,
             quote: entry.quote,
@@ -1060,9 +1204,6 @@ export class ApiServer {
       case 'tournament.join': {
         const tournamentId = message.tournamentId as TournamentId;
         const targetTournament = await this.tournaments.getTournament(tournamentId);
-        if (this.chainEconomy.pokeConfigured && targetTournament.rail === 'sol_chain' && targetTournament.maxPlayers !== 32) {
-          throw new Error('Chain tournaments must use a 32-player field.');
-        }
         const ruleset = getRuleset(targetTournament.ruleset);
         const team = ruleset.teamMode === 'preset-6-choose-3'
           ? this.presetTeamForJoin(ruleset.presetId)
@@ -1359,6 +1500,22 @@ export class ApiServer {
     };
   }
 
+
+  private async tournamentSchedulerState() {
+    const state = await this.tournamentScheduler?.state() ?? {
+      enabled: false,
+      nextTournamentStartAt: undefined,
+      nextRotationIndex: 0,
+    };
+    return {
+      enabled: state.enabled,
+      ...(state.nextTournamentStartAt === undefined
+        ? {}
+        : { nextTournamentStartAt: state.nextTournamentStartAt }),
+      nextRotationIndex: state.nextRotationIndex,
+    };
+  }
+
   private async buildArenaSnapshot(playerId: string, reconcile = true): Promise<ArenaSnapshot> {
     if (reconcile) containRpc('reconcileSolRoomsForPlayer', this.reconcileSolRoomsForPlayer(playerId));
     const base: ArenaSnapshot = {
@@ -1368,6 +1525,7 @@ export class ApiServer {
       myCasualRooms: this.casual.listRoomsForPlayer(playerId),
       recentCasualResults: this.casual.listRecentResults(10, playerId),
       chainEconomyEnabled: this.chainEconomy.enabled,
+      tournamentScheduler: await this.tournamentSchedulerState(),
       trainers: this.trainers.snapshot(),
     };
     if (!this.chainEconomy.enabled || !this.chainEconomy.client) return base;
@@ -1375,7 +1533,9 @@ export class ApiServer {
       const { PublicKey } = await import('@solana/web3.js');
       const owner = new PublicKey(playerId);
       const passport = this.chainEconomy.pokeConfigured
-        ? await this.chainEconomy.getPassport(playerId)
+        ? await this.chainEconomy.getPassport(playerId, process.env, {
+            liquidAtoms: await this.displayPokeBalance(playerId),
+          })
         : undefined;
       const freeLamports = await this.chainEconomy.client.getSolBalance(owner);
       const treasuryLamports = await this.chainEconomy.client.getTreasuryLamports();
@@ -1656,9 +1816,9 @@ export class ApiServer {
         b.round - a.round || (b.completedAt ?? 0) - (a.completedAt ?? 0)
       ))[0];
       const cupSettled = tournament.status === 'completed' && typeof tournament.winner === 'string';
-      const symbol = tournament.rail === 'sol_chain' ? 'SOL' as const : 'POKE' as const;
-      const prize = symbol === 'SOL'
-        ? (tournament.prizeLamports ?? 0)
+      const symbol = tournament.rail === 'sol_chain' ? 'CARDS' as const : 'POKE' as const;
+      const prize = symbol === 'CARDS'
+        ? (tournament.prizeCardsRaw ?? 0)
         : previewTournament(tournament.entryFee, tournament.players.length).prizePool;
       for (const match of mine) {
         const opponentId = match.player1 === playerId ? match.player2 : match.player1;
@@ -1672,7 +1832,7 @@ export class ApiServer {
           status: match.status,
           ...(match.winner ? { winnerId: match.winner } : {}),
           completedAt: match.completedAt,
-          entryFee: symbol === 'SOL' ? (tournament.entryAtoms ?? tournament.entryFee) : tournament.entryFee,
+          entryFee: symbol === 'CARDS' ? (tournament.entryAtoms ?? tournament.entryFee) : tournament.entryFee,
           prize,
           symbol,
           carriesCupBalance: cupSettled && last?.id === match.id,
@@ -1700,12 +1860,12 @@ export class ApiServer {
         entryFee: tournament.entryFee,
         ...(tournament.rail ? { rail: tournament.rail } : {}),
         ...(tournament.entryAtoms !== undefined ? { entryAtoms: tournament.entryAtoms } : {}),
-        ...(tournament.prizeLamports !== undefined ? { prizeLamports: tournament.prizeLamports } : {}),
+        ...(tournament.prizeCardsRaw !== undefined ? { prizeCardsRaw: tournament.prizeCardsRaw } : {}),
         ...(tournament.rail === 'sol_chain'
           ? {
               burnFeeAtoms: TOURNAMENT_BURN_FEE_ATOMS,
-              ...(tournament.prizeLamports !== undefined
-                ? { prizeLamports: tournament.prizeLamports }
+              ...(tournament.prizeCardsRaw !== undefined
+                ? { prizeCardsRaw: tournament.prizeCardsRaw }
                 : {}),
               ...(tournament.paymentEndsAt !== undefined
                 ? { paymentEndsAt: tournament.paymentEndsAt }
@@ -1939,12 +2099,14 @@ export class ApiServer {
           validateRulesetTeam(player.team, ruleset.id);
           if (!player.teamLocked) await this.tournaments.lockRegisteredTeam(tournamentId, player.id);
         } catch {
-          await this.tournaments.withdrawPlayer(tournamentId, player.id, { keepFinalization: true });
           if (tournament.rail === 'sol_chain' && player.burnFeePaid) {
+            // Keep the paid-entry state durable until the on-chain refund is
+            // confirmed. A failed refund must remain retryable.
             await this.refundChainBurnFee(tournamentId, player.id);
           } else {
             await this.releaseTournamentEntry(tournament, player.id);
           }
+          await this.tournaments.withdrawPlayer(tournamentId, player.id, { keepFinalization: true });
         }
       }
       tournament = await this.tournaments.getTournament(tournamentId);
@@ -2049,13 +2211,21 @@ export class ApiServer {
       const registered = advanced.tournament.players
         .filter(player => player.status === 'registered')
         .map(player => player.id);
-      if (advanced.tournament.prizeLamports === undefined) {
-        throw new Error('Chain tournament prize is not configured.');
+      if (advanced.tournament.prizeCardsRaw === undefined) {
+        throw new Error('Chain tournament CARDS prize is not configured.');
+      }
+      if (this.creatorRewardsWorker) {
+        await this.creatorRewardsWorker.checkNow('tournament-start').catch(error => {
+          console.warn('[creator-rewards]', {
+            event: 'tournament_start_check_failed',
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
       await this.chainEconomy.lockTournament({
         tournamentId,
         playerIds: registered,
-        prizeLamports: advanced.tournament.prizeLamports,
+        prizeCardsRaw: advanced.tournament.prizeCardsRaw,
       });
       const started = await this.tournaments.startTournament(tournamentId);
       await this.startReadyMatches(started.id);
@@ -2097,6 +2267,7 @@ export class ApiServer {
       entryFee: tournament.entryFee,
       ...(tournament.rail ? { rail: tournament.rail } : {}),
       ...(tournament.entryAtoms !== undefined ? { entryAtoms: tournament.entryAtoms } : {}),
+      ...(tournament.prizeCardsRaw !== undefined ? { prizeCardsRaw: tournament.prizeCardsRaw } : {}),
       ...(tournament.rail === 'sol_chain'
         ? {
             burnFeeAtoms: TOURNAMENT_BURN_FEE_ATOMS,
@@ -2295,12 +2466,14 @@ export class ApiServer {
     void this.tournaments.subscribeMatch(matchId, match => {
       try {
         this.scheduleMatchBroadcast(match.id);
-        if (match.status === 'completed' || match.status === 'forfeited') {
+        if (match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied') {
           void this.startReadyMatches(match.tournamentId).catch(error => {
             this.broadcastError(match.tournamentId, error);
           });
-          void this.maybeSettleTournament(match.tournamentId).catch(() => undefined);
           void this.broadcastTournament(match.tournamentId).catch(() => undefined);
+        }
+        if (match.status === 'completed' || match.status === 'forfeited') {
+          void this.maybeSettleTournament(match.tournamentId).catch(() => undefined);
         }
       } catch {
         // Match observers must not crash the process.
@@ -2334,9 +2507,26 @@ export class ApiServer {
   private async maybeSettleTournament(tournamentId: TournamentId): Promise<void> {
     const existing = this.settlementJobs.get(tournamentId);
     if (existing) return existing;
-    const job = this.settleTournamentChampion(tournamentId).catch(() => undefined);
+    const job = this.settleTournamentChampion(tournamentId);
     this.settlementJobs.set(tournamentId, job);
+    void job.then(() => {
+      if (this.settlementJobs.get(tournamentId) === job) {
+        this.settlementJobs.delete(tournamentId);
+      }
+    }, () => {
+      if (this.settlementJobs.get(tournamentId) === job) {
+        this.settlementJobs.delete(tournamentId);
+      }
+    });
     return job;
+  }
+
+  private async reconcileCompletedTournamentSettlements(): Promise<void> {
+    if (!this.chainEconomy.pokeConfigured || !this.chainEconomy.cardsConfigured) return;
+    for (const tournament of await this.tournaments.listTournaments()) {
+      if (tournament.rail !== 'sol_chain' || tournament.status !== 'completed' || !tournament.winner) continue;
+      await this.maybeSettleTournament(tournament.id).catch(() => undefined);
+    }
   }
 
   private async settleTournamentChampion(tournamentId: TournamentId): Promise<void> {
@@ -2348,12 +2538,25 @@ export class ApiServer {
       return;
     }
     const tournament = await this.tournaments.getTournament(tournamentId);
-    // Chain cups: champion prize is SOL via pay_prize (treasury reserve), not entry POKE.
+    const bracket = await this.tournaments.getBracket(tournamentId);
+    const finalRound = bracket.reduce((max, match) => Math.max(max, match.round), 0);
+    const hasThird = bracket.some(match => match.round === finalRound && match.bracketPosition === 1);
+    if (hasThird && !result.thirdPlace) {
+      throw new Error('Tournament podium is not ready to pay.');
+    }
+    // Chain cups with a third-place match pay CARDS 50/35/15. A two-player final pays the winner.
     if (this.chainEconomy.pokeConfigured && tournament.rail === 'sol_chain') {
-      const payout = await this.chainEconomy.payTournamentPrize({
-        tournamentId,
-        winnerId: result.winner,
-      });
+      const payout = result.runnerUp && result.thirdPlace
+        ? await this.chainEconomy.payTournamentCardsPodium({
+          tournamentId,
+          firstId: result.winner,
+          secondId: result.runnerUp,
+          thirdId: result.thirdPlace,
+        })
+        : await this.chainEconomy.payTournamentCardsPrize({
+          tournamentId,
+          winnerId: result.winner,
+        });
       this.tournamentPayouts.set(tournamentId, payout);
       for (const connection of [...this.connections.values()]) {
         if (!connection.tournamentIds.has(tournamentId) || !connection.playerId || connection.closed) continue;
@@ -2705,6 +2908,31 @@ export class ApiServer {
   }
 
   private async broadcastArenaSnapshots(reconcile = true): Promise<void> {
+    if (reconcile) this.snapshotReconcile = true;
+    return new Promise(resolve => {
+      this.snapshotWaiters.push(resolve);
+      this.armSnapshotBroadcast();
+    });
+  }
+
+  private armSnapshotBroadcast(): void {
+    if (this.snapshotFlush || this.snapshotCoalesceTimer || this.snapshotWaiters.length === 0) return;
+    this.snapshotCoalesceTimer = setTimeout(() => {
+      this.snapshotCoalesceTimer = null;
+      const waiters = this.snapshotWaiters.splice(0);
+      const reconcile = this.snapshotReconcile;
+      this.snapshotReconcile = false;
+      this.snapshotPassCount += 1;
+      this.snapshotFlush = this.deliverArenaSnapshots(reconcile).finally(() => {
+        for (const resolve of waiters) resolve();
+        this.snapshotFlush = null;
+        this.armSnapshotBroadcast();
+      });
+    }, SNAPSHOT_COALESCE_MS);
+    this.snapshotCoalesceTimer.unref?.();
+  }
+
+  private async deliverArenaSnapshots(reconcile: boolean): Promise<void> {
     await Promise.all([...this.connections.values()].map(async connection => {
       if (!connection.playerId || connection.closed) return;
       try {
@@ -2716,6 +2944,36 @@ export class ApiServer {
         // A stale wallet snapshot must not crash other clients.
       }
     }));
+  }
+
+  private invalidateDisplayPokeBalance(playerId: string): void {
+    this.displayPokeBalances.delete(playerId);
+  }
+
+  /**
+   * UI balance only. Eligibility and payment checks call getPokeBalance directly.
+   * One wallet is fetched once per TTL, including when many snapshots need it.
+   */
+  private displayPokeBalance(playerId: string): Promise<bigint> {
+    const cached = this.displayPokeBalances.get(playerId);
+    if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
+    const inflight = this.displayPokeReads.get(playerId);
+    if (inflight) return inflight;
+    const read = this.displayPokeLimiter.run(async () => {
+      const fresh = this.displayPokeBalances.get(playerId);
+      if (fresh && fresh.expiresAt > Date.now()) return fresh.value;
+      const { PublicKey } = await import('@solana/web3.js');
+      const value = await this.chainEconomy.client!.getPokeBalance(new PublicKey(playerId));
+      this.displayPokeBalances.set(playerId, {
+        value,
+        expiresAt: Date.now() + DISPLAY_POKE_TTL_MS,
+      });
+      return value;
+    }).finally(() => {
+      if (this.displayPokeReads.get(playerId) === read) this.displayPokeReads.delete(playerId);
+    });
+    this.displayPokeReads.set(playerId, read);
+    return read;
   }
 
   private broadcastError(tournamentId: TournamentId, error: unknown): void {
@@ -3006,6 +3264,10 @@ export class ApiServer {
   private handleHttp(request: IncomingMessage, response: ServerResponse): void {
     const url = new URL(request.url ?? '/', 'http://localhost');
     const pathname = url.pathname;
+    if (pathname === '/admin/creator-rewards/operator-claim') {
+      void this.handleCreatorRewardsOperatorClaim(request, response);
+      return;
+    }
     if (pathname === '/health') {
       response.writeHead(200, {
         'content-type': 'application/json',
@@ -3049,6 +3311,55 @@ export class ApiServer {
     }
     response.writeHead(404);
     response.end('Not found');
+  }
+
+  private async handleCreatorRewardsOperatorClaim(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const remoteAddress = request.socket.remoteAddress;
+    const loopback = remoteAddress === '127.0.0.1'
+      || remoteAddress === '::1'
+      || remoteAddress === '::ffff:127.0.0.1';
+    const bearer = headerValue(request.headers.authorization);
+    const token = bearer?.startsWith('Bearer ') ? bearer.slice(7) : '';
+    const worker = this.creatorRewardsWorker;
+    if (!loopback) {
+      response.writeHead(404);
+      response.end('Not found');
+      return;
+    }
+    if (request.method !== 'POST') {
+      response.writeHead(405, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: 'Use POST.' }));
+      return;
+    }
+    if (!worker) {
+      response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ error: 'Creator rewards are unavailable.' }));
+      return;
+    }
+    try {
+      const result = await worker.claimOperatorShare(token);
+      response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({
+        ok: true,
+        amountRaw: result.amountRaw,
+        ...(result.signature ? { signature: result.signature } : {}),
+      }));
+    } catch (error) {
+      const status = error instanceof CreatorRewardFundingError
+        ? error.code === 'unknown' ? 503 : 400
+        : 500;
+      response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof CreatorRewardFundingError && error.signature
+          ? { signature: error.signature }
+          : {}),
+      }));
+    }
   }
 
   private playTokenDebugAllowed(): boolean {
@@ -3229,6 +3540,23 @@ function extractRequestId(raw: string): string | undefined {
     // Parsing errors are returned as uncorrelated protocol errors.
   }
   return undefined;
+}
+
+function readChainPodium(matches: readonly {
+  round: number;
+  bracketPosition: number;
+  player1?: string;
+  player2?: string;
+  winner?: string;
+}[]): { firstId: string; secondId: string; thirdId: string } | undefined {
+  if (matches.length === 0) return undefined;
+  const finalRound = Math.max(...matches.map(match => match.round));
+  const finalMatch = matches.find(match => match.round === finalRound && match.bracketPosition === 0);
+  const third = matches.find(match => match.round === finalRound && match.bracketPosition === 1);
+  if (!third?.winner || !finalMatch?.winner || !finalMatch.player1 || !finalMatch.player2) return undefined;
+  const secondId = finalMatch.winner === finalMatch.player1 ? finalMatch.player2 : finalMatch.player1;
+  if (!secondId || secondId === finalMatch.winner) return undefined;
+  return { firstId: finalMatch.winner, secondId, thirdId: third.winner };
 }
 
 export async function createApiServer(options: ApiServerOptions = {}): Promise<ApiServer> {

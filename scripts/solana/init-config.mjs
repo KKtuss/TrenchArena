@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Call arena-escrow initialize_config against a local/devnet cluster.
+ * Call arena-escrow initialize_config against a local or devnet cluster.
  * Reads addresses from env (typically scripts/solana/.local.env).
+ * Refuses mainnet. Production initialization is init-pinocchio-mainnet.mjs.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -48,6 +49,16 @@ const {
 } = loadClient();
 
 const rpc = process.env.POKEARENA_SOLANA_RPC || 'http://127.0.0.1:8899';
+const cluster = (process.env.POKEARENA_SOLANA_CLUSTER || 'localnet').trim().toLowerCase();
+if (
+  cluster === 'mainnet'
+  || cluster === 'mainnet-beta'
+  || rpc.toLowerCase().includes('mainnet')
+) {
+  throw new Error(
+    'init-config.mjs is for local and devnet testing. Use node scripts/solana/init-pinocchio-mainnet.mjs for mainnet.',
+  );
+}
 const keyDir = process.env.POKEARENA_SOLANA_KEYS || join(root, 'scripts/solana/keys');
 const authority = loadKeypair(join(keyDir, 'authority.json'));
 const keeper = loadKeypair(join(keyDir, 'keeper.json'));
@@ -60,6 +71,12 @@ const buybackBps = Number(process.env.POKEARENA_BUYBACK_BPS || 2500);
 const minBuyback = Number(process.env.POKEARENA_MIN_BUYBACK_LAMPORTS || 50_000_000);
 
 const connection = new Connection(rpc, 'confirmed');
+const genesis = await connection.getGenesisHash();
+if (genesis === '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d') {
+  throw new Error(
+    'init-config.mjs refuses mainnet. Use node scripts/solana/init-pinocchio-mainnet.mjs.',
+  );
+}
 const [configAddress] = configPda(programId);
 console.log('fee_vault', feeVault.toBase58());
 console.log('treasury_vault', treasuryVault.toBase58());

@@ -1,3 +1,5 @@
+import { tournamentRotationEvent } from '@pokearena/tournament/rotation';
+
 export type FormatAccent = 'cup' | 'casual' | 'ou';
 export type FormatTeamMode = 'custom' | 'preset-6-choose-3';
 
@@ -107,13 +109,7 @@ export function formatLabel(id?: string): string {
 
 /** Casual Gen X, then that generation's cup, then Gen 9 OU. Repeats through Gen 9. */
 export function rotationEvent(slotIndex: number): FormatPresentation {
-  const length = 27;
-  const pos = ((slotIndex % length) + length) % length;
-  const generation = Math.floor(pos / 3) + 1;
-  const phase = pos % 3;
-  if (phase === 0) return casual(generation);
-  if (phase === 1) return cup(generation);
-  return GEN9_OU;
+  return formatById(tournamentRotationEvent(slotIndex).id) ?? GEN9_OU;
 }
 
 /** Custom formats a player can prepare ahead of time. Casual is not in this list. */

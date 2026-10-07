@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { splitTournamentPrize } from '../lib/tournament-prize';
 import {
+  displayHubStatus,
   bracketFieldSize,
   buildMockTournament,
   currentRound,
@@ -35,10 +37,16 @@ test('hub status maps tournament lifecycle to LIVE / UPCOMING / COMPLETED', () =
 });
 
 test('empty bracket is a full single-elimination tree of waiting matches', () => {
-  const matches = emptyBracket(16, 'cup');
-  assert.equal(matches.length, 15);
-  assert.equal(matches.filter(match => match.round === 1).length, 8);
-  assert.ok(matches.every(match => match.placeholder && match.status === 'pending'));
+  const sixteen = emptyBracket(16, 'cup');
+  assert.equal(sixteen.length, 16);
+  assert.equal(sixteen.filter(match => match.role !== 'third-place').length, 15);
+  assert.equal(sixteen.filter(match => match.role === 'third-place').length, 1);
+  assert.equal(sixteen.filter(match => match.round === 1).length, 8);
+  assert.ok(sixteen.every(match => match.placeholder && match.status === 'pending'));
+  const thirtyTwo = emptyBracket(32, 'cup');
+  assert.equal(thirtyTwo.length, 32);
+  assert.equal(thirtyTwo.filter(match => match.role !== 'third-place').length, 31);
+  assert.equal(thirtyTwo.filter(match => match.role === 'third-place').length, 1);
 });
 
 test('mock live bracket advances winners and highlights the viewer path', () => {
@@ -92,6 +100,37 @@ test('a started 2-player bracket is a final even when the cup cap is 32', () => 
   const full = buildMockTournament({ maxPlayers: 32, currentRound: 2, status: 'in-progress', viewerId: 'you' });
   assert.equal(bracketFieldSize(full.bracket ?? [], 32), 32);
   assert.equal(currentRound(full.bracket ?? [], full.status), 2);
+});
+
+test('prize shares are 50/35/15 and a finished final still waits on third place', () => {
+  const shares = splitTournamentPrize(100);
+  assert.deepEqual(shares, { first: 50, second: 35, third: 15 });
+  assert.equal(splitTournamentPrize(99).first + splitTournamentPrize(99).second + splitTournamentPrize(99).third, 99);
+  const waiting = displayHubStatus({
+    status: 'in-progress',
+    economics: { prizePool: 100 },
+  }, [
+    { id: 'final', round: 2, bracketPosition: 0, status: 'completed', winner: 'a', player1: 'a', player2: 'b' },
+    { id: 'third', round: 2, bracketPosition: 1, role: 'third-place', status: 'ready', player1: 'c', player2: 'd' },
+  ]);
+  assert.equal(waiting, 'LIVE');
+  const tied = displayHubStatus({
+    status: 'in-progress',
+    economics: { prizePool: 100 },
+  }, [
+    { id: 'final', round: 2, bracketPosition: 0, status: 'completed', winner: 'a', player1: 'a', player2: 'b' },
+    { id: 'third', round: 2, bracketPosition: 1, role: 'third-place', status: 'tied', player1: 'c', player2: 'd' },
+  ]);
+  assert.equal(tied, 'LIVE');
+  const settled = displayHubStatus({
+    status: 'completed',
+    payout: { amount: 50 },
+    economics: { prizePool: 100 },
+  }, [
+    { id: 'final', round: 2, bracketPosition: 0, status: 'completed', winner: 'a' },
+    { id: 'third', round: 2, bracketPosition: 1, role: 'third-place', status: 'completed', winner: 'c' },
+  ]);
+  assert.equal(settled, 'COMPLETED');
 });
 
 test('timeout clock and champion mock stay aligned with cup rules', () => {

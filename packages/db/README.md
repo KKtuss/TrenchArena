@@ -99,6 +99,6 @@ These application operations must be single SQL transactions:
 - tournament create (row including `host_id` and `entry_fee`)
 - legacy tournament join (debit + entry hold + `tournament_players`)
 - chain tournament join (provisional `tournament_players` row only; no POKE transfer)
-- chain burn-fee payment/finalization (confirmed 10,000 POKE deposits, waitlist promotion, then keeper burns)
+- chain burn-fee payment/finalization (confirmed 10,000 POKE deposits, 10,000,000,000 raw atoms each, waitlist promotion, then keeper burns)
 - match completion + bracket advance (or tournament completed)
 - tournament champion settle (settlement + consume remaining entry holds)

@@ -7,6 +7,8 @@ import {
   fullSpriteId,
   itemIconOffset,
   pokemonIconOffset,
+  showdownSpriteSrc,
+  typeIconSrc,
   speciesId,
 } from '../lib/showdown-visuals';
 
@@ -40,6 +42,15 @@ test('maps Showdown gen5 sprite ids and icon-sheet positions', () => {
   assert.equal(fullSpriteId('Charizard-Mega-X'), 'charizard-megax');
   assert.equal(fullSpriteId('Gyarados'), 'gyarados');
   assert.equal(fullSpriteId('Pikachu'), 'pikachu');
+  assert.equal(
+    showdownSpriteSrc('Venusaur'),
+    `${SHOWDOWN_SPRITE_CDN}/sprites/gen5/venusaur.png`,
+  );
+  assert.equal(
+    showdownSpriteSrc('Great Tusk'),
+    `${SHOWDOWN_SPRITE_CDN}/sprites/gen5/greattusk.png`,
+  );
+  assert.equal(showdownSpriteSrc(''), null);
   assert.deepEqual(itemIconOffset('Leftovers'), { left: 48, top: 360 });
   assert.deepEqual(itemIconOffset('Heavy-Duty Boots'), { left: 264, top: 1056 });
   assert.deepEqual(itemIconOffset('Choice Specs'), { left: 144, top: 96 });
@@ -47,6 +58,10 @@ test('maps Showdown gen5 sprite ids and icon-sheet positions', () => {
   assert.equal(itemIconOffset('Not An Item'), null);
   assert.deepEqual(pokemonIconOffset('Great Tusk'), { left: 0, top: 2460 });
   assert.deepEqual(pokemonIconOffset(''), { left: 0, top: 0 });
+  assert.equal(
+    typeIconSrc(' electric '),
+    `${SHOWDOWN_SPRITE_CDN}/sprites/types/Electric.png`,
+  );
 });
 
 test('points the Showdown dex at the sprite CDN', () => {

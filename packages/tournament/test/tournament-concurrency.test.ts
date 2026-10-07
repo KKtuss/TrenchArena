@@ -89,7 +89,7 @@ test('concurrent start produces one bracket', async () => {
   assert.equal(first.status, 'in-progress');
   assert.equal(second.status, 'in-progress');
   const bracket = await service.getBracket(tournament.id);
-  assert.equal(bracket.length, 3);
+  assert.equal(bracket.length, 4);
   assert.equal(bracket.filter(match => match.round === 1 && match.status === 'ready').length, 2);
 });
 
@@ -272,7 +272,7 @@ test('restarting the in-memory store reconstructs host, fee, roster, and bracket
   assert.equal(loaded.players.length, 4);
   assert.equal(loaded.players[0]?.team, TEAM_ONE);
   const bracket = await restarted.getBracket(tournament.id);
-  assert.equal(bracket.length, 3);
+  assert.equal(bracket.length, 4);
   const stored = bracket.find(item => item.id === match.id);
   assert.equal(stored?.status, 'completed');
   assert.equal(stored?.winner, match.player1);

@@ -1,3 +1,4 @@
+import { nextTournamentAfterMatchCommit } from './tournament-completion';
 import type {
   DurableTournament,
   DurableTournamentMatch,
@@ -192,9 +193,30 @@ export class InMemoryTournamentStore implements TournamentStore {
         throw new Error('A completed match cannot receive a different result.');
       }
       this.matches.set(input.match.id, structuredClone(input.match));
-      if (input.nextMatch) this.matches.set(input.nextMatch.id, structuredClone(input.nextMatch));
-      if (input.tournament) this.tournaments.set(input.tournament.id, structuredClone(input.tournament));
-      return structuredClone(input.match);
+      if (input.nextMatch) this.seatMatch(input.nextMatch);
+      if (input.placementMatch) this.seatMatch(input.placementMatch);
+      const tournament = this.tournaments.get(input.match.tournamentId);
+      if (tournament) {
+        const matches = [...this.matches.values()].filter(match => match.tournamentId === tournament.id);
+        const next = nextTournamentAfterMatchCommit(tournament, matches, Date.now());
+        if (next) this.tournaments.set(tournament.id, next);
+      }
+      return structuredClone(this.matches.get(input.match.id)!);
+    });
+  }
+
+  private seatMatch(incoming: DurableTournamentMatch): void {
+    const locked = this.matches.get(incoming.id);
+    if (!locked) throw new Error(`Unknown tournament match: ${incoming.id}`);
+    if (isTerminal(locked.status)) return;
+    const player1 = incoming.player1 ?? locked.player1;
+    const player2 = incoming.player2 ?? locked.player2;
+    this.matches.set(incoming.id, {
+      ...locked,
+      ...(player1 ? { player1 } : {}),
+      ...(player2 ? { player2 } : {}),
+      ...(locked.status === 'pending' && player1 && player2 ? { status: 'ready' as const } : {}),
+      updatedAt: incoming.updatedAt,
     });
   }
 

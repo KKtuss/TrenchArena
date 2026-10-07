@@ -52,13 +52,15 @@ window. Each registered player separately sends:
 {"type":"tournament.payBurnFee","requestId":"req-5","tournamentId":"..."}
 ```
 
-The returned transaction deposits exactly 10,000 POKE into the escrow. Unpaid
+The returned transaction deposits exactly 10,000 POKE, encoded as
+10,000,000,000 raw atoms for the 6-decimal mint. Unpaid
 players are removed at the deadline and eligible waitlisted players are
 promoted in registration order, each with a fresh two-minute window. Only
 after a complete, fully paid final roster exists does the keeper reserve the
-SOL prize and burn the 32 POKE entries. An unexpected partial on-chain burn
-fails closed and requires operator reconciliation; the server does not
-compensate partial burns from the treasury.
+SOL prize and burn the 32 POKE entries. If a burn fails after earlier
+players were burned, rerunning finalization continues with the reserved
+entries and does not burn a player again. Successfully burned players are
+not refunded.
 
 Server messages include:
 

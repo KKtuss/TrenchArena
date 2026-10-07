@@ -10,7 +10,7 @@ export interface FightHistoryEntry {
   opponentId: string;
   result: FightResultLabel;
   completedAt: number;
-  symbol: 'POKE' | 'SOL';
+  symbol: 'POKE' | 'SOL' | 'CARDS';
   stake: number;
   payout: number;
   fee: number;
@@ -36,7 +36,7 @@ export interface TournamentFightInput {
   completedAt: number;
   entryFee: number;
   prize: number;
-  symbol: 'POKE' | 'SOL';
+  symbol: 'POKE' | 'SOL' | 'CARDS';
   /** True only on the player's last match of a finished cup, so the prize is counted once. */
   carriesCupBalance: boolean;
   playerWonCup: boolean;

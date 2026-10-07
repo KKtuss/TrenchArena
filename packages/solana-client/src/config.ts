@@ -10,6 +10,7 @@ export interface ArenaChainConfig {
   rpcUrl: string;
   programId: PublicKey;
   pokeMint: PublicKey;
+  cardsMint: PublicKey;
   feeVault: PublicKey;
   treasuryVault: PublicKey;
   operatorVault: PublicKey;
@@ -84,6 +85,7 @@ export function loadChainConfig(env: NodeJS.ProcessEnv = process.env): ArenaChai
       rpcUrl,
       programId: zero,
       pokeMint: zero,
+      cardsMint: zero,
       feeVault: zero,
       treasuryVault: zero,
       operatorVault: zero,
@@ -100,6 +102,7 @@ export function loadChainConfig(env: NodeJS.ProcessEnv = process.env): ArenaChai
   const required = productionLike || enabled;
   const programId = requirePubkey(env, 'POKEARENA_PROGRAM_ID', required);
   const pokeMint = requirePubkey(env, 'POKEARENA_POKE_MINT', false) ?? PublicKey.default;
+  const cardsMint = requirePubkey(env, 'POKEARENA_CARDS_MINT', false) ?? PublicKey.default;
   // Vaults are program PDAs; env overrides are optional when program id is known.
   let feeVault = requirePubkey(env, 'POKEARENA_FEE_VAULT', false);
   let treasuryVault = requirePubkey(env, 'POKEARENA_TREASURY_VAULT', false);
@@ -130,6 +133,7 @@ export function loadChainConfig(env: NodeJS.ProcessEnv = process.env): ArenaChai
     rpcUrl,
     programId,
     pokeMint,
+    cardsMint,
     feeVault,
     treasuryVault,
     operatorVault,

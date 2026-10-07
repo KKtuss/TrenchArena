@@ -3,6 +3,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import {
   createSplConnection,
   readSplBalance,
+  TOKEN_2022_PROGRAM_ID,
   type SplBalanceConnection,
 } from './play-token-balance';
 import {
@@ -29,7 +30,9 @@ import {
   type TokenUsdPrice,
 } from './play-token-oracle';
 
-export const DEFAULT_PLAY_TOKEN_MIN_USD = '20';
+import { POKEARENA_PASSPORT_MIN_USD } from '@pokearena/solana-client';
+
+export const DEFAULT_PLAY_TOKEN_MIN_USD = POKEARENA_PASSPORT_MIN_USD;
 export const DEFAULT_PLAY_TOKEN_RPC = 'https://api.mainnet-beta.solana.com';
 
 export type PlayTokenStatus =
@@ -153,7 +156,12 @@ export class PlayTokenEligibilityService {
     const price = await this.oracle.getUsdPrice(mint);
     let balance: Awaited<ReturnType<typeof readSplBalance>>;
     try {
-      balance = await readSplBalance(this.balances, new PublicKey(wallet), new PublicKey(mint));
+      balance = await readSplBalance(
+        this.balances,
+        new PublicKey(wallet),
+        new PublicKey(mint),
+        TOKEN_2022_PROGRAM_ID,
+      );
     } catch {
       return result({
         status: 'rpc_error',

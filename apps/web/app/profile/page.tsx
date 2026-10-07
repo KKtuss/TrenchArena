@@ -149,7 +149,7 @@ export default function ProfilePage() {
               <img src={trainerSpriteSrc(trainerSpriteId)} alt="" width={128} height={128} />
               <div className="pa-profile-foot">
                 <div>
-                  <small>{previewSession || localPreview ? 'Browser preview' : 'Trainer'}</small>
+                  {previewSession || localPreview ? <small>Browser preview</small> : null}
                   <strong>{localPreview ? 'Preview 1' : trainerUsername ?? playerLabel}</strong>
                   <em>
                     {localPreview

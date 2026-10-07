@@ -41,8 +41,15 @@ export type RegisteredPlayerStatus = 'registered' | 'withdrawn' | 'waitlisted';
 /** Shared window after a custom field fills, before the bracket is built. */
 export const TEAM_FINALIZATION_MS = 5 * 60 * 1000;
 export const BURN_PAYMENT_WINDOW_MS = 2 * 60 * 1000;
-export const CHAIN_TOURNAMENT_MAX_PLAYERS = 32;
-export const TOURNAMENT_BURN_FEE_ATOMS = 10_000;
+export { TOURNAMENT_FIELD_SIZE as CHAIN_TOURNAMENT_MAX_PLAYERS } from '@pokearena/solana-client';
+export {
+  TOURNAMENT_BURN_FEE_ATOMS,
+  TOURNAMENT_BURN_FEE_POKE,
+  TOURNAMENT_FIELD_BURN_FEE_ATOMS,
+  TOURNAMENT_FIELD_BURN_FEE_POKE,
+  POKE_MINT_DECIMALS,
+  tournamentBurnFeeRequirement,
+} from '@pokearena/solana-client';
 
 export interface TournamentPlayer {
   id: TournamentPlayerId;
@@ -73,6 +80,12 @@ export interface TournamentMatch {
   tournamentId: TournamentId;
   round: number;
   bracketPosition: number;
+  /**
+   * Placement matches share the championship round. `bracketPosition` 0 is the
+   * final; `bracketPosition` 1 is the third-place match. The role is also
+   * recovered from that position after a database reload.
+   */
+  role?: 'elimination' | 'third-place';
   player1?: TournamentPlayerId;
   player2?: TournamentPlayerId;
   status: TournamentMatchStatus;
@@ -101,6 +114,9 @@ export interface Tournament {
   entryAtoms?: number;
   entryQuoteId?: string;
   prizeLamports?: number;
+  prizeCardsRaw?: number;
+  /** Stable idempotency key for an automatically scheduled tournament. */
+  scheduledKey?: string;
   players: TournamentPlayer[];
   matchIds: TournamentMatchId[];
   winner?: TournamentPlayerId;
@@ -130,6 +146,8 @@ export interface CreateTournamentInput {
   entryAtoms?: number;
   entryQuoteId?: string;
   prizeLamports?: number;
+  prizeCardsRaw?: number;
+  scheduledKey?: string;
 }
 
 export interface RegisterPlayerInput {
@@ -158,7 +176,13 @@ export interface TournamentMatchEvents {
 
 export interface TournamentResult {
   tournamentId: TournamentId;
+  /** Championship winner. */
   winner: TournamentPlayerId;
+  /** Championship loser. */
+  runnerUp?: TournamentPlayerId;
+  /** Third-place match winner. */
+  thirdPlace?: TournamentPlayerId;
   finalMatchId: TournamentMatchId;
+  thirdPlaceMatchId?: TournamentMatchId;
   completedAt: number;
 }

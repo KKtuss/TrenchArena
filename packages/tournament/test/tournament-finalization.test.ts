@@ -5,13 +5,14 @@ import {
   BURN_PAYMENT_WINDOW_MS,
   createTournamentPlayerId,
   TEAM_FINALIZATION_MS,
+  TOURNAMENT_BURN_FEE_ATOMS,
   TournamentService,
 } from '../src';
 import { TEAM_ONE, TEAM_TWO } from './fixtures';
 
 const PLAYERS = ['player-1', 'player-2', 'player-3', 'player-4'].map(createTournamentPlayerId);
 
-test('chain tournaments require the fixed 32-player field and burn fee', async () => {
+test('chain tournaments allow a 16-player or 32-player field and the fixed burn fee', async () => {
   const service = new TournamentService();
   await assert.rejects(
     () => service.createTournament({
@@ -21,7 +22,35 @@ test('chain tournaments require the fixed 32-player field and burn fee', async (
       rail: 'sol_chain',
       entryAtoms: 10_000,
     }),
-    /fixed 32-player field/i,
+    /16-player or 32-player field/i,
+  );
+  await assert.rejects(
+    () => service.createTournament({
+      title: 'Invalid Eight Cup',
+      format: 'gen9ou',
+      maxPlayers: 8,
+      rail: 'sol_chain',
+      entryAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+    }),
+    /16-player or 32-player field/i,
+  );
+  const sixteen = await service.createTournament({
+    title: 'Sixteen Chain Cup',
+    format: 'gen9ou',
+    maxPlayers: 16,
+    rail: 'sol_chain',
+    entryAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+  });
+  assert.equal(sixteen.maxPlayers, 16);
+  await assert.rejects(
+    () => service.createTournament({
+      title: 'Display Units Cup',
+      format: 'gen9ou',
+      maxPlayers: 32,
+      rail: 'sol_chain',
+      entryAtoms: 10_000,
+    }),
+    /10,000,000,000 raw atoms/i,
   );
   await assert.rejects(
     () => service.createTournament({
@@ -31,8 +60,17 @@ test('chain tournaments require the fixed 32-player field and burn fee', async (
       rail: 'sol_chain',
       entryAtoms: 9_999,
     }),
-    /exactly 10000 atoms/i,
+    /10,000,000,000 raw atoms/i,
   );
+  const created = await service.createTournament({
+    title: 'Valid Fee Cup',
+    format: 'gen9ou',
+    maxPlayers: 32,
+    rail: 'sol_chain',
+    entryAtoms: TOURNAMENT_BURN_FEE_ATOMS,
+  });
+  assert.equal(created.entryAtoms, 10_000_000_000);
+  assert.equal(created.entryAtoms, TOURNAMENT_BURN_FEE_ATOMS);
 });
 
 test('a full custom field opens one shared 5-minute finalization and then starts', async () => {
@@ -125,7 +163,7 @@ test('chain payment finalization replaces unpaid players sequentially before the
     ruleset: 'gen9cup',
     maxPlayers: 32,
     rail: 'sol_chain',
-    entryAtoms: 10_000,
+    entryAtoms: TOURNAMENT_BURN_FEE_ATOMS,
     prizeLamports: 100,
   });
   await service.openRegistration(tournament.id);

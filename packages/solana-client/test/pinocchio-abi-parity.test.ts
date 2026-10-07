@@ -41,10 +41,11 @@ import {
   payPrizeIx,
   releasePrizeIx,
   buybackAndBurnPokeIx,
+  setPokeMintIx,
 } from '../src/instructions';
 import { TOKEN_PROGRAM_ID } from '../src/token';
 
-const PROGRAM_ID = new PublicKey('26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke');
+const PROGRAM_ID = new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W');
 
 const ACCOUNT_DISCS = {
   Config: Buffer.from([0x9b, 0x0c, 0xaa, 0xe0, 0x1e, 0xfa, 0xcc, 0x82]),
@@ -78,6 +79,7 @@ test('instruction discriminators match Anchor global:<name> hashes', () => {
     ['payPrize', 'pay_prize'],
     ['releasePrize', 'release_prize'],
     ['buybackAndBurnPoke', 'buyback_and_burn_poke'],
+    ['setPokeMint', 'set_poke_mint'],
   ];
   for (const [key, name] of names) {
     assert.deepEqual(IX[key], anchorDiscriminator(name));
@@ -354,6 +356,9 @@ test('custom error codes use Anchor 6000 offset ordering', () => {
     'BuybackTooSmall',
     'InsufficientFunds',
     'SlippageExceeded',
+    'PokeMintNotConfigured',
+    'PokeMintAlreadySet',
+    'InvalidMint',
   ];
   errors.forEach((name, index) => {
     assert.equal(6000 + index >= 6000, true, name);

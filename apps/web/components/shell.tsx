@@ -10,18 +10,36 @@ import { AnimatedAmount } from '@/components/motion';
 import { TrainerName } from '@/components/profile-trainer';
 import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatSolLamports } from '@/lib/api-client';
+import { formatPoke, formatPokeValue, formatSolLamportsValue } from '@/lib/api-client';
+import { isDemoAuthEnabled } from '@/lib/demo-auth';
 
 export function ArenaShell({ children }: { children: ReactNode }) {
-  const { connectionState, snapshot, error, clearError, connected, chainEconomyEnabled } = useArena();
+  const {
+    connectionState,
+    playerId,
+    snapshot,
+    error,
+    clearError,
+    connected,
+    chainEconomyEnabled,
+  } = useArena();
   const pathname = usePathname() ?? '';
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [dismissedInvitationId, setDismissedInvitationId] = useState<string | null>(null);
+  const invitation = snapshot?.openCasualRooms.find(room => (
+    room.roomType === 'private'
+    && room.status === 'open'
+    && room.invitedPlayerId === playerId
+  ));
   const navItems = [
     { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
     { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
     { href: '/teams/builder', label: 'Team Builder', active: pathname.startsWith('/teams/builder') },
     { href: '/tournaments', label: 'Tournaments', active: pathname.startsWith('/tournament') },
     { href: '/treasury', label: 'Treasury & Economy', active: pathname.startsWith('/treasury') },
+    ...(isDemoAuthEnabled()
+      ? [{ href: '/profile', label: 'Profile', active: pathname.startsWith('/profile') }]
+      : []),
   ];
   const isHome = pathname === '/';
   return (
@@ -66,30 +84,50 @@ export function ArenaShell({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <div className="shell-actions">
-            <span className="wallet-chip">
-              <small>{chainEconomyEnabled ? 'Passport' : 'Poke'}</small>
-              <strong>
-                {chainEconomyEnabled
-                  ? (snapshot?.passport
-                    ? (snapshot.passport.eligible
-                      ? `Eligible · $${(snapshot.passport.usdCents / 100).toFixed(0)}`
-                      : `Need $20 · $${(snapshot.passport.usdCents / 100).toFixed(0)}`)
-                    : (connected ? '—' : 'Connect'))
-                  : snapshot
+            {chainEconomyEnabled ? (
+              <span className="wallet-chip passport-chip">
+                <span className="passport-chip-row passport-chip-status">
+                  <small>Passport</small>
+                  <strong className={
+                    snapshot?.passport
+                      ? (snapshot.passport.eligible ? 'is-eligible' : 'is-ineligible')
+                      : 'is-pending'
+                  }>
+                    {snapshot?.passport
+                      ? (snapshot.passport.eligible ? 'Eligible' : 'Need $20')
+                      : (connected ? '—' : 'Connect')}
+                  </strong>
+                </span>
+                <span className="passport-chip-row passport-chip-balances">
+                  <span className="passport-chip-balance">
+                    <small>POKE</small>
+                    <strong>{snapshot ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPokeValue} /> : '—'}</strong>
+                  </span>
+                  <span className="passport-chip-balance">
+                    <small>SOL</small>
+                    <strong>
+                      {snapshot?.solBalances
+                        ? <AnimatedAmount value={Number(snapshot.solBalances.freeLamports)} format={formatSolLamportsValue} />
+                        : '—'}
+                    </strong>
+                  </span>
+                </span>
+              </span>
+            ) : (
+              <span className="wallet-chip">
+                <small>Poke</small>
+                <strong>
+                  {snapshot
                     ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPoke} />
                     : '—'}
-              </strong>
-              {chainEconomyEnabled && snapshot?.solBalances ? (
-                <small style={{ marginLeft: 8 }}>
-                  <AnimatedAmount value={Number(snapshot.solBalances.freeLamports)} format={formatSolLamports} />
-                </small>
-              ) : null}
-              <span
-                className={`connection-dot ${connected ? 'online' : ''}`}
-                title={connected ? connectionState : 'offline'}
-                aria-label={connected ? `Connection ${connectionState}` : 'offline'}
-              />
-            </span>
+                </strong>
+                <span
+                  className={`connection-dot ${connected ? 'online' : ''}`}
+                  title={connected ? connectionState : 'offline'}
+                  aria-label={connected ? `Connection ${connectionState}` : 'offline'}
+                />
+              </span>
+            )}
             <TrainerProfileControl />
           </div>
         </div>
@@ -100,6 +138,28 @@ export function ArenaShell({ children }: { children: ReactNode }) {
           {children}
         </div>
       </main>
+      {invitation && invitation.id !== dismissedInvitationId ? (
+        <div className="pa-toast-stack" aria-live="polite">
+          <div className="pa-toast pa-toast-invitation" role="status">
+            <span>
+              <strong>Fight invitation</strong>
+              <br />
+              You have been challenged to a private fight.
+            </span>
+            <Link className="pa-btn pa-btn-primary pa-btn-sm" href={`/casual/${invitation.id}`}>
+              Review
+            </Link>
+            <button
+              type="button"
+              className="pa-toast-dismiss"
+              onClick={() => setDismissedInvitationId(invitation.id)}
+              aria-label="Dismiss fight invitation"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
       <ErrorToast error={error} onDismiss={clearError} />
     </>
   );

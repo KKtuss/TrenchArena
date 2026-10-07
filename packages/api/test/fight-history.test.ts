@@ -87,18 +87,19 @@ test('mock rooms stay on POKE and a SOL room shares one lamport stake', async ()
 
   const lamports = 50_000_000;
   const sol = await casual.createRoom({
-    creatorId: PLAYERS[0],
+    creatorId: 'sol-history-player-1',
     roomType: 'private',
     battleSize: '1v1',
     collateral: lamports,
-    invitedPlayerId: PLAYERS[1],
+    invitedPlayerId: 'sol-history-player-2',
     rail: 'sol_chain',
   });
   assert.equal(sol.rail, 'sol_chain');
   assert.equal(sol.status, 'pending_deposit');
-  await casual.acceptRoom(sol.id, PLAYERS[1]);
+  casual.markSolDeposit(sol.id, 'creator');
+  await casual.acceptRoom(sol.id, 'sol-history-player-2');
   const joined = casual.getRoom(sol.id);
-  assert.equal(joined.opponentId, PLAYERS[1]);
+  assert.equal(joined.opponentId, 'sol-history-player-2');
   assert.equal(joined.collateral, lamports);
   const fee = Math.floor((lamports * 2 * 200) / 10_000);
   assert.equal(joined.economics.protocolFee, fee);

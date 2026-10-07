@@ -81,7 +81,7 @@ import {
 } from '../src/instructions';
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '../src/token';
 
-const PROGRAM_ID = new PublicKey('26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke');
+const PROGRAM_ID = new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W');
 // dist/test -> repo root is ../../../.. ; source test/ -> ../../..
 const ROOT = existsSync(join(__dirname, '../../../../target/deploy/arena_escrow_pinocchio.so'))
   ? join(__dirname, '../../../..')

@@ -325,7 +325,7 @@ function Championship({
   return (
     <div className="pa-stage-late">
       <header className="pa-stage-now">
-        <h3>{winner ? 'Champion' : 'Final'}</h3>
+        <h3>{winner && phase === 'done' ? 'Champion' : 'Final'}</h3>
       </header>
       {semiRound >= 1 ? (
         <div className="pa-stage-semis is-results">
@@ -335,6 +335,21 @@ function Championship({
           })}
         </div>
       ) : null}
+      {(() => {
+        const placement = matches.find(match => (
+          match.role === 'third-place' || (match.round === lastRound && match.bracketPosition === 1)
+        ));
+        if (!placement || placement.id.startsWith('gap-')) return null;
+        return (
+          <PathRow
+            match={placement}
+            label="3rd"
+            viewerId={viewerId}
+            selected={selectedId === placement.id}
+            onSelect={onSelect}
+          />
+        );
+      })()}
       <HeroFinal
         match={finalMatch}
         winner={winner}

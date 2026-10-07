@@ -1,5 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 
+import { sha256Bytes } from './sha256';
+
 export function configPda(programId: PublicKey): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([Buffer.from('config')], programId);
 }
@@ -60,8 +62,44 @@ export function prizeVaultPda(programId: PublicKey, tournamentId: Uint8Array): [
   );
 }
 
+export function cardsPrizeReservePda(
+  programId: PublicKey,
+  tournamentId: Uint8Array,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('cards_prize_reserve'), Buffer.from(tournamentId)],
+    programId,
+  );
+}
+
+export function cardsPrizeVaultPda(
+  programId: PublicKey,
+  tournamentId: Uint8Array,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('cards_prize_vault'), Buffer.from(tournamentId)],
+    programId,
+  );
+}
+
 export function replayPda(programId: PublicKey, key: Uint8Array): [PublicKey, number] {
   return PublicKey.findProgramAddressSync([Buffer.from('replay'), Buffer.from(key)], programId);
+}
+
+export function cardsTreasuryVaultPda(programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from('cards_treasury_vault')], programId);
+}
+
+export function cardsOperatorVaultPda(programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from('cards_operator_vault')], programId);
+}
+
+export function cardsTreasuryAuthorityPda(programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from('cards_treasury')], programId);
+}
+
+export function cardsOperatorAuthorityPda(programId: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from('cards_operator')], programId);
 }
 
 export function treasuryDepositPda(programId: PublicKey, claimKey: Uint8Array): [PublicKey, number] {
@@ -81,8 +119,5 @@ export function uuidToBytes(id: string): Buffer {
 }
 
 export function sha256Key(parts: string[]): Buffer {
-  const { createHash } = require('node:crypto') as typeof import('node:crypto');
-  const hash = createHash('sha256');
-  for (const part of parts) hash.update(part);
-  return hash.digest();
+  return Buffer.from(sha256Bytes(parts.join('')));
 }

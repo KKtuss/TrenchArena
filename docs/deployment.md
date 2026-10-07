@@ -3,6 +3,11 @@
 PokeArena is a **single-process** application for live battles, rooms, sessions,
 and rate limits. Durable wallets, holds, settlements, casual rooms, and
 tournaments live in PostgreSQL. Horizontal scaling is **not supported**.
+
+Solana program deployment is separate from this host setup. The production
+program is the Pinocchio build, `target/deploy/arena_escrow_pinocchio.so`,
+deployed only by `scripts/solana/deploy-pinocchio-mainnet.sh`. The Anchor
+program is the parity oracle. Local validator scripts are testing only.
 Running two API processes will split identity, live matches, and in-memory
 limits.
 
@@ -395,6 +400,101 @@ gameplay.
 - Secrets live in `/etc/pokearena/api.env`, not in git or unit files.
 - systemd services run as `pokearena`, not root (placeholder; 6I creates the
   user).
+
+## Solana program deployment
+
+| Role | Path | Use |
+| --- | --- | --- |
+| Production implementation | `programs/arena-escrow-pinocchio` | Mainnet program |
+| Production artifact | `target/deploy/arena_escrow_pinocchio.so` | The only `.so` the mainnet script deploys |
+| Production program ID | `41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W` | Shared with the Anchor oracle so the client ABI stays stable |
+| Parity / oracle | `programs/arena-escrow`, `Anchor.toml` | Reference builds, parity campaigns, and Anchor-based tests |
+| Local testing | `scripts/solana/start-validator.sh`, `restart-validator.sh`, `bootstrap-local.sh`, `run-pinocchio-parity.sh` | `solana-test-validator` only |
+| Mainnet deployment | `scripts/solana/deploy-pinocchio-mainnet.sh` | Pinocchio artifact only |
+
+Build command used by the mainnet script:
+
+```text
+cargo-build-sbf --manifest-path programs/arena-escrow-pinocchio/Cargo.toml --arch v0
+```
+
+The mainnet script requires `POKEARENA_SOLANA_CLUSTER=mainnet-beta`, an explicit
+`https://` RPC whose genesis hash is mainnet-beta, and
+`POKEARENA_DEPLOY_KEYPAIR` pointing at a keypair the operator already controls.
+It does not create or overwrite wallets. Set
+`POKEARENA_PROGRAM_KEYPAIR` to the externally stored new program keypair; the
+keypair must have the public ID above.
+That deployer keypair pays rent and fees and remains the upgrade authority.
+The script does not pass `--final` and does not revoke upgrade authority.
+
+It prints size, SHA-256, program ID, rent, fee reserve, and payer balance,
+then exits without sending a transaction. Deployment happens only when the
+same command is re-run with `--confirm-mainnet` and the payer balance covers
+the printed requirement. Devnet, testnet, and local RPC URLs are refused.
+
+```text
+export POKEARENA_SOLANA_CLUSTER=mainnet-beta
+export POKEARENA_SOLANA_RPC=https://REPLACE_WITH_MAINNET_RPC
+export POKEARENA_DEPLOY_KEYPAIR=/absolute/path/to/deployer.json
+export POKEARENA_PROGRAM_KEYPAIR=/absolute/path/to/pokearena-mainnet-program-v2.json
+./scripts/solana/deploy-pinocchio-mainnet.sh
+./scripts/solana/deploy-pinocchio-mainnet.sh --confirm-mainnet
+```
+
+Do not use `anchor build`, `anchor deploy`, or `target/deploy/arena_escrow.so`
+for this deployment. `bootstrap-local.sh` can still deploy the Anchor artifact,
+and only to a local validator.
+
+## Solana program initialization
+
+Deployment and initialization are separate. After the program account exists,
+`scripts/solana/init-pinocchio-mainnet.mjs` sends one `initialize_config`
+transaction. That creates the config, fee vault, treasury vault, and operator
+vault. It does not deploy the program, create a POKE mint, create a keeper,
+or deposit the local 2 SOL treasury seed.
+
+`scripts/solana/init-config.mjs` remains the local and devnet helper. It
+refuses a mainnet cluster, a mainnet URL, and the mainnet genesis hash.
+
+The mainnet initializer requires:
+
+| Variable | Role |
+| --- | --- |
+| `POKEARENA_SOLANA_CLUSTER` | `mainnet-beta` |
+| `POKEARENA_SOLANA_RPC` | Explicit `https://` mainnet URL |
+| `POKEARENA_PROGRAM_ID` | `41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W` |
+| `POKEARENA_AUTHORITY_KEYPAIR` | Existing keypair that becomes the config authority and pays init rent |
+| `POKEARENA_KEEPER` | Production keeper public key. It is stored, not created, and does not sign this transaction |
+| `POKEARENA_QUOTE_AUTHORITY` | Public key stored for quote attribution |
+| `POKEARENA_POKE_MINT` | Optional. Leave unset until POKE launches. The initializer then passes the System Program and stores the zero mint. A real value must be an existing 6-decimal classic SPL mint |
+| `POKEARENA_BUYBACK_BPS` | Explicit integer from 0 through 10000. No default |
+| `POKEARENA_MIN_BUYBACK_LAMPORTS` | Explicit integer. No default |
+
+It refuses `scripts/solana/keys`, `POKEARENA_SOLANA_KEYS`, and
+`POKEARENA_TREASURY_SEED_LAMPORTS`. It prints the accounts, authorities, bps,
+and live rent, then exits without sending unless `--confirm-mainnet` is
+present. A rerun that finds the same config exits without a transaction.
+
+```text
+node scripts/solana/init-pinocchio-mainnet.mjs
+node scripts/solana/init-pinocchio-mainnet.mjs --confirm-mainnet
+```
+
+Create the keeper separately, before initialization, with a new keypair the
+operator controls. Do not use `scripts/solana/keys/keeper.json`.
+
+```text
+solana-keygen new --no-bip39-passphrase --outfile "$HOME/.config/solana/pokearena-mainnet-keeper.json"
+solana-keygen pubkey "$HOME/.config/solana/pokearena-mainnet-keeper.json"
+```
+
+Back up that JSON file. Fund its public key after initialization. The keeper
+pays settlement fees and the rent for prize-reserve, prize-vault, and replay
+accounts. Those rents are spent. The printed plan includes the live cost of
+one 32-player tournament and one casual match. Prize SOL is a later explicit
+treasury deposit: the program keeps 90% in the treasury vault, so a 0.1 SOL
+prize needs a gross deposit of at least 111,111,112 lamports. This initializer
+does not send that deposit.
 
 ## What this document does not cover (later batches)
 

@@ -1,11 +1,16 @@
 import type { CasualPreviewMon } from './protocol';
 import { formatById } from './tournament-formats';
-import { roundLabel, TOURNAMENT_FIELD_SIZE } from './tournament-schedule';
+import {
+  previewTreasuryPrize,
+  roundLabel,
+  TOURNAMENT_FIELD_SIZE,
+} from './tournament-schedule';
 
 export type BracketMatch = {
   id: string;
   round: number;
   bracketPosition: number;
+  role?: 'elimination' | 'third-place';
   player1?: string;
   player2?: string;
   status: string;
@@ -57,6 +62,7 @@ export type TournamentDetail = {
   burnFeeAtoms?: number;
   matchTimeoutMs?: number;
   prizeLamports?: number;
+  prizeCardsRaw?: number;
   rail?: string;
   economics?: {
     prizePool: number;
@@ -65,6 +71,7 @@ export type TournamentDetail = {
     treasuryShare: number;
   };
   winner?: string;
+  payout?: unknown;
 };
 
 export type HubStatus = 'LIVE' | 'UPCOMING' | 'COMPLETED' | 'CANCELLED';
@@ -86,6 +93,39 @@ const UPCOMING_TOURNAMENT_STATUSES = new Set(['draft', 'registration', 'ready'])
 
 export function registeredPlayers(tournament?: TournamentDetail | null): TournamentPlayer[] {
   return (tournament?.players ?? []).filter(player => player.status === 'registered');
+}
+
+export function displayHubStatus(
+  tournament: {
+    status?: string;
+    payout?: unknown;
+    rail?: string;
+    prizeLamports?: number;
+    prizeCardsRaw?: number;
+    economics?: { prizePool?: number };
+  } | null | undefined,
+  matches: BracketMatch[],
+): HubStatus {
+  const status = tournament?.status;
+  if (status === 'cancelled') return hubStatus(status);
+  const finalRound = matches.reduce((max, match) => Math.max(max, match.round), 0);
+  const third = matches.find(match => (
+    match.role === 'third-place'
+    || (finalRound > 1 && match.round === finalRound && match.bracketPosition === 1
+      && matches.some(item => item.round === finalRound && item.bracketPosition === 0))
+  ));
+  if (
+    (status === 'in-progress' || status === 'completed')
+    && third
+    && !third.winner
+  ) {
+    return 'LIVE';
+  }
+  const prize = tournament?.rail === 'sol_chain'
+    ? (tournament.prizeCardsRaw ?? tournament.prizeLamports ?? 0)
+    : (tournament?.economics?.prizePool ?? 0);
+  if (status === 'completed' && prize > 0 && !tournament?.payout) return 'LIVE';
+  return hubStatus(status);
 }
 
 export function hubStatus(status?: string): HubStatus {
@@ -190,10 +230,21 @@ export function emptyBracket(maxPlayers: number, tournamentId = 'preview'): Brac
         id: `pending-${tournamentId}-r${round}-p${bracketPosition}`,
         round,
         bracketPosition,
+        role: 'elimination',
         status: 'pending',
         placeholder: true,
       });
     }
+  }
+  if (field >= 4) {
+    matches.push({
+      id: `pending-${tournamentId}-third`,
+      round: rounds,
+      bracketPosition: 1,
+      role: 'third-place',
+      status: 'pending',
+      placeholder: true,
+    });
   }
   return matches;
 }
@@ -397,7 +448,18 @@ export function buildMockTournament(options: MockBracketOptions = {}): Tournamen
 
   const winnersByRound = new Map<string, string>();
   for (const match of matches) {
-    if (match.round === 1) {
+    if (match.role === 'third-place') {
+      const semiRound = match.round - 1;
+      const loserOf = (position: number) => {
+        const semi = matches.find(item => item.round === semiRound && item.bracketPosition === position && item.role !== 'third-place');
+        if (!semi?.winner || !semi.player1 || !semi.player2) return undefined;
+        return semi.winner === semi.player1 ? semi.player2 : semi.player1;
+      };
+      const left = loserOf(0);
+      const right = loserOf(1);
+      if (left) match.player1 = left;
+      if (right) match.player2 = right;
+    } else if (match.round === 1) {
       match.player1 = players[match.bracketPosition * 2]?.id;
       match.player2 = players[match.bracketPosition * 2 + 1]?.id;
     } else {
@@ -431,9 +493,14 @@ export function buildMockTournament(options: MockBracketOptions = {}): Tournamen
   }
 
   const winner = options.champion
-    ? matches.find(match => match.round === totalRounds(maxPlayers))?.winner
+    ? matches.find(match => (
+      match.round === totalRounds(maxPlayers)
+      && match.bracketPosition === 0
+      && match.role !== 'third-place'
+    ))?.winner
     : undefined;
 
+  const economics = previewTreasuryPrize(50_000, maxPlayers);
   return {
     id,
     title: options.title ?? 'PokeArena Cup #01',
@@ -444,12 +511,7 @@ export function buildMockTournament(options: MockBracketOptions = {}): Tournamen
     bracket: matches,
     entryFee: 50_000,
     matchTimeoutMs: 300_000,
-    economics: {
-      prizePool: 1_440_000,
-      entryFee: 50_000,
-      playerCount: maxPlayers,
-      treasuryShare: 1_440_000,
-    },
+    economics,
     ...(winner ? { winner } : {}),
   };
 }

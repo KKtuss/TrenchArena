@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
+import { previewSolCasual } from '@pokearena/solana-client';
 
 import { useArena } from '@/lib/arena-context';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
@@ -55,13 +56,13 @@ export default function CreateCasualPage() {
     };
   }, [client, collateral, walletConnected, real]);
 
-  const realFee = Math.floor((collateral * 2 * 200) / 10_000);
+  const realPreview = real ? previewSolCasual(collateral) : null;
   const shown = real
     ? {
         collateral,
-        totalPot: collateral * 2,
-        protocolFee: realFee,
-        winnerPayout: collateral * 2 - realFee,
+        totalPot: realPreview!.totalPotLamports,
+        protocolFee: realPreview!.protocolFeeLamports,
+        winnerPayout: realPreview!.winnerPayoutLamports,
       }
     : preview;
   const freeLamports = snapshot?.solBalances?.freeLamports;

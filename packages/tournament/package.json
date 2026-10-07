@@ -5,6 +5,18 @@
   "type": "commonjs",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "require": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./rotation": {
+      "types": "./dist/src/rotation.d.ts",
+      "require": "./dist/src/rotation.js",
+      "default": "./dist/src/rotation.js"
+    }
+  },
   "engines": {
     "node": ">=22.18.0"
   },
@@ -14,7 +26,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@pokearena/battle-engine": "workspace:*"
+    "@pokearena/battle-engine": "workspace:*",
+    "@pokearena/solana-client": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

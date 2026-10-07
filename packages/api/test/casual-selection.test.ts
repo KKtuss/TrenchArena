@@ -126,6 +126,7 @@ test('invalid, duplicate, and premature Casual selections are rejected', async (
     () => casual.selectTeam(created.id, 'demo-player-1', [0, 1, 2], true),
     CasualSelectionError,
   );
+  await casual.cancelRoom(created.id, 'demo-player-1');
 
   const room = await openFullCasualRoom(casual);
   assert.throws(

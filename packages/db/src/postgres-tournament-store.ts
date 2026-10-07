@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 
 import { mapPgError } from './pg-errors';
+import { nextTournamentAfterMatchCommit } from './tournament-completion';
 import { pokeFromPg, pokeToPg } from './poke';
 import type {
   DurableTournament,
@@ -329,11 +330,45 @@ export class PostgresTournamentStore implements TournamentStore {
         if (sameTerminal(current, input.match)) return current;
         throw new Error('A completed match cannot receive a different result.');
       }
-      if (input.nextMatch) await this.lockMatch(client, input.nextMatch.id);
+      const lockedNext = input.nextMatch
+        ? await this.lockMatch(client, input.nextMatch.id)
+        : undefined;
+      if (input.nextMatch && !lockedNext) {
+        throw new Error(`Unknown tournament match: ${input.nextMatch.id}`);
+      }
       await this.upsertMatch(client, input.match);
-      if (input.nextMatch) await this.upsertMatch(client, input.nextMatch);
-      if (input.tournament) {
-        await this.upsertTournament(client, input.tournament);
+      if (input.nextMatch && lockedNext) {
+        const player1 = input.nextMatch.player1 ?? lockedNext.player1;
+        const player2 = input.nextMatch.player2 ?? lockedNext.player2;
+        const nextMatch = {
+          ...lockedNext,
+          ...(player1 ? { player1 } : {}),
+          ...(player2 ? { player2 } : {}),
+          ...(lockedNext.status === 'pending' && player1 && player2 ? { status: 'ready' } : {}),
+          updatedAt: input.nextMatch.updatedAt,
+        };
+        await this.upsertMatch(client, nextMatch);
+      }
+      if (input.placementMatch) {
+        const lockedPlacement = await this.lockMatch(client, input.placementMatch.id);
+        if (!lockedPlacement) throw new Error(`Unknown tournament match: ${input.placementMatch.id}`);
+        if (!isTerminalMatch(lockedPlacement.status)) {
+          const player1 = input.placementMatch.player1 ?? lockedPlacement.player1;
+          const player2 = input.placementMatch.player2 ?? lockedPlacement.player2;
+          await this.upsertMatch(client, {
+            ...lockedPlacement,
+            ...(player1 ? { player1 } : {}),
+            ...(player2 ? { player2 } : {}),
+            ...(lockedPlacement.status === 'pending' && player1 && player2 ? { status: 'ready' } : {}),
+            updatedAt: input.placementMatch.updatedAt,
+          });
+        }
+      }
+      const fresh = await this.lockTournament(client, tournamentId);
+      if (fresh) {
+        const matches = await this.loadMatches(client, tournamentId);
+        const next = nextTournamentAfterMatchCommit(fresh, matches, Date.now());
+        if (next) await this.upsertTournament(client, next);
       }
       const stored = await this.lockMatch(client, input.match.id);
       if (!stored) throw new Error(`Unknown tournament match: ${input.match.id}`);
@@ -372,12 +407,12 @@ export class PostgresTournamentStore implements TournamentStore {
     await client.query(
       `INSERT INTO tournaments (
          id, title, format, max_players, bracket_seed, match_timeout_ms, status,
-         host_id, entry_fee, rail, entry_atoms, entry_quote_id, prize_lamports,
+         host_id, entry_fee, rail, entry_atoms, entry_quote_id, prize_cards_raw,
          winner_id, created_at, updated_at, started_at, completed_at, ruleset, finalizes_at,
-         payment_ends_at, payment_player_id
+         payment_ends_at, payment_player_id, scheduled_key
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9::bigint, $10, $11, $12,
-         $13::bigint, $14, $15, $16, $17, $18, $19, $20, $21, $22
+         $13::bigint, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
        )
        ON CONFLICT (id) DO UPDATE SET
          title = EXCLUDED.title,
@@ -385,7 +420,8 @@ export class PostgresTournamentStore implements TournamentStore {
          rail = EXCLUDED.rail,
          entry_atoms = EXCLUDED.entry_atoms,
          entry_quote_id = EXCLUDED.entry_quote_id,
-         prize_lamports = EXCLUDED.prize_lamports,
+         prize_cards_raw = EXCLUDED.prize_cards_raw,
+         scheduled_key = EXCLUDED.scheduled_key,
          winner_id = EXCLUDED.winner_id,
          updated_at = EXCLUDED.updated_at,
          started_at = EXCLUDED.started_at,
@@ -406,7 +442,7 @@ export class PostgresTournamentStore implements TournamentStore {
         tournament.rail ?? 'legacy_poke',
         tournament.entryAtoms === undefined ? null : pokeToPg(tournament.entryAtoms),
         tournament.entryQuoteId ?? null,
-        tournament.prizeLamports === undefined ? null : pokeToPg(tournament.prizeLamports),
+        tournament.prizeCardsRaw === undefined ? null : pokeToPg(tournament.prizeCardsRaw),
         tournament.winner ?? null,
         new Date(tournament.createdAt),
         new Date(tournament.updatedAt),
@@ -416,6 +452,7 @@ export class PostgresTournamentStore implements TournamentStore {
         tournament.finalizesAt === undefined ? null : new Date(tournament.finalizesAt),
         tournament.paymentEndsAt === undefined ? null : new Date(tournament.paymentEndsAt),
         tournament.paymentPlayerId ?? null,
+        tournament.scheduledKey ?? null,
       ],
     );
   }
@@ -588,9 +625,10 @@ export class PostgresTournamentStore implements TournamentStore {
         ? { entryAtoms: pokeFromPg(row.entry_atoms) }
         : {}),
       ...(row.entry_quote_id ? { entryQuoteId: String(row.entry_quote_id) } : {}),
-      ...(row.prize_lamports !== null && row.prize_lamports !== undefined
-        ? { prizeLamports: pokeFromPg(row.prize_lamports) }
+      ...(row.prize_cards_raw !== null && row.prize_cards_raw !== undefined
+        ? { prizeCardsRaw: pokeFromPg(row.prize_cards_raw) }
         : {}),
+      ...(row.scheduled_key ? { scheduledKey: String(row.scheduled_key) } : {}),
       players: playerRows.map(player => ({
         id: String(player.player_id),
         displayName: String(player.display_name),

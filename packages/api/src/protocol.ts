@@ -9,6 +9,7 @@ import type {
   CasualEconomicsPreview,
   MockPayoutResult,
   ChainPayoutResult,
+  CardsPayoutResult,
   TournamentEconomicsPreview,
   WalletSnapshot,
 } from './mock-economics';
@@ -137,7 +138,7 @@ export interface TournamentSummary {
   rail?: 'legacy_poke' | 'sol_chain';
   burnFeeAtoms?: number;
   paymentEndsAt?: number;
-  prizeLamports?: number;
+  prizeCardsRaw?: number;
   economics: TournamentEconomicsPreview;
   winner?: string;
 }
@@ -176,6 +177,8 @@ export interface PassportSnapshot {
 export interface TxIntentPayload {
   intentId: string;
   serializedTx?: number[];
+  /** Set when a signed submission is already outstanding. Do not sign a replacement. */
+  signature?: string;
   kind?: string;
   entryAtoms?: string;
   economics?: unknown;
@@ -195,6 +198,11 @@ export interface ArenaSnapshot {
   passport?: PassportSnapshot;
   solBalances?: { freeLamports: string; treasuryLamports: string };
   trainers?: Record<string, PublicTrainerProfile>;
+  tournamentScheduler?: {
+    enabled: boolean;
+    nextTournamentStartAt?: number;
+    nextRotationIndex: number;
+  };
 }
 
 export type ServerMessage = { requestId?: string } & (
@@ -235,7 +243,7 @@ export type ServerMessage = { requestId?: string } & (
   | { type: 'tournament.created'; tournament: unknown }
   | { type: 'tournament.list'; tournaments: TournamentSummary[] }
   | { type: 'tournament.state'; tournament: unknown }
-  | { type: 'tournament.result'; tournament: unknown; payout?: MockPayoutResult | ChainPayoutResult }
+  | { type: 'tournament.result'; tournament: unknown; payout?: MockPayoutResult | CardsPayoutResult }
   | {
       type: 'match.update';
       match: unknown;

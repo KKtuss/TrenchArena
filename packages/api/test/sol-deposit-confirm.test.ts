@@ -101,6 +101,7 @@ function chainConfig(keeper: PublicKey): ArenaChainConfig {
     rpcUrl: 'http://127.0.0.1:8899',
     programId: new PublicKey(PROGRAM_ID),
     pokeMint: PublicKey.default,
+    cardsMint: PublicKey.default,
     feeVault: PublicKey.default,
     treasuryVault: PublicKey.default,
     operatorVault: PublicKey.default,

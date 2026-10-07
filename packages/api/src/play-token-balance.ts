@@ -45,6 +45,7 @@ export async function readSplBalance(
   connection: SplBalanceConnection,
   wallet: PublicKey,
   mint: PublicKey,
+  tokenProgram?: PublicKey,
 ): Promise<SplBalanceResult> {
   let mintAccount: { owner: PublicKey; data: unknown } | null;
   try {
@@ -54,6 +55,9 @@ export async function readSplBalance(
   }
   if (!mintAccount) {
     return { ok: false, code: 'not_mint', message: 'The address is not an SPL mint account.' };
+  }
+  if (tokenProgram && !mintAccount.owner.equals(tokenProgram)) {
+    return { ok: false, code: 'not_mint', message: 'incorrect token program' };
   }
   const decimals = readMintDecimals(mintAccount);
   if (decimals === null) {
@@ -114,7 +118,7 @@ async function loadTokenAccounts(
   } catch {
     throw new SplRpcError('Solana RPC failed while reading Token-2022 accounts.');
   }
-  return [...byMint, ...token2022];
+  return token2022;
 }
 
 function readMintDecimals(account: { owner: PublicKey; data: unknown } | null): number | null {

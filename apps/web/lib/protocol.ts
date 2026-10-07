@@ -15,7 +15,7 @@ export interface WalletSnapshot {
 }
 
 export interface CasualEconomicsPreview {
-  symbol: 'POKE';
+  symbol: 'POKE' | 'SOL';
   collateral: number;
   totalPot: number;
   protocolFee: number;
@@ -117,6 +117,7 @@ export interface TournamentSummary {
   entryAtoms?: number;
   burnFeeAtoms?: number;
   prizeLamports?: number;
+  prizeCardsRaw?: number;
   economics: TournamentEconomicsPreview;
   winner?: string;
 }
@@ -144,6 +145,8 @@ export interface PassportSnapshot {
 export interface TxIntentPayload {
   intentId: string;
   serializedTx?: number[];
+  /** Set when a signed submission is already outstanding. Do not sign a replacement. */
+  signature?: string;
   kind?: string;
   entryAtoms?: string;
   economics?: unknown;
@@ -168,6 +171,11 @@ export interface ArenaSnapshot {
   passport?: PassportSnapshot;
   solBalances?: { freeLamports: string; treasuryLamports: string };
   trainers?: Record<string, PublicTrainerProfile>;
+  tournamentScheduler?: {
+    enabled: boolean;
+    nextTournamentStartAt?: number;
+    nextRotationIndex: number;
+  };
 }
 
 export interface PokemonView {

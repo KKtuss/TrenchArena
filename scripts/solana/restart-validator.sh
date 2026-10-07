@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# Local solana-test-validator only. Loads the Anchor oracle artifact for tests.
+# Mainnet deployment uses scripts/solana/deploy-pinocchio-mainnet.sh.
 set -euo pipefail
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LEDGER=/tmp/pokearena-ledger
 PROGRAM_SO="$ROOT/target/deploy/arena_escrow.so"
-PROGRAM_ID=26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke
+PROGRAM_ID=41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W
 
 # Kill existing validator without matching this script.
 while read -r pid; do

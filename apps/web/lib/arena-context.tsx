@@ -207,6 +207,25 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
         setEvents(message.events ?? []);
         break;
       case 'error':
+        if (message.code === 'SessionReplacedError') {
+          // The server has deliberately invalidated this stale tab/session.
+          // Do not disconnect the shared wallet extension: another tab may
+          // own the current session. Require an explicit reconnect here.
+          client.clearAuth();
+          client.rememberSubscriptions([]);
+          setConnected(false);
+          setPlayerIdState(null);
+          setWalletAddress(null);
+          setWalletAdapter(null);
+          setSnapshot(null);
+          setMatch(null);
+          setBattleView(null);
+          setEvents([]);
+          setLastCasualResult(null);
+          setLastTournamentResult(null);
+          setError('This wallet session was opened in another tab. Connect again here if needed.');
+          break;
+        }
         setError(`${message.code}: ${message.message}`);
         break;
       default:

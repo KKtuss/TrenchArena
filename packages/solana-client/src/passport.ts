@@ -1,8 +1,7 @@
-import { PASSPORT_USD_CENTS } from './constants';
+import { PASSPORT_USD_CENTS, TOURNAMENT_BURN_FEE_ATOMS } from './constants';
 import {
   assertFreshQuote,
   passportAtoms,
-  tournamentEntryAtoms,
   usdCentsFromAtoms,
   type PokeUsdQuote,
   QuoteError,
@@ -43,6 +42,12 @@ export function evaluatePassport(input: {
 
   try {
     assertFreshQuote(input.quote, now);
+    if (input.quote.source === 'env') {
+      throw new QuoteError(
+        'An operator-set POKE price cannot authorize passport eligibility.',
+        'invalid_price',
+      );
+    }
   } catch (error) {
     const code = error instanceof QuoteError ? error.code : 'invalid_price';
     return {
@@ -54,15 +59,15 @@ export function evaluatePassport(input: {
       thresholdUsdCents: PASSPORT_USD_CENTS,
       reason: code === 'wallet_unavailable' ? 'wallet_unavailable' : code,
       quote: input.quote,
-      shortfallAtoms: passportAtoms(createSafeQuote(input.quote)).toString(),
+      shortfallAtoms: passportAtoms({ ...createSafeQuote(input.quote), source: 'mock' }).toString(),
       atomsForEntryAndPassport: (
-        passportAtoms(createSafeQuote(input.quote)) + tournamentEntryAtoms(createSafeQuote(input.quote))
+        passportAtoms({ ...createSafeQuote(input.quote), source: 'mock' }) + BigInt(TOURNAMENT_BURN_FEE_ATOMS)
       ).toString(),
     };
   }
 
   const required = passportAtoms(input.quote, now);
-  const entry = tournamentEntryAtoms(input.quote, now);
+  const entry = BigInt(TOURNAMENT_BURN_FEE_ATOMS);
   const usdCents = usdCentsFromAtoms(qualifying, input.quote, now);
   const eligible = qualifying >= required;
   const shortfall = qualifying >= required ? 0n : required - qualifying;

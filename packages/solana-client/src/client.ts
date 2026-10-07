@@ -12,6 +12,7 @@ import {
   configPda,
   entryEscrowPda,
   matchEscrowPda,
+  cardsPrizeReservePda,
   prizeReservePda,
 } from './pdas';
 import { IX } from './discriminator';
@@ -21,7 +22,7 @@ import {
   createMockQuote,
   type PokeUsdQuote,
 } from './quote';
-import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from './token';
+import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from './token';
 
 export type TxLifecycle = 'pending' | 'confirmed' | 'failed' | 'expired';
 
@@ -53,6 +54,14 @@ export interface MatchEscrowState {
   opponentDeposited: boolean;
   feeCharged: boolean;
   status: number;
+}
+
+export interface CardsPrizeReserveState {
+  funder: PublicKey;
+  winner: PublicKey;
+  cardsAmount: bigint;
+  status: number;
+  winnerSet: boolean;
 }
 
 export interface MatchEscrowReadOptions {
@@ -105,6 +114,47 @@ export class ArenaChainClient {
     let signature = '';
     try {
       signature = await this.connection.sendTransaction(transaction, signers, {
+        skipPreflight: false,
+        preflightCommitment: this.config.commitment,
+      });
+      const confirmation = await this.connection.confirmTransaction(
+        {
+          signature,
+          blockhash: transaction.recentBlockhash!,
+          lastValidBlockHeight: transaction.lastValidBlockHeight!,
+        },
+        this.config.commitment,
+      );
+      if (confirmation.value.err) {
+        return {
+          signature,
+          status: 'failed',
+          error: JSON.stringify(confirmation.value.err),
+        };
+      }
+      const status = await this.connection.getSignatureStatus(signature);
+      return {
+        signature,
+        status: 'confirmed',
+        slot: status.value?.slot,
+      };
+    } catch (error) {
+      return classifySubmissionError(signature, error);
+    }
+  }
+
+  /**
+   * Broadcast a transaction that the caller already signed and whose signature
+   * was persisted. Does not build or sign a second message.
+   */
+  async sendSignedAndConfirm(transaction: Transaction): Promise<SentTransaction> {
+    const rawSignature = transaction.signature;
+    if (!rawSignature) {
+      return { signature: '', status: 'failed', error: 'Transaction is not signed.' };
+    }
+    const signature = encodeBase58(rawSignature);
+    try {
+      await this.connection.sendRawTransaction(transaction.serialize(), {
         skipPreflight: false,
         preflightCommitment: this.config.commitment,
       });
@@ -246,6 +296,9 @@ export class ArenaChainClient {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!/already processed|already confirmed|duplicate/i.test(message)) {
+          if (isRetryableRpcError(error)) {
+            return { signature: input.signature, status: 'pending', error: message };
+          }
           return { signature: input.signature, status: 'failed', error: message };
         }
       }
@@ -373,13 +426,21 @@ export class ArenaChainClient {
   ): Promise<SentTransaction> {
     if (!signature) return { signature, status: 'failed', error: 'Missing signature.' };
     try {
-      const tx = await this.connection.getParsedTransaction(signature, {
-        commitment: this.config.commitment === 'processed' ? 'confirmed' : this.config.commitment,
-        maxSupportedTransactionVersion: 0,
-      });
+      const tx = await this.withObservationRetry(
+        'getParsedTransaction',
+        signature,
+        () => this.connection.getParsedTransaction(signature, {
+          commitment: this.config.commitment === 'processed' ? 'confirmed' : this.config.commitment,
+          maxSupportedTransactionVersion: 0,
+        }),
+      );
       if (!tx) {
         const signatureStatus = (
-          await this.connection.getSignatureStatuses([signature], { searchTransactionHistory: true })
+          await this.withObservationRetry(
+            'getSignatureStatuses',
+            signature,
+            () => this.connection.getSignatureStatuses([signature], { searchTransactionHistory: true }),
+          )
         ).value[0];
         if (!signatureStatus) {
           return { signature, status: 'pending', error: 'Transaction is not available yet.' };
@@ -474,14 +535,24 @@ export class ArenaChainClient {
         }
       }
 
-      const status = await this.connection.getSignatureStatus(signature);
+      const status = await this.withObservationRetry(
+        'getSignatureStatus',
+        signature,
+        () => this.connection.getSignatureStatus(signature),
+      );
       return { signature, status: 'confirmed', slot: status.value?.slot };
     } catch (error) {
-      return {
-        signature,
-        status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-      };
+      const message = error instanceof Error ? error.message : String(error);
+      if (isRetryableRpcError(error)) {
+        console.warn('[pokearena-rpc]', {
+          operation: 'verifyIntentTransaction',
+          classified: 'retryable',
+          signature,
+          message,
+        });
+        return { signature, status: 'pending', error: message };
+      }
+      return { signature, status: 'failed', error: message };
     }
   }
 
@@ -554,6 +625,44 @@ export class ArenaChainClient {
     return this.withRpcRetry(() => this.connection.getAccountInfo(address, commitment));
   }
 
+  /**
+   * Bounded backoff for observation. Tests replace this to avoid waiting.
+   * Jitter spreads a burst of callers that hit the same rate limit.
+   */
+  observationRetryDelayMs(attempt: number): number {
+    const base = Math.min(2_000, 200 * (2 ** attempt));
+    const spread = Math.floor(base * 0.25);
+    return base + Math.floor(Math.random() * (spread + 1));
+  }
+
+  private async withObservationRetry<T>(
+    operation: string,
+    signature: string,
+    read: () => Promise<T>,
+    attempts = 4,
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await read();
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableRpcError(error) || attempt + 1 >= attempts) throw error;
+        const retryInMs = this.observationRetryDelayMs(attempt);
+        console.warn('[pokearena-rpc]', {
+          operation,
+          classified: 'retryable',
+          ...(signature ? { subject: signature } : {}),
+          attempt: attempt + 1,
+          retryInMs,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        await new Promise(resolve => setTimeout(resolve, retryInMs));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
   private async withRpcRetry<T>(read: () => Promise<T>, attempts = 5): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -576,7 +685,11 @@ export class ArenaChainClient {
     status: number;
   }> {
     const [address] = entryEscrowPda(this.config.programId, tournamentId, player);
-    const account = await this.connection.getAccountInfo(address, this.config.commitment);
+    const account = await this.withObservationRetry(
+      'getEntryEscrowState',
+      player.toBase58(),
+      () => this.connection.getAccountInfo(address, this.config.commitment),
+    );
     if (!account) throw new Error('Entry escrow account was not found.');
     const data = Buffer.from(account.data);
     return {
@@ -605,6 +718,20 @@ export class ArenaChainClient {
     };
   }
 
+  async getCardsPrizeReserveState(tournamentId: Uint8Array): Promise<CardsPrizeReserveState> {
+    const [address] = cardsPrizeReservePda(this.config.programId, tournamentId);
+    const account = await this.connection.getAccountInfo(address, this.config.commitment);
+    if (!account) throw new Error('CARDS prize reserve account was not found.');
+    const data = Buffer.from(account.data);
+    return {
+      funder: new PublicKey(data.subarray(24, 56)),
+      winner: new PublicKey(data.subarray(56, 88)),
+      cardsAmount: data.readBigUInt64LE(88),
+      status: data[96] ?? 255,
+      winnerSet: data[97] === 1,
+    };
+  }
+
   async getSolBalance(owner: PublicKey): Promise<bigint> {
     const key = owner.toBase58();
     const cached = this.solBalanceCache.get(key);
@@ -625,22 +752,51 @@ export class ArenaChainClient {
   }
 
   async getPokeBalance(owner: PublicKey): Promise<bigint> {
-    const ata = getAssociatedTokenAddressSync(this.config.pokeMint, owner, true);
+    const ata = getAssociatedTokenAddressSync(this.config.pokeMint, owner, true, TOKEN_2022_PROGRAM_ID);
     try {
-      const balance = await this.connection.getTokenAccountBalance(ata, this.config.commitment);
+      const balance = await this.withObservationRetry(
+        'getPokeBalance',
+        owner.toBase58(),
+        () => this.connection.getTokenAccountBalance(ata, this.config.commitment),
+      );
       return BigInt(balance.value.amount);
-    } catch {
+    } catch (error) {
+      if (isRetryableRpcError(error)) throw error;
       return 0n;
     }
   }
 
   async getPokeAta(owner: PublicKey): Promise<PublicKey> {
-    return getAssociatedTokenAddressSync(this.config.pokeMint, owner, true);
+    return getAssociatedTokenAddressSync(this.config.pokeMint, owner, true, TOKEN_2022_PROGRAM_ID);
   }
 
-  /** Exposed for ATA derivation in callers that mint/create accounts. */
+  async getCardsBalance(owner: PublicKey): Promise<bigint> {
+    const ata = getAssociatedTokenAddressSync(this.config.cardsMint, owner, true);
+    try {
+      const balance = await this.withObservationRetry(
+        'getCardsBalance',
+        owner.toBase58(),
+        () => this.connection.getTokenAccountBalance(ata, this.config.commitment),
+      );
+      return BigInt(balance.value.amount);
+    } catch (error) {
+      if (isRetryableRpcError(error)) throw error;
+      return 0n;
+    }
+  }
+
+  getCardsAta(owner: PublicKey): PublicKey {
+    return getAssociatedTokenAddressSync(this.config.cardsMint, owner, true);
+  }
+
+  /** Classic SPL program. CARDS ATAs use this. */
   get tokenProgramId(): PublicKey {
     return TOKEN_PROGRAM_ID;
+  }
+
+  /** Token-2022 program. POKE ATAs use this, including mints with metadata extensions. */
+  get pokeTokenProgramId(): PublicKey {
+    return TOKEN_2022_PROGRAM_ID;
   }
 
   resolveQuote(env: NodeJS.ProcessEnv = process.env): PokeUsdQuote {
@@ -656,8 +812,15 @@ export class ArenaChainClient {
     owner: PublicKey;
     heldEntryAtoms?: bigint;
     quote?: PokeUsdQuote;
+    /**
+     * Display snapshots pass a balance they already fetched.
+     * Omitting it always reads the chain, which authorization requires.
+     */
+    liquidAtoms?: bigint;
   }): Promise<PassportStatus> {
-    const liquidAtoms = await this.getPokeBalance(input.owner);
+    const liquidAtoms = input.liquidAtoms !== undefined
+      ? input.liquidAtoms
+      : await this.getPokeBalance(input.owner);
     const quote = input.quote ?? this.resolveQuote();
     return evaluatePassport({
       liquidAtoms,
@@ -698,6 +861,29 @@ function decodeBase58(value: string): Buffer {
     bytes.push(0);
   }
   return Buffer.from(bytes.reverse());
+}
+
+function encodeBase58(bytes: Uint8Array): string {
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+  const size = Math.ceil(bytes.length * 1.37);
+  const digits = new Uint8Array(size);
+  let length = 0;
+  for (let i = zeros; i < bytes.length; i += 1) {
+    let carry = bytes[i]!;
+    let j = 0;
+    for (let k = size - 1; k >= 0 && (carry !== 0 || j < length); k -= 1, j += 1) {
+      carry += 256 * digits[k]!;
+      digits[k] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    length = j;
+  }
+  let start = size - length;
+  while (start < size && digits[start] === 0) start += 1;
+  let result = '1'.repeat(zeros);
+  for (let i = start; i < size; i += 1) result += BASE58_ALPHABET[digits[i]!]!;
+  return result;
 }
 
 function verifyIssuedSignature(input: {

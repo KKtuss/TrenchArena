@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
+import { sha256Bytes } from './sha256';
 
 /** Anchor global instruction discriminator: sha256("global:<name>")[0..8]. */
 export function anchorDiscriminator(name: string): Buffer {
-  return createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
+  return Buffer.from(sha256Bytes(`global:${name}`)).subarray(0, 8);
 }
 
 export const IX = {
@@ -24,4 +24,17 @@ export const IX = {
   releasePrize: anchorDiscriminator('release_prize'),
   buybackAndBurnPoke: anchorDiscriminator('buyback_and_burn_poke'),
   setPokeMint: anchorDiscriminator('set_poke_mint'),
+  claimOperatorFees: anchorDiscriminator('claim_operator_fees'),
+  setCardsMint: anchorDiscriminator('set_cards_mint'),
+  fundCardsPrize: anchorDiscriminator('fund_cards_prize'),
+  setCardsPrizeWinner: anchorDiscriminator('set_cards_prize_winner'),
+  payCardsPrize: anchorDiscriminator('pay_cards_prize'),
+  releaseCardsPrize: anchorDiscriminator('release_cards_prize'),
+  claimFeeVault: anchorDiscriminator('claim_fee_vault'),
+  initCardsRewardVaults: anchorDiscriminator('init_cards_reward_vaults'),
+  claimCardsOperator: anchorDiscriminator('claim_cards_operator'),
+  fundCardsPrizeFromTreasury: anchorDiscriminator('fund_cards_prize_from_treasury'),
+  closeSettledMatch: anchorDiscriminator('close_settled_match'),
+  closeFinalEntry: anchorDiscriminator('close_final_entry'),
+  closeFinalCardsPrize: anchorDiscriminator('close_final_cards_prize'),
 } as const;

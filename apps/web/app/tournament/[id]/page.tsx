@@ -10,13 +10,13 @@ import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer'
 import { MatchDetailDialog, TournamentBracket } from '@/components/tournament-bracket';
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
-import { formatPoke, formatSolLamports } from '@/lib/api-client';
+import { formatPoke, formatPokeFromAtoms, formatSolLamports, TOURNAMENT_BURN_FEE_ATOMS } from '@/lib/api-client';
 import { sendSerializedTransaction } from '@/lib/solana-tx';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
 import { formatById } from '@/lib/tournament-formats';
+import { splitTournamentPrize } from '@/lib/tournament-prize';
 import {
   TOURNAMENT_ENTRY_POKE,
-  TOURNAMENT_BURN_FEE_POKE,
   TOURNAMENT_FIELD_SIZE,
   formatCountdown,
   previewTreasuryPrize,
@@ -28,8 +28,8 @@ import {
   findLiveMatch,
   findPlayerMatch,
   formatName,
+  displayHubStatus,
   formatTimeout,
-  hubStatus,
   isPlayableMatch,
   matchActionLabel,
   playerHubStatus,
@@ -140,8 +140,9 @@ export default function TournamentDetailPage() {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<SavedTeam | null>(null);
   const [selected, setSelected] = useState<BracketMatch | null>(null);
-  const [boardPreview, setBoardPreview] = useState<'live' | 1 | 2 | 3 | 4 | 'champion'>('live');
+  const [boardPreview, setBoardPreview] = useState<'live' | 'champion' | number>('live');
   const [now, setNow] = useState<number | null>(null);
+  const [burnPayment, setBurnPayment] = useState<{ intentId: string; signature: string } | null>(null);
 
   const rulesetId = tournament?.ruleset || tournament?.format || 'gen9ou';
   const formatCard = formatById(rulesetId);
@@ -157,6 +158,38 @@ export default function TournamentDetailPage() {
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!burnPayment) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void client.request({
+        type: 'tx.confirm',
+        intentId: burnPayment.intentId,
+        signature: burnPayment.signature,
+      }).then(async response => {
+        if (stopped || response.type !== 'tx.update') return;
+        if (response.status === 'confirmed') {
+          setBurnPayment(null);
+          const state = await client.request({ type: 'tournament.subscribe', tournamentId });
+          if (!stopped && state.type === 'tournament.state') {
+            setTournament(state.tournament as TournamentDetail);
+          }
+          return;
+        }
+        if (response.status === 'failed' || response.status === 'expired' || response.status === 'cancelled') {
+          setBurnPayment(null);
+          setError(response.error ?? 'The burn fee transaction did not confirm.');
+        }
+      }).catch(err => {
+        if (!stopped) setError(err instanceof Error ? err.message : String(err));
+      });
+    }, 2_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [burnPayment, client, tournamentId]);
 
   useEffect(() => {
     if (!connected) return;
@@ -191,33 +224,38 @@ export default function TournamentDetailPage() {
   const registered = me?.status === 'registered';
   const waitlisted = me?.status === 'waitlisted';
   const maxPlayers = tournament?.maxPlayers ?? TOURNAMENT_FIELD_SIZE;
-  const burnFee = tournament?.burnFeeAtoms ?? TOURNAMENT_BURN_FEE_POKE;
-  const entryFee = tournament?.rail === 'sol_chain'
-    ? burnFee
-    : (tournament?.entryFee ?? TOURNAMENT_ENTRY_POKE);
+  const burnFeeAtoms = tournament?.rail === 'sol_chain'
+    ? (tournament.burnFeeAtoms ?? tournament.entryAtoms ?? TOURNAMENT_BURN_FEE_ATOMS)
+    : undefined;
+  const burnFeeLabel = burnFeeAtoms === undefined ? undefined : formatPokeFromAtoms(burnFeeAtoms);
+  const entryFee = tournament?.entryFee ?? TOURNAMENT_ENTRY_POKE;
   const matches = useMemo(
     () => (tournament ? visibleBracket(tournament) : []),
     [tournament],
   );
+  const previewField = (maxPlayers === 4 || maxPlayers === 8 || maxPlayers === 16 || maxPlayers === 32)
+    ? maxPlayers
+    : 32;
   const previewTournament = useMemo(() => {
     if (!isDemoAuthEnabled() || boardPreview === 'live') return null;
     const viewerId = playerId ?? 'you';
     if (boardPreview === 'champion') {
-      return buildMockTournament({ maxPlayers: 32, champion: true, viewerId });
+      return buildMockTournament({ maxPlayers: previewField, champion: true, viewerId });
     }
     return buildMockTournament({
-      maxPlayers: 32,
-      currentRound: boardPreview,
+      maxPlayers: previewField,
+      currentRound: typeof boardPreview === 'number' ? boardPreview : 1,
       status: 'in-progress',
       viewerId,
     });
-  }, [boardPreview, playerId]);
+  }, [boardPreview, playerId, previewField]);
   const boardMatches = previewTournament?.bracket ?? matches;
-  const boardField = previewTournament ? 32 : bracketFieldSize(matches, maxPlayers);
-  const boardStatus = previewTournament?.status ?? tournament?.status;
+  const boardField = previewTournament ? previewField : bracketFieldSize(matches, maxPlayers);
+  const badge = displayHubStatus(tournament, matches);
+  const boardStatus = previewTournament?.status
+    ?? (badge === 'LIVE' && tournament?.status === 'completed' ? 'in-progress' : tournament?.status);
   const liveMatch = findLiveMatch(matches.filter(match => !match.placeholder));
   const myMatch = findPlayerMatch(matches.filter(match => !match.placeholder), playerId);
-  const badge = hubStatus(tournament?.status);
   const round = currentRound(boardMatches, boardStatus);
   const rounds = roundTitles(boardField);
   const you = tournament ? playerHubStatus(tournament, matches, playerId) : null;
@@ -226,10 +264,24 @@ export default function TournamentDetailPage() {
   const prizePool = badge === 'UPCOMING'
     ? projectedPrize
     : (tournament?.economics?.prizePool ?? projectedPrize);
-  const chainPrize = tournament?.rail === 'sol_chain' && tournament.prizeLamports !== undefined
-    ? formatSolLamports(tournament.prizeLamports)
-    : undefined;
+  const cardsRaw = tournament?.prizeCardsRaw;
+  const chainPrize = cardsRaw !== undefined
+    ? `${cardsRaw.toLocaleString('en-US')} CARDS`
+    : tournament?.rail === 'sol_chain' && tournament.prizeLamports !== undefined
+      ? formatSolLamports(tournament.prizeLamports)
+      : undefined;
   const prizeLabel = chainPrize ?? formatPoke(prizePool);
+  const sharePool = cardsRaw ?? (tournament?.rail === 'sol_chain' ? tournament.prizeLamports : prizePool);
+  const shares = sharePool !== undefined && Number.isSafeInteger(sharePool)
+    ? splitTournamentPrize(sharePool)
+    : undefined;
+  const formatShare = (amount: number) => (
+    cardsRaw !== undefined
+      ? `${amount.toLocaleString('en-US')} CARDS`
+      : tournament?.rail === 'sol_chain'
+        ? formatSolLamports(amount)
+        : formatPoke(amount)
+  );
   const myAction = myMatch ? matchActionLabel(myMatch, playerId) : null;
   const description = tournament
     ? `${formatCard?.title ?? formatName(rulesetId)} · ${formatCard?.region ?? 'Format'} · ${formatCard?.restriction ?? 'Legal'}. ${formatCard?.teamModeLabel ?? 'Custom team'}. ${maxPlayers} trainers. Best of 1.`
@@ -254,20 +306,48 @@ export default function TournamentDetailPage() {
     }
   });
 
+  const observeBurnFee = async (intentId: string, signature: string) => {
+    const update = await client.request({
+      type: 'tx.confirm',
+      intentId,
+      signature,
+    });
+    if (update.type !== 'tx.update') {
+      throw new Error('The server did not accept the burn-fee confirmation.');
+    }
+    if (update.status === 'confirmed') {
+      setBurnPayment(null);
+      const state = await client.request({ type: 'tournament.subscribe', tournamentId });
+      if (state.type === 'tournament.state') setTournament(state.tournament as TournamentDetail);
+      return;
+    }
+    if (update.status === 'pending') {
+      setBurnPayment({ intentId, signature });
+      return;
+    }
+    setBurnPayment(null);
+    throw new Error(update.error ?? 'The burn fee transaction did not confirm.');
+  };
+
   const payBurnFee = () => void act(async () => {
+    if (burnPayment) {
+      await observeBurnFee(burnPayment.intentId, burnPayment.signature);
+      return;
+    }
     if (!walletAdapter) throw new Error('Connect a wallet before paying the burn fee.');
     const response = await client.request({ type: 'tournament.payBurnFee', tournamentId });
-    if (response.type !== 'tx.intent' || !response.intent.serializedTx) {
+    if (response.type !== 'tx.intent') {
+      throw new Error('The tournament did not return a burn-fee transaction.');
+    }
+    if (response.intent.signature && !response.intent.serializedTx?.length) {
+      await observeBurnFee(response.intent.intentId, response.intent.signature);
+      return;
+    }
+    if (!response.intent.serializedTx?.length) {
       throw new Error('The tournament did not return a burn-fee transaction.');
     }
     const signature = await sendSerializedTransaction(walletAdapter, response.intent.serializedTx);
-    await client.request({
-      type: 'tx.confirm',
-      intentId: response.intent.intentId,
-      signature,
-    });
-    const state = await client.request({ type: 'tournament.subscribe', tournamentId });
-    if (state.type === 'tournament.state') setTournament(state.tournament as TournamentDetail);
+    await observeBurnFee(response.intent.intentId, signature);
   });
 
   const pushTeam = () => void act(async () => {
@@ -344,7 +424,7 @@ export default function TournamentDetailPage() {
                   <span className="pa-signup-stat-icon"><SignupIcon name="coins" /></span>
                   <div>
                     <span>{tournament.rail === 'sol_chain' ? 'Burn fee after field fills' : 'Entry'}</span>
-                    <strong>{formatPoke(entryFee)}</strong>
+                    <strong>{burnFeeLabel ?? formatPoke(entryFee)}</strong>
                   </div>
                 </div>
                 <div className="pa-signup-stat is-prize">
@@ -398,9 +478,14 @@ export default function TournamentDetailPage() {
                   <p className="pa-cup-note">You are on the waitlist and will be promoted in registration order.</p>
                 ) : null}
                 {needsBurnFee && paymentOpen ? (
-                  <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={payBurnFee}>
-                    Pay burn fee · {formatPoke(burnFee)}
-                  </button>
+                  <>
+                    <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={payBurnFee}>
+                      {burnPayment ? 'Check burn fee confirmation' : `Pay burn fee · ${burnFeeLabel}`}
+                    </button>
+                    {burnPayment ? (
+                      <p className="pa-cup-note">Burn fee submitted. Waiting for confirmation of the original transaction.</p>
+                    ) : null}
+                  </>
                 ) : null}
                 {tournament.rail === 'sol_chain' && registered && me?.burnFeePaid ? (
                   <p className="pa-cup-note">Burn fee paid. Your spot is secured while the roster finalizes.</p>
@@ -468,7 +553,7 @@ export default function TournamentDetailPage() {
                           ? 'Same 6 for both players • Choose 3. Your three stay hidden until the match starts.'
                           : finalizing
                             ? tournament.rail === 'sol_chain'
-                              ? `The field is full. Pay the ${formatPoke(burnFee)} burn fee before the timer ends. Unpaid players are replaced from the waitlist.`
+                              ? `The field is full. Pay the ${burnFeeLabel} burn fee before the timer ends. Unpaid players are replaced from the waitlist.`
                               : 'The field is full. Five minutes to edit a legal team. Opponent teams stay hidden. The bracket starts when the timer ends.'
                             : `Each match is one ${formatCard?.title ?? formatName(rulesetId)} singles battle. A legal team is required before you can join.`}
                       </span>
@@ -481,8 +566,8 @@ export default function TournamentDetailPage() {
                       <strong><SignupIcon name="coins" /> Entry</strong>
                       <span>
                         {tournament.rail === 'sol_chain'
-                          ? `A fixed ${formatPoke(burnFee)} burn fee is paid after the field fills and burned when the final roster locks.`
-                          : `The ${formatPoke(entryFee)} entry is held at join and settles into the champion prize (90%) when the cup completes.`}
+                          ? `A fixed ${burnFeeLabel} burn fee is paid after the field fills and burned when the final roster locks.`
+                          : `The ${formatPoke(entryFee)} entry is held at join. 90% of the field forms the prize pool, paid 50/35/15 when the final and 3rd-place match are done.`}
                       </span>
                     </li>
                   </ul>
@@ -618,15 +703,14 @@ export default function TournamentDetailPage() {
               </span>
             </header>
             {isDemoAuthEnabled() ? (
-              <div className="pa-board-preview" role="group" aria-label="Preview a full 32-player board">
+              <div className="pa-board-preview" role="group" aria-label={`Preview a full ${previewField}-player board`}>
                 {([
-                  ['live', 'Live'],
-                  [1, 'R32'],
-                  [2, 'R16'],
-                  [3, 'QF'],
-                  [4, 'SF'],
-                  ['champion', 'Champion'],
-                ] as const).map(([id, label]) => (
+                  ['live', 'Live'] as const,
+                  ...roundTitles(previewField).slice(0, -1).map((label, index) => (
+                    [index + 1, previewRoundName(label)] as const
+                  )),
+                  ['champion', 'Champion'] as const,
+                ]).map(([id, label]) => (
                   <button
                     key={label}
                     type="button"
@@ -669,8 +753,11 @@ export default function TournamentDetailPage() {
                 <div><dt>Players</dt><dd>{maxPlayers}</dd></div>
                 <div><dt>Bracket</dt><dd>Single elimination</dd></div>
                 <div><dt>Match</dt><dd>Best of 1</dd></div>
-                <div><dt>Entry</dt><dd>{entryFee > 0 ? formatPoke(entryFee) : 'Treasury entry'}</dd></div>
+                <div><dt>Entry</dt><dd>{burnFeeLabel ?? (entryFee > 0 ? formatPoke(entryFee) : 'Treasury entry')}</dd></div>
                 <div><dt>Prize pool</dt><dd>{prizeLabel}</dd></div>
+                <div><dt>1st place</dt><dd>50%{shares ? ` · ${formatShare(shares.first)}` : ''}</dd></div>
+                <div><dt>2nd place</dt><dd>35%{shares ? ` · ${formatShare(shares.second)}` : ''}</dd></div>
+                <div><dt>3rd place</dt><dd>15%{shares ? ` · ${formatShare(shares.third)}` : ''}</dd></div>
                 <div><dt>Time limit</dt><dd>{formatTimeout(tournament.matchTimeoutMs)}</dd></div>
               </dl>
             </section>
@@ -678,7 +765,7 @@ export default function TournamentDetailPage() {
             <section className="pa-cup-info">
               <header>Rules</header>
               <ul className="pa-cup-rules">
-                <li>Single elimination. Lose once and you are out.</li>
+                <li>Single elimination. Semifinal losers play one match for 3rd.</li>
                 <li>Each match uses the {formatCard?.title ?? 'format'} ruleset on the current battle engine.</li>
                 <li>
                   {isCasualPreset
@@ -687,7 +774,7 @@ export default function TournamentDetailPage() {
                 </li>
                 <li>Matches time out after {formatTimeout(tournament.matchTimeoutMs)}. The opponent advances.</li>
                 <li>Disconnecting a live fight grants a 10s reconnect window, then a forfeit.</li>
-                <li>Winners are seeded into the next round until a champion is crowned.</li>
+                <li>The cup stays in progress until the final and the 3rd-place match are both decided.</li>
                 <li>A no-show is treated as a timeout. The present trainer moves on.</li>
               </ul>
             </section>
@@ -717,4 +804,13 @@ export default function TournamentDetailPage() {
       <MatchDetailDialog match={selected} viewerId={playerId} onClose={() => setSelected(null)} />
     </div>
   );
+}
+
+function previewRoundName(label: string): string {
+  if (label === 'ROUND OF 32') return 'R32';
+  if (label === 'ROUND OF 16') return 'R16';
+  if (label === 'QUARTERFINALS') return 'QF';
+  if (label === 'SEMIFINALS') return 'SF';
+  if (label === 'FINAL') return 'Final';
+  return label;
 }

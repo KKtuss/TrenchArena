@@ -4,6 +4,7 @@ packages:
   - "poc/*"
 allowBuilds:
   better-sqlite3: true
+  bigint-buffer: true
   bufferutil: true
   esbuild: true
   sharp: true

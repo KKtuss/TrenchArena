@@ -62,6 +62,11 @@ export function fullSpriteId(name: string): string | null {
   return spriteid || null;
 }
 
+export function showdownSpriteSrc(name: string): string | null {
+  const file = fullSpriteId(name);
+  return file ? `${SHOWDOWN_SPRITE_CDN}/sprites/gen5/${file}.png` : null;
+}
+
 export function applyShowdownSpriteCdn(dex?: {
   resourcePrefix?: string;
   fxPrefix?: string;
@@ -95,6 +100,7 @@ export function itemIconOffset(name: string): { left: number; top: number } | nu
 }
 
 export function typeIconSrc(type: string): string {
-  const label = type.charAt(0).toUpperCase() + type.slice(1).toLowerCase();
-  return `${SHOWDOWN_SPRITES}/types/${label}.png`;
+  const trimmed = type.trim();
+  const label = trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+  return `${SHOWDOWN_SPRITE_CDN}/sprites/types/${label}.png`;
 }

@@ -66,7 +66,17 @@ export function atomsForUsdCents(usdCents: number, quote: PokeUsdQuote, now = Da
   return (numerator + denominator - 1n) / denominator;
 }
 
+export function assertAuthoritativePassportQuote(quote: PokeUsdQuote): void {
+  if (quote.source === 'env') {
+    throw new QuoteError(
+      'An operator-set POKE price cannot authorize passport eligibility.',
+      'invalid_price',
+    );
+  }
+}
+
 export function passportAtoms(quote: PokeUsdQuote, now = Date.now()): bigint {
+  assertAuthoritativePassportQuote(quote);
   return atomsForUsdCents(PASSPORT_USD_CENTS, quote, now);
 }
 

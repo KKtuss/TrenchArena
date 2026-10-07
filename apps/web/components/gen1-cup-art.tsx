@@ -3,20 +3,14 @@
 import { useState } from 'react';
 
 import { PokemonIcon } from '@/components/showdown-visuals';
-import { SHOWDOWN_SPRITE_CDN, fullSpriteId } from '@/lib/showdown-visuals';
-import { TRAINER_SPRITE_BASE } from '@/lib/trainer-profile';
-
-const GEN1_SPRITE = '/showdown/sprites/gen1';
-const LOCAL_GEN1 = new Set([
-  'charizard', 'venusaur', 'blastoise', 'pikachu', 'mewtwo', 'gengar', 'snorlax',
-  'gyarados', 'mew', 'moltres', 'dragonite', 'alakazam', 'zapdos', 'eevee', 'articuno',
-]);
+import { SHOWDOWN_SPRITE_CDN, showdownSpriteSrc } from '@/lib/showdown-visuals';
 
 function pokemonSrc(name: string): string | null {
-  const file = fullSpriteId(name);
-  if (!file) return null;
-  if (LOCAL_GEN1.has(file)) return `${GEN1_SPRITE}/${file}.png`;
-  return `${SHOWDOWN_SPRITE_CDN}/sprites/gen5/${file}.png`;
+  return showdownSpriteSrc(name);
+}
+
+function trainerSrc(id: string): string {
+  return `${SHOWDOWN_SPRITE_CDN}/sprites/trainers/${id}.png`;
 }
 
 function StageMon({
@@ -65,7 +59,7 @@ export function FormatStage({
         <div className="pa-gen1-center">
           <img
             className="pa-gen1-hero pa-gen1-red"
-            src={`${TRAINER_SPRITE_BASE}/${trainer}.png`}
+            src={trainerSrc(trainer)}
             alt=""
           />
         </div>
@@ -91,38 +85,38 @@ export function Gen1CupArt({
       <div className="pa-gen1-scene">
         <img
           className="pa-gen1-flank is-far"
-          src={`${GEN1_SPRITE}/charizard.png`}
+          src={pokemonSrc('Charizard') ?? ''}
           alt=""
           title="Charizard"
         />
         <img
           className="pa-gen1-flank is-near"
-          src={`${GEN1_SPRITE}/venusaur.png`}
+          src={pokemonSrc('Venusaur') ?? ''}
           alt=""
           title="Venusaur"
         />
         <div className="pa-gen1-center">
           <img
             className="pa-gen1-hero pa-gen1-red"
-            src={`${TRAINER_SPRITE_BASE}/red-gen1.png`}
+            src={trainerSrc('red-gen1')}
             alt=""
           />
           <img
             className="pa-gen1-hero pa-gen1-pikachu"
-            src={`${GEN1_SPRITE}/pikachu.png`}
+            src={pokemonSrc('Pikachu') ?? ''}
             alt=""
             title="Pikachu"
           />
         </div>
         <img
           className="pa-gen1-flank is-near"
-          src={`${GEN1_SPRITE}/blastoise.png`}
+          src={pokemonSrc('Blastoise') ?? ''}
           alt=""
           title="Blastoise"
         />
         <img
           className="pa-gen1-flank is-far pa-gen1-mewtwo"
-          src={`${GEN1_SPRITE}/mewtwo.png`}
+          src={pokemonSrc('Mewtwo') ?? ''}
           alt=""
           title="Mewtwo"
         />

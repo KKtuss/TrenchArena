@@ -84,7 +84,7 @@ test('32-player Custom tournament: full bracket, advancement, payout once', asyn
   report.check('status/in-progress', 'Tournament entered in-progress', started.status === 'in-progress', 'in-progress', started.status);
 
   const bracket = await tournaments.getBracket(created.id);
-  report.check('bracket/size', 'Single-elim bracket has N-1 matches (no byes for full field)', bracket.length === 31, 31, bracket.length);
+  report.check('bracket/size', 'Full field has N-1 elimination matches plus the third-place match', bracket.length === 32, 32, bracket.length);
   report.check(
     'bracket/rounds',
     'Rounds present: R32→R16→QF→SF→Final',

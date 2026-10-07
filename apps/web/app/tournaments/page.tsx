@@ -6,14 +6,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatTournamentEntry, formatTournamentPrize } from '@/lib/api-client';
+import { formatPoke, formatPokeFromAtoms, formatTournamentEntry, formatTournamentPrize, TOURNAMENT_BURN_FEE_ATOMS } from '@/lib/api-client';
 import { isLocalTestMode } from '@/lib/local-test-mode';
 import {
   TOURNAMENT_ENTRY_POKE,
-  TOURNAMENT_BURN_FEE_POKE,
-  TOURNAMENT_FIELD_SIZE,
   buildTournamentSchedule,
+  displayedFieldSize,
   formatCountdown,
+  roundLabel,
+  scheduleCountdown,
   scheduleCtaLabel,
   scheduleStatusLabel,
   type ScheduleSlot,
@@ -41,15 +42,21 @@ export default function TournamentsPage() {
   }, []);
 
   const chain = chainEconomyEnabled;
+  const scheduler = snapshot?.tournamentScheduler;
   const schedule = useMemo(
     () => buildTournamentSchedule(snapshot?.tournaments ?? [], now ?? Date.now(), {
       allAvailable: localTestMode,
+      scheduler,
     }),
-    [localTestMode, snapshot?.tournaments, now],
+    [localTestMode, scheduler?.enabled, scheduler?.nextRotationIndex, scheduler?.nextTournamentStartAt, snapshot?.tournaments, now],
   );
 
   const ensureTournament = async (slot: ScheduleSlot): Promise<string | null> => {
     if (slot.tournament) return slot.tournament.id;
+    if (scheduler?.enabled !== true) {
+      setError('Tournament scheduling is off. This slot is not open.');
+      return null;
+    }
     if (!walletConnected) {
       setError('Connect a wallet before joining a tournament.');
       return null;
@@ -60,7 +67,7 @@ export default function TournamentsPage() {
       const response = await client.request({
         type: 'tournament.create',
         title: slot.title,
-        maxPlayers: TOURNAMENT_FIELD_SIZE,
+        maxPlayers: slot.maxPlayers,
         entryFee: TOURNAMENT_ENTRY_POKE,
         ruleset: slot.rulesetId,
       });
@@ -83,7 +90,7 @@ export default function TournamentsPage() {
         <div>
           <h1>Tournament schedule</h1>
           <p className="pa-lead">
-            Preset Gen X, then that generation&apos;s custom cup, then Gen 9 OU. A new tournament every 30 minutes.
+            Preset Gen X, then that generation&apos;s custom cup, then Gen 9 OU. Automatic rotation starts only when enabled.
           </p>
         </div>
         <div className="pa-page-actions">
@@ -104,8 +111,19 @@ export default function TournamentsPage() {
       <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       <div className="pa-live-strip">
-        <span className="pa-live-pill"><i /> 30-minute cadence</span>
-        <span className="pa-strip-end">No withdrawal tax</span>
+        <span className="pa-live-pill">
+          <i /> {scheduler?.enabled
+            ? scheduler.nextTournamentStartAt
+              ? `Next tournament in ${formatCountdown(scheduler.nextTournamentStartAt, now ?? Date.now())}`
+              : 'Scheduling enabled'
+            : 'Scheduling OFF'}
+        </span>
+        {scheduler?.enabled && scheduler.nextTournamentStartAt ? (
+          <span className="pa-strip-end">
+            Starts {new Date(scheduler.nextTournamentStartAt).toLocaleString()}
+          </span>
+        ) : null}
+        {!scheduler?.enabled ? <span className="pa-strip-end">No automatic tournament creation</span> : null}
       </div>
 
       <section className="pa-schedule">
@@ -115,6 +133,7 @@ export default function TournamentsPage() {
               key={slot.key}
               slot={slot}
               now={now}
+              scheduler={scheduler}
               busy={busy}
               chain={chain}
               teamReady={slot.format.teamMode === 'custom'
@@ -185,8 +204,8 @@ export default function TournamentsPage() {
           </header>
           <p>
             {chain
-              ? `${formatPoke(TOURNAMENT_BURN_FEE_POKE)} of POKE is paid after the field fills and burned at roster lock. The prize is SOL from the Tournament Treasury, not player collateral.`
-              : `${formatPoke(TOURNAMENT_ENTRY_POKE)} POKE is held at join. The champion prize is 90% of held entries — not a separate treasury vault.`}
+              ? `${formatPokeFromAtoms(TOURNAMENT_BURN_FEE_ATOMS)} of POKE is burned after the field fills. The CARDS prize pays 1st 50%, 2nd 35%, and 3rd the remainder. A two-player final pays the winner the full prize.`
+              : `${formatPoke(TOURNAMENT_ENTRY_POKE)} POKE is held at join. 90% of those entries form the prize pool, paid 50/35/15.`}
           </p>
           <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/treasury">See funding</Link>
         </article>
@@ -195,7 +214,7 @@ export default function TournamentsPage() {
       <div className="pa-soon">
         <span>Register</span>
         <span aria-hidden>→</span>
-        <span>Round of 32</span>
+        <span>{roundLabel(1, schedule[0]?.maxPlayers ?? 32)}</span>
         <span aria-hidden>→</span>
         <span>Final</span>
         <span aria-hidden>→</span>
@@ -208,6 +227,7 @@ export default function TournamentsPage() {
 function ScheduleCard({
   slot,
   now,
+  scheduler,
   busy,
   chain,
   teamReady,
@@ -215,24 +235,27 @@ function ScheduleCard({
 }: {
   slot: ScheduleSlot;
   now: number | null;
+  scheduler: { enabled: boolean; nextTournamentStartAt?: number; nextRotationIndex: number } | undefined;
   busy: boolean;
   chain: boolean;
   teamReady: boolean | null;
   onJoin: () => void;
 }) {
-  const joinable = slot.when === 'CURRENT';
+  const joinable = slot.when === 'CURRENT' && !slot.isLocked;
   const prizeKnown = joinable && Boolean(slot.tournament);
+  const slotOpen = joinable && (Boolean(slot.tournament) || scheduler?.enabled === true);
   const players = slot.tournament?.playerCount ?? 0;
-  const maxPlayers = slot.tournament?.maxPlayers ?? TOURNAMENT_FIELD_SIZE;
-  const status = scheduleStatusLabel(slot);
-  const cta = joinable ? scheduleCtaLabel(slot) : 'UPCOMING';
-  const finalizesAt = slot.tournament?.finalizesAt;
-  const locking = finalizesAt != null && now != null && now < finalizesAt;
-  const countdownTarget = locking
-    ? finalizesAt
-    : now != null && now >= slot.startsAt ? slot.endsAt : slot.startsAt;
-  const countdown = now == null ? '--:--:--' : formatCountdown(countdownTarget, now);
-  const countdownLabel = locking ? 'Locks in' : now != null && now >= slot.startsAt ? 'Window' : 'Starts in';
+  const maxPlayers = displayedFieldSize(slot);
+  const fieldFull = players >= maxPlayers;
+  const status = scheduleStatusLabel(slot, scheduler);
+  const countdownState = scheduleCountdown(slot, scheduler, now ?? Date.now());
+  const countdown = countdownState && now != null
+    ? formatCountdown(countdownState.target, now)
+    : null;
+  const countdownLabel = countdownState?.label;
+  const cta = joinable
+    ? slotOpen ? scheduleCtaLabel(slot) : 'NOT SCHEDULED'
+    : 'UPCOMING';
   const href = joinable && slot.tournament ? `/tournament/${slot.tournament.id}` : undefined;
   const isGen1Cup = slot.format.id === 'gen1cup';
   const isChain = slot.tournament?.rail === 'sol_chain' || (!slot.tournament && chain);
@@ -241,12 +264,14 @@ function ScheduleCard({
     : 'TBD';
   const entry = slot.tournament
     ? formatTournamentEntry(slot.tournament)
-    : formatPoke(isChain ? TOURNAMENT_BURN_FEE_POKE : TOURNAMENT_ENTRY_POKE);
+    : (isChain ? formatPokeFromAtoms(TOURNAMENT_BURN_FEE_ATOMS) : formatPoke(TOURNAMENT_ENTRY_POKE));
 
   return (
-    <article className={`pa-schedule-card ${slot.kind} is-format is-${slot.format.accent}${isGen1Cup ? ' is-gen1' : ''}${joinable ? '' : ' is-upcoming'}`}>
+    <article className={`pa-schedule-card ${slot.kind} is-format is-${slot.format.accent}${isGen1Cup ? ' is-gen1' : ''}${joinable ? '' : ' is-upcoming'}${slot.isLocked ? ' is-locked' : ''}`}>
       <div className="pa-schedule-card-mark">
-        <span>{slot.when}</span>
+        <span>
+          {slot.when}
+        </span>
         <strong>{slot.title}</strong>
         <small>{slot.themeLabel}</small>
         <small>{slot.format.teamModeLabel} · {maxPlayers} PLAYERS</small>
@@ -258,10 +283,14 @@ function ScheduleCard({
         <FormatStage compact trainer={slot.format.trainer} pokemon={slot.format.pokemon} />
       )}
 
-      {!joinable ? (
+      {countdownState && countdown ? (
         <div className="pa-schedule-countdown-overlay" aria-label={`${countdownLabel} ${countdown}`}>
           <small>{countdownLabel}</small>
           <strong>{countdown}</strong>
+        </div>
+      ) : slot.isLocked ? (
+        <div className="pa-schedule-countdown-overlay pa-schedule-lock-overlay" aria-label="Tournament locked">
+          <ScheduleLockIcon large />
         </div>
       ) : null}
 
@@ -283,18 +312,26 @@ function ScheduleCard({
           </div>
           <div>
             <dt>Field</dt>
-            <dd>{`${players} / ${maxPlayers}`}</dd>
+            <dd>{fieldFull ? `${players} / ${maxPlayers} players full` : `${players} / ${maxPlayers} players`}</dd>
           </div>
-          {joinable ? (
+          {countdownState && countdown ? (
             <div>
               <dt>{countdownLabel}</dt>
               <dd>{countdown}</dd>
             </div>
           ) : null}
         </dl>
-        {!joinable ? (
+        {!joinable && status === 'ROTATION PREVIEW' ? (
+          <button type="button" className="pa-btn pa-btn-surface" disabled>
+            Rotation preview
+          </button>
+        ) : !joinable ? (
           <button type="button" className="pa-btn pa-btn-surface" disabled>
             Upcoming
+          </button>
+        ) : !slotOpen ? (
+          <button type="button" className="pa-btn pa-btn-surface" disabled>
+            Not scheduled
           </button>
         ) : teamReady === false ? (
           <Link className="pa-btn pa-btn-gold" href={`/teams/builder?ruleset=${slot.rulesetId}`}>
@@ -314,5 +351,26 @@ function ScheduleCard({
         )}
       </div>
     </article>
+  );
+}
+
+function ScheduleLockIcon({ large = false }: { large?: boolean }) {
+  return (
+    <svg
+      className={large ? 'pa-schedule-lock-icon is-large' : 'pa-schedule-lock-icon'}
+      width="0.8em"
+      height="0.8em"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-label="Locked"
+      role="img"
+    >
+      <rect x="5" y="10" width="14" height="10" rx="2" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    </svg>
   );
 }

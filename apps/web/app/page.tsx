@@ -122,14 +122,14 @@ export default function LandingPage() {
       { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Tournament Treasury', copy: 'Ninety percent of those rewards fund the Tournament Treasury that banks competition prizes.' },
       { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw SOL from the Treasury so players compete without large collateral.' },
       { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Fixed POKE burn after fill. Gen brackets on the stadium calendar.' },
-      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: 'Champions take Treasury-funded SOL prizes. Casual fights stay separate and player-funded.' },
+      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the Treasury prize 50/35/15. Casual fights stay separate and player-funded.' },
     ]
     : [
       { n: '01', tone: 'cyan', kicker: 'Source', title: 'Entry holds', copy: 'Players post POKE entry fees when they register for a cup.' },
-      { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Prize pool', copy: 'Ninety percent of held entries fund the champion payout.' },
+      { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Prize pool', copy: 'Ninety percent of held entries form the prize pool, paid 50/35/15.' },
       { n: '03', tone: 'amber', kicker: 'Fund', title: 'Field prize', copy: 'The prize grows with the field — it is not a separate vault balance.' },
       { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Low-entry tournaments put Gen brackets on the stadium calendar.' },
-      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: 'Champions take the field prize. Casual fights stay separate and player-funded.' },
+      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the prize pool 50/35/15. Casual fights stay separate and player-funded.' },
     ];
 
   return (
@@ -330,7 +330,7 @@ export default function LandingPage() {
               </div>
             </div>
             <div className="pa-legend">
-              <span><i className="escrow" /> {chain ? 'Tournament Treasury 90%' : 'Champion prize 90%'}</span>
+              <span><i className="escrow" /> {chain ? 'Tournament Treasury 90%' : 'Prize pool 90%'}</span>
               <span><i className="ops" /> {chain ? 'Project funds 10%' : 'Ops share 10%'}</span>
               <span><i className="vault" /> Casual pools stay player-funded</span>
             </div>

@@ -358,6 +358,11 @@ export class PostgresEconomicsStore implements EconomicsStore {
   async createCasualRoomWithHold(input: CasualRoomCreateInput): Promise<void> {
     const holdKey = creatorHoldKey(input.id);
     await this.transact(async client => {
+      for (const playerId of [input.creatorId, input.invitedPlayerId]
+        .filter((value): value is string => Boolean(value))
+        .sort()) {
+        await this.assertPlayerHasNoActiveCasualRoom(client, playerId);
+      }
       await this.upsertWallet(client, input.creatorId, 0);
       if (input.invitedPlayerId) await this.upsertWallet(client, input.invitedPlayerId, 0);
       const rail = input.rail ?? 'legacy_poke';
@@ -374,7 +379,7 @@ export class PostgresEconomicsStore implements EconomicsStore {
           input.creatorId,
           input.invitedPlayerId ?? null,
           pokeToPg(input.collateral),
-          rail === 'sol_chain' ? 'pending_deposit' : 'open',
+          'open',
           rail,
           input.collateralLamports != null ? pokeToPg(input.collateralLamports) : null,
         ],
@@ -395,6 +400,7 @@ export class PostgresEconomicsStore implements EconomicsStore {
     await this.transact(async client => {
       const room = await this.lockRoom(client, input.roomId);
       if (!room) throw new Error(`Unknown casual room: ${input.roomId}`);
+      await this.assertPlayerHasNoActiveCasualRoom(client, input.opponentId, input.roomId);
       if (room.status === 'full' && room.opponent_id === input.opponentId) {
         const hold = await this.readHold(client, holdKey);
         if (hold?.status === 'reserved' && hold.playerId === input.opponentId) return;
@@ -875,6 +881,29 @@ export class PostgresEconomicsStore implements EconomicsStore {
   private async lockSettlement(client: PoolClient, key: string | undefined): Promise<void> {
     if (!key) return;
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
+  }
+
+  private async assertPlayerHasNoActiveCasualRoom(
+    client: PoolClient,
+    playerId: string,
+    excludeRoomId?: string,
+  ): Promise<void> {
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`casual-active-player:${playerId}`],
+    );
+    const result = await client.query(
+      `SELECT id
+       FROM casual_rooms
+       WHERE status NOT IN ('completed', 'cancelled')
+         AND ($2::uuid IS NULL OR id <> $2::uuid)
+         AND (creator_id = $1 OR opponent_id = $1)
+       LIMIT 1`,
+      [playerId, excludeRoomId ?? null],
+    );
+    if (result.rows[0]) {
+      throw new Error('Each player may only have one active casual room.');
+    }
   }
 
   private async findSettlement(client: PoolClient, key: string | undefined): Promise<PayoutResult | undefined> {

@@ -16,7 +16,7 @@ import {
   type PlayerChoice,
 } from '@pokearena/battle-engine';
 
-import { isRetryableRpcError } from '@pokearena/solana-client';
+import { isRetryableRpcError, previewSolCasual } from '@pokearena/solana-client';
 
 import { previewCasual } from '@pokearena/db';
 import type { DurableCasualRoom, EconomicsStore, PayoutResult } from '@pokearena/db';
@@ -29,12 +29,22 @@ import {
 import { SettlementUnknownError } from './chain-economy';
 import { InMemoryEconomicsStore } from './memory-economics-store';
 import {
-  CASUAL_FEE_BPS,
   MockEconomics,
-  POKE_SYMBOL,
   type CasualEconomicsPreview,
   type ChainPayoutResult,
 } from './mock-economics';
+
+function solCasualEconomics(collateralLamports: number): CasualEconomicsPreview {
+  const preview = previewSolCasual(collateralLamports);
+  return {
+    symbol: 'SOL',
+    collateral: preview.collateralLamports,
+    totalPot: preview.totalPotLamports,
+    protocolFee: preview.protocolFeeLamports,
+    feeRateBps: preview.feeRateBps,
+    winnerPayout: preview.winnerPayoutLamports,
+  };
+}
 
 export interface CasualRosterMon {
   species: string;
@@ -259,14 +269,7 @@ export class CasualRoomService {
     }
     const rail = input.rail ?? 'legacy_poke';
     const economics = rail === 'sol_chain'
-      ? {
-          symbol: 'POKE' as const,
-          collateral: input.collateral,
-          totalPot: input.collateral * 2,
-          protocolFee: Math.floor((input.collateral * 2 * 200) / 10_000),
-          feeRateBps: 200,
-          winnerPayout: input.collateral * 2 - Math.floor((input.collateral * 2 * 200) / 10_000),
-        }
+      ? solCasualEconomics(input.collateral)
       : previewCasual(input.collateral);
     const timestamp = this.now();
     const id = randomUUID() as CasualRoomId;
@@ -400,15 +403,9 @@ export class CasualRoomService {
         // The confirmed escrow/deposit is authoritative if persistence lags.
       });
     }
-    const economics: CasualEconomicsPreview = {
-      symbol: POKE_SYMBOL,
-      collateral: input.collateral,
-      totalPot: input.collateral * 2,
-      protocolFee: Math.floor((input.collateral * 2 * CASUAL_FEE_BPS) / 10_000),
-      feeRateBps: CASUAL_FEE_BPS,
-      winnerPayout: input.collateral * 2
-        - Math.floor((input.collateral * 2 * CASUAL_FEE_BPS) / 10_000),
-    };
+    const economics: CasualEconomicsPreview = input.rail === 'sol_chain'
+      ? solCasualEconomics(input.collateralLamports ?? input.collateral)
+      : previewCasual(input.collateral);
     const timestamp = this.now();
     const room: CasualRoom = {
       id,
@@ -1003,7 +1000,7 @@ export class CasualRoomService {
     if (typeof readResult !== 'function') return;
     const result = readResult.call(battle.session);
     if (!result || (result.status !== 'win' && result.status !== 'tie')) return;
-    await this.handleTerminal(roomId, { type: 'completed', result });
+    await this.enqueueTerminal(roomId, { type: 'completed', result });
   }
 
   solSettlementRooms(): Array<{

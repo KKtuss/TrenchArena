@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$HOME/.avm/bin:$PATH"
 
-PROGRAM_ID="${POKEARENA_PROGRAM_ID:-26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke}"
+PROGRAM_ID="${POKEARENA_PROGRAM_ID:-41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W}"
 ANCHOR_SO="$ROOT/target/deploy/arena_escrow.so"
 PINOCCHIO_SO="$ROOT/target/deploy/arena_escrow_pinocchio.so"
 OUT_DIR="${POKEARENA_PARITY_DIR:-$ROOT/scripts/solana/parity-out}"

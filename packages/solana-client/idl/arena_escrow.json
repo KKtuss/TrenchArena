@@ -1,5 +1,5 @@
 {
-  "address": "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke",
+  "address": "41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W",
   "metadata": {
     "name": "arena_escrow",
     "version": "0.1.0",
@@ -23,7 +23,8 @@
     { "name": "set_prize_winner", "discriminator": [225, 37, 219, 177, 179, 44, 59, 39] },
     { "name": "pay_prize", "discriminator": [80, 130, 106, 28, 177, 138, 226, 26] },
     { "name": "release_prize", "discriminator": [85, 83, 118, 112, 202, 21, 104, 208] },
-    { "name": "buyback_and_burn_poke", "discriminator": [168, 2, 47, 0, 8, 199, 38, 157] }
+    { "name": "buyback_and_burn_poke", "discriminator": [168, 2, 47, 0, 8, 199, 38, 157] },
+    { "name": "set_poke_mint", "discriminator": [196, 144, 250, 70, 90, 167, 128, 132] }
   ],
   "notes": "Discriminators are sha256(\"global:<name>\")[0..8], matching packages/solana-client/src/discriminator.ts."
 }

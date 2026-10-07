@@ -11,7 +11,7 @@ import {
 
 import { ArenaChainClient, type ArenaChainConfig, IX } from '../src/index';
 
-const programId = new PublicKey('41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W');
+const programId = new PublicKey('6nVegJd8zVaV8RfLL6VQ6AQoB53FPsZSTGfidevdKM98');
 const expectedSigner = new PublicKey('11111111111111111111111111111111');
 const wrongSigner = new PublicKey('SysvarRent111111111111111111111111111111111');
 
@@ -21,6 +21,7 @@ function config(): ArenaChainConfig {
     rpcUrl: 'http://127.0.0.1:8899',
     programId,
     pokeMint: PublicKey.default,
+    cardsMint: PublicKey.default,
     feeVault: PublicKey.default,
     treasuryVault: PublicKey.default,
     operatorVault: PublicKey.default,
@@ -525,4 +526,100 @@ test('buildTransaction sets the current blockhash, fee payer, and expiry height 
     requireAllSignatures: false,
     verifySignatures: false,
   }));
+});
+
+test('intent verification treats RPC 429 as pending after bounded retries', async () => {
+  const client = new ArenaChainClient(config());
+  client.observationRetryDelayMs = () => 0;
+  let calls = 0;
+  (client as unknown as { connection: unknown }).connection = {
+    getParsedTransaction: async () => {
+      calls += 1;
+      throw new Error('429 Too Many Requests');
+    },
+  };
+
+  const result = await client.verifyIntentTransaction('landed-signature', {
+    expectedSigner,
+    expectedProgram: programId,
+    discriminator: IX.depositPokeEntry,
+    accounts: [expectedSigner],
+    kind: 'poke_entry_deposit',
+    tournamentId: Buffer.alloc(16),
+    amount: 1n,
+  });
+
+  assert.equal(result.status, 'pending');
+  assert.match(result.error ?? '', /429/);
+  assert.equal(calls, 4);
+});
+
+test('intent verification treats timeout and connection reset as pending', async () => {
+  for (const message of ['request timed out', 'fetch failed: read ECONNRESET']) {
+    const client = new ArenaChainClient(config());
+    client.observationRetryDelayMs = () => 0;
+    (client as unknown as { connection: unknown }).connection = {
+      getParsedTransaction: async () => {
+        throw new Error(message);
+      },
+    };
+    const result = await client.verifyIntentTransaction('landed-signature', {
+      expectedSigner,
+      expectedProgram: programId,
+      discriminator: IX.depositPokeEntry,
+      accounts: [expectedSigner],
+      kind: 'poke_entry_deposit',
+      tournamentId: Buffer.alloc(16),
+      amount: 1n,
+    });
+    assert.equal(result.status, 'pending', message);
+    assert.equal(result.signature, 'landed-signature');
+  }
+});
+
+test('intent verification keeps a definitive on-chain error failed', async () => {
+  const client = new ArenaChainClient(config());
+  client.observationRetryDelayMs = () => 0;
+  let calls = 0;
+  (client as unknown as { connection: unknown }).connection = {
+    getParsedTransaction: async () => {
+      calls += 1;
+      return {
+        meta: { err: { InstructionError: [0, 'Custom'] } },
+        transaction: { message: { accountKeys: [], instructions: [] } },
+      };
+    },
+  };
+
+  const result = await client.verifyIntentTransaction('failed-signature', {
+    expectedSigner,
+    expectedProgram: programId,
+    discriminator: IX.depositPokeEntry,
+    accounts: [expectedSigner],
+    kind: 'poke_entry_deposit',
+    tournamentId: Buffer.alloc(16),
+    amount: 1n,
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(calls, 1);
+});
+
+test('POKE balance reads retry a rate limit instead of reporting zero', async () => {
+  const client = new ArenaChainClient(config());
+  client.observationRetryDelayMs = () => 0;
+  const owner = Keypair.generate().publicKey;
+  let calls = 0;
+  (client as unknown as { connection: unknown }).connection = {
+    getTokenAccountBalance: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('429 Too Many Requests');
+      return { value: { amount: '42' } };
+    },
+  };
+
+  const balance = await client.getPokeBalance(owner);
+
+  assert.equal(balance, 42n);
+  assert.equal(calls, 2);
 });

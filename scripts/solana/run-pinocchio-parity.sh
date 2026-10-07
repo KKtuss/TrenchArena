@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
-# Build the Pinocchio experiment binary, load it on a fresh local validator
-# under the same Program ID as Anchor, bootstrap, and run client integration tests.
-#
-# Does NOT modify the Anchor program or default deploy artifact path permanently.
+# Local Pinocchio parity run. Loads the production artifact on a fresh local
+# validator under the same Program ID as the Anchor oracle, bootstraps, and
+# runs client integration tests. This is not the mainnet deployment path.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$HOME/.avm/bin:$PATH"
 
-PROGRAM_ID="${POKEARENA_PROGRAM_ID:-26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke}"
+PROGRAM_ID="${POKEARENA_PROGRAM_ID:-41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W}"
 PINOCCHIO_SO="$ROOT/target/deploy/arena_escrow_pinocchio.so"
 LEDGER="${POKEARENA_TEST_LEDGER:-/tmp/pokearena-pinocchio-ledger}"
 RPC="${POKEARENA_SOLANA_RPC:-http://127.0.0.1:8899}"
+case "${POKEARENA_SOLANA_CLUSTER:-localnet}" in
+  localnet|local|localhost) ;;
+  *)
+    echo "run-pinocchio-parity.sh is local testing only." >&2
+    echo "Mainnet Pinocchio deployment: scripts/solana/deploy-pinocchio-mainnet.sh" >&2
+    exit 1
+    ;;
+esac
+if [[ ! "$RPC" =~ ^https?://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?/?$ ]]; then
+  echo "run-pinocchio-parity.sh refuses non-local RPC: $RPC" >&2
+  exit 1
+fi
 
 echo "==> Building Pinocchio arena_escrow parity binary"
 cargo-build-sbf --manifest-path "$ROOT/programs/arena-escrow-pinocchio/Cargo.toml" --arch v0

@@ -5,7 +5,12 @@ import {
   SYSVAR_RENT_PUBKEY,
 } from '@solana/web3.js';
 import { IX } from './discriminator';
-import { TOKEN_PROGRAM_ID } from './token';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+} from './token';
 import {
   configPda,
   entryEscrowPda,
@@ -19,6 +24,12 @@ import {
   replayPda,
   treasuryDepositPda,
   treasuryVaultPda,
+  cardsPrizeReservePda,
+  cardsPrizeVaultPda,
+  cardsOperatorAuthorityPda,
+  cardsOperatorVaultPda,
+  cardsTreasuryAuthorityPda,
+  cardsTreasuryVaultPda,
 } from './pdas';
 
 function u64(n: number | bigint): Buffer {
@@ -82,6 +93,23 @@ export function setPokeMintIx(input: {
       { pubkey: input.pokeMint, isSigner: false, isWritable: false },
     ],
     data: IX.setPokeMint,
+  });
+}
+
+export function setCardsMintIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  cardsMint: PublicKey;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: config, isSigner: false, isWritable: true },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+    ],
+    data: IX.setCardsMint,
   });
 }
 
@@ -273,7 +301,7 @@ export function depositPokeEntryIx(input: {
       { pubkey: input.playerPoke, isSigner: false, isWritable: true },
       { pubkey: entryEscrow, isSigner: false, isWritable: true },
       { pubkey: entryVault, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
     ],
@@ -308,7 +336,7 @@ export function burnPokeEntryIx(input: {
       { pubkey: entryEscrow, isSigner: false, isWritable: true },
       { pubkey: entryVault, isSigner: false, isWritable: true },
       { pubkey: replay, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data: Buffer.concat([IX.burnPokeEntry, Buffer.from(input.burnKey)]),
@@ -335,7 +363,7 @@ export function refundPokeEntryIx(input: {
       { pubkey: entryEscrow, isSigner: false, isWritable: true },
       { pubkey: input.playerPoke, isSigner: false, isWritable: true },
       { pubkey: entryVault, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
     ],
     data: IX.refundPokeEntry,
   });
@@ -469,6 +497,141 @@ export function releasePrizeIx(input: {
   });
 }
 
+export function createAssociatedTokenAccountIdempotentIx(input: {
+  payer: PublicKey;
+  owner: PublicKey;
+  mint: PublicKey;
+  /** CARDS stays on classic SPL. POKE callers pass Token-2022. */
+  tokenProgram?: PublicKey;
+}): TransactionInstruction {
+  const tokenProgram = input.tokenProgram ?? TOKEN_PROGRAM_ID;
+  const ata = getAssociatedTokenAddressSync(input.mint, input.owner, true, tokenProgram);
+  return new TransactionInstruction({
+    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: input.payer, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: input.owner, isSigner: false, isWritable: false },
+      { pubkey: input.mint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([1]),
+  });
+}
+
+export function fundCardsPrizeIx(input: {
+  programId: PublicKey;
+  fundingAuthority: PublicKey;
+  config: PublicKey;
+  cardsMint: PublicKey;
+  fundingCards: PublicKey;
+  tournamentId: Uint8Array;
+  amount: number | bigint;
+  fundingKey: Uint8Array;
+}): TransactionInstruction {
+  const [cardsPrizeReserve] = cardsPrizeReservePda(input.programId, input.tournamentId);
+  const [cardsPrizeVault] = cardsPrizeVaultPda(input.programId, input.tournamentId);
+  const [replay] = replayPda(input.programId, input.fundingKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.fundingAuthority, isSigner: true, isWritable: true },
+      { pubkey: input.config, isSigner: false, isWritable: false },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: input.fundingCards, isSigner: false, isWritable: true },
+      { pubkey: cardsPrizeReserve, isSigner: false, isWritable: true },
+      { pubkey: cardsPrizeVault, isSigner: false, isWritable: true },
+      { pubkey: replay, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.concat([
+      IX.fundCardsPrize,
+      Buffer.from(input.tournamentId),
+      u64(input.amount),
+      Buffer.from(input.fundingKey),
+    ]),
+  });
+}
+
+export function setCardsPrizeWinnerIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  config: PublicKey;
+  winner: PublicKey;
+  tournamentId: Uint8Array;
+}): TransactionInstruction {
+  const [cardsPrizeReserve] = cardsPrizeReservePda(input.programId, input.tournamentId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: input.config, isSigner: false, isWritable: false },
+      { pubkey: cardsPrizeReserve, isSigner: false, isWritable: true },
+      { pubkey: input.winner, isSigner: false, isWritable: false },
+    ],
+    data: IX.setCardsPrizeWinner,
+  });
+}
+
+export function payCardsPrizeIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  config: PublicKey;
+  cardsMint: PublicKey;
+  winner: PublicKey;
+  winnerCards: PublicKey;
+  tournamentId: Uint8Array;
+  settlementKey: Uint8Array;
+}): TransactionInstruction {
+  const [cardsPrizeReserve] = cardsPrizeReservePda(input.programId, input.tournamentId);
+  const [cardsPrizeVault] = cardsPrizeVaultPda(input.programId, input.tournamentId);
+  const [replay] = replayPda(input.programId, input.settlementKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: input.config, isSigner: false, isWritable: false },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: cardsPrizeReserve, isSigner: false, isWritable: true },
+      { pubkey: input.winner, isSigner: false, isWritable: false },
+      { pubkey: input.winnerCards, isSigner: false, isWritable: true },
+      { pubkey: cardsPrizeVault, isSigner: false, isWritable: true },
+      { pubkey: replay, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.concat([IX.payCardsPrize, Buffer.from(input.settlementKey)]),
+  });
+}
+
+export function releaseCardsPrizeIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  config: PublicKey;
+  cardsMint: PublicKey;
+  funderCards: PublicKey;
+  tournamentId: Uint8Array;
+}): TransactionInstruction {
+  const [cardsPrizeReserve] = cardsPrizeReservePda(input.programId, input.tournamentId);
+  const [cardsPrizeVault] = cardsPrizeVaultPda(input.programId, input.tournamentId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: input.config, isSigner: false, isWritable: false },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: cardsPrizeReserve, isSigner: false, isWritable: true },
+      { pubkey: input.funderCards, isSigner: false, isWritable: true },
+      { pubkey: cardsPrizeVault, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    ],
+    data: IX.releaseCardsPrize,
+  });
+}
+
 export function buybackAndBurnPokeIx(input: {
   programId: PublicKey;
   authority: PublicKey;
@@ -492,7 +655,7 @@ export function buybackAndBurnPokeIx(input: {
       { pubkey: input.pokeMint, isSigner: false, isWritable: true },
       { pubkey: input.pokeBurnSource, isSigner: false, isWritable: true },
       { pubkey: replay, isSigner: false, isWritable: true },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data: Buffer.concat([
@@ -501,6 +664,220 @@ export function buybackAndBurnPokeIx(input: {
       u64(input.solAmount),
       u64(input.minPokeOut),
     ]),
+  });
+}
+
+export function claimOperatorFeesIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  operatorVault: PublicKey;
+  destination: PublicKey;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.operatorVault, isSigner: false, isWritable: true },
+      { pubkey: input.destination, isSigner: false, isWritable: true },
+    ],
+    data: IX.claimOperatorFees,
+  });
+}
+
+export function claimFeeVaultIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  feeVault: PublicKey;
+  destination: PublicKey;
+  claimKey: Uint8Array;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [replay] = replayPda(input.programId, input.claimKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.feeVault, isSigner: false, isWritable: true },
+      { pubkey: input.destination, isSigner: false, isWritable: true },
+      { pubkey: replay, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.concat([IX.claimFeeVault, Buffer.from(input.claimKey)]),
+  });
+}
+
+export function initCardsRewardVaultsIx(input: {
+  programId: PublicKey;
+  payer: PublicKey;
+  cardsMint: PublicKey;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [treasuryVault] = cardsTreasuryVaultPda(input.programId);
+  const [operatorVault] = cardsOperatorVaultPda(input.programId);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.payer, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: treasuryVault, isSigner: false, isWritable: true },
+      { pubkey: operatorVault, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: IX.initCardsRewardVaults,
+  });
+}
+
+export function claimCardsOperatorIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  cardsMint: PublicKey;
+  destination: PublicKey;
+  amount: bigint;
+  claimKey: Uint8Array;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [operatorVault] = cardsOperatorVaultPda(input.programId);
+  const [operatorAuthority] = cardsOperatorAuthorityPda(input.programId);
+  const [replay] = replayPda(input.programId, input.claimKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: operatorVault, isSigner: false, isWritable: true },
+      { pubkey: input.destination, isSigner: false, isWritable: true },
+      { pubkey: operatorAuthority, isSigner: false, isWritable: false },
+      { pubkey: replay, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.concat([IX.claimCardsOperator, u64(input.amount), Buffer.from(input.claimKey)]),
+  });
+}
+
+export function fundCardsPrizeFromTreasuryIx(input: {
+  programId: PublicKey;
+  fundingAuthority: PublicKey;
+  cardsMint: PublicKey;
+  tournamentId: Uint8Array;
+  amount: bigint;
+  fundingKey: Uint8Array;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [treasuryVault] = cardsTreasuryVaultPda(input.programId);
+  const [treasuryAuthority] = cardsTreasuryAuthorityPda(input.programId);
+  const [reserve] = cardsPrizeReservePda(input.programId, input.tournamentId);
+  const [vault] = cardsPrizeVaultPda(input.programId, input.tournamentId);
+  const [replay] = replayPda(input.programId, input.fundingKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.fundingAuthority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: treasuryVault, isSigner: false, isWritable: true },
+      { pubkey: treasuryAuthority, isSigner: false, isWritable: false },
+      { pubkey: reserve, isSigner: false, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: replay, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.concat([
+      IX.fundCardsPrizeFromTreasury,
+      Buffer.from(input.tournamentId),
+      u64(input.amount),
+      Buffer.from(input.fundingKey),
+    ]),
+  });
+}
+
+export function closeSettledMatchIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  recipient: PublicKey;
+  roomId: Uint8Array;
+  settlementKey: Uint8Array;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [escrow] = matchEscrowPda(input.programId, input.roomId);
+  const [vault] = matchVaultPda(input.programId, input.roomId);
+  const [replay] = replayPda(input.programId, input.settlementKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.recipient, isSigner: false, isWritable: true },
+      { pubkey: escrow, isSigner: false, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: replay, isSigner: false, isWritable: true },
+    ],
+    data: IX.closeSettledMatch,
+  });
+}
+
+export function closeFinalEntryIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  recipient: PublicKey;
+  tournamentId: Uint8Array;
+  player: PublicKey;
+  burnKey: Uint8Array;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [escrow] = entryEscrowPda(input.programId, input.tournamentId, input.player);
+  const [vault] = entryVaultPda(input.programId, input.tournamentId, input.player);
+  const [replay] = replayPda(input.programId, input.burnKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.recipient, isSigner: false, isWritable: true },
+      { pubkey: escrow, isSigner: false, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: replay, isSigner: false, isWritable: true },
+    ],
+    data: IX.closeFinalEntry,
+  });
+}
+
+export function closeFinalCardsPrizeIx(input: {
+  programId: PublicKey;
+  authority: PublicKey;
+  recipient: PublicKey;
+  cardsMint: PublicKey;
+  tournamentId: Uint8Array;
+  fundingKey: Uint8Array;
+  payoutKey: Uint8Array;
+}): TransactionInstruction {
+  const [config] = configPda(input.programId);
+  const [reserve] = cardsPrizeReservePda(input.programId, input.tournamentId);
+  const [vault] = cardsPrizeVaultPda(input.programId, input.tournamentId);
+  const [fundReplay] = replayPda(input.programId, input.fundingKey);
+  const [payReplay] = replayPda(input.programId, input.payoutKey);
+  return new TransactionInstruction({
+    programId: input.programId,
+    keys: [
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: input.recipient, isSigner: false, isWritable: true },
+      { pubkey: input.cardsMint, isSigner: false, isWritable: false },
+      { pubkey: reserve, isSigner: false, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: fundReplay, isSigner: false, isWritable: true },
+      { pubkey: payReplay, isSigner: false, isWritable: true },
+    ],
+    data: IX.closeFinalCardsPrize,
   });
 }
 

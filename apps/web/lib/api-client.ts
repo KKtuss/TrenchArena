@@ -1,5 +1,17 @@
+import {
+  formatPokeFromAtoms,
+  TOURNAMENT_BURN_FEE_ATOMS,
+  TOURNAMENT_FIELD_BURN_FEE_ATOMS,
+} from '@pokearena/solana-client/poke-units';
+
 import { isDemoAuthEnabled } from './demo-auth';
 import type { ClientMessage, ServerMessage } from './protocol';
+
+export {
+  formatPokeFromAtoms,
+  TOURNAMENT_BURN_FEE_ATOMS,
+  TOURNAMENT_FIELD_BURN_FEE_ATOMS,
+};
 
 type MessageHandler = (message: ServerMessage) => void;
 export type ArenaConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -40,6 +52,12 @@ export class ArenaApiClient {
   private authMode: 'demo' | 'wallet' | null = null;
   private walletAuth: WalletAuthHandlers | null = null;
   private resubscribeIds: string[] = [];
+  /**
+   * A replaced wallet session must not reconnect automatically. If it did,
+   * two tabs (or an old page during refresh) could continuously evict each
+   * other and reopen the wallet signature prompt.
+   */
+  private sessionReplaced = false;
   connectionState: ArenaConnectionState = 'idle';
 
   constructor(private readonly url = getDefaultWsUrl()) {}
@@ -63,6 +81,7 @@ export class ArenaApiClient {
     if (!isDemoAuthEnabled()) {
       throw new Error('Demo authentication is disabled.');
     }
+    this.sessionReplaced = false;
     this.intentionallyClosed = false;
     if (playerId) {
       this.identity = playerId;
@@ -77,6 +96,7 @@ export class ArenaApiClient {
   }
 
   async authenticateWallet(handlers: WalletAuthHandlers): Promise<ServerMessage> {
+    this.sessionReplaced = false;
     this.intentionallyClosed = false;
     this.identity = handlers.address;
     this.authMode = 'wallet';
@@ -192,7 +212,7 @@ export class ArenaApiClient {
         this.opening = null;
         this.rejectPending(new Error('WebSocket connection closed.'));
         this.setConnectionState(this.intentionallyClosed ? 'closed' : 'reconnecting');
-        if (!this.intentionallyClosed) this.scheduleReconnect();
+        if (!this.intentionallyClosed && !this.sessionReplaced) this.scheduleReconnect();
       };
       socket.onmessage = event => {
         let message: ServerMessage;
@@ -200,6 +220,15 @@ export class ArenaApiClient {
           message = JSON.parse(String(event.data)) as ServerMessage;
         } catch {
           return;
+        }
+        if (message.type === 'error' && message.code === 'SessionReplacedError') {
+          this.sessionReplaced = true;
+          this.intentionallyClosed = true;
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
+          this.setConnectionState('closed');
         }
         if (message.requestId && this.pending.has(message.requestId)) {
           const pending = this.pending.get(message.requestId)!;
@@ -246,7 +275,15 @@ export class ArenaApiClient {
 }
 
 export function formatPoke(amount: number): string {
-  return `${amount.toLocaleString('en-US')} POKE`;
+  return `${formatPokeValue(amount)} POKE`;
+}
+
+export function formatPokeValue(amount: number): string {
+  return amount.toLocaleString('en-US');
+}
+
+export function formatCardsRaw(raw: number): string {
+  return `${raw.toLocaleString('en-US')} CARDS`;
 }
 
 /** SOL rooms store lamports on `collateral`. Mock rooms store POKE. */
@@ -255,9 +292,16 @@ export function formatRoomAmount(amount: number, rail?: 'legacy_poke' | 'sol_cha
 }
 
 export function formatSolLamports(lamports: number | string): string {
+  return `${formatSolLamportsValue(lamports)} SOL`;
+}
+
+export function formatSolLamportsValue(lamports: number | string): string {
   const value = typeof lamports === 'string' ? Number(lamports) : lamports;
-  if (!Number.isFinite(value)) return '— SOL';
-  return `${(value / 1e9).toLocaleString('en-US', { maximumFractionDigits: 9 })} SOL`;
+  if (!Number.isFinite(value)) return '—';
+  return (value / 1e9).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 /** Fields needed to show cup prize/entry without mixing rails. */
@@ -267,12 +311,16 @@ export type TournamentMoneyFields = {
   entryAtoms?: number;
   burnFeeAtoms?: number;
   prizeLamports?: number;
+  prizeCardsRaw?: number;
   economics?: { prizePool?: number; entryFee?: number } | null;
 };
 
-/** Chain cups pay SOL from the treasury; legacy cups derive POKE from entry holds. */
+/** Chain cups pay a reserved CARDS prize. Legacy cups derive POKE from entry holds. */
 export function formatTournamentPrize(tournament: TournamentMoneyFields | null | undefined): string {
   if (!tournament) return '—';
+  if (tournament.prizeCardsRaw !== undefined) {
+    return `${tournament.prizeCardsRaw.toLocaleString('en-US')} CARDS`;
+  }
   if (tournament.rail === 'sol_chain') {
     if (tournament.prizeLamports === undefined) return '—';
     return formatSolLamports(tournament.prizeLamports);
@@ -286,7 +334,7 @@ export function formatTournamentEntry(tournament: TournamentMoneyFields | null |
   if (!tournament) return '—';
   if (tournament.rail === 'sol_chain') {
     const burn = tournament.burnFeeAtoms ?? tournament.entryAtoms;
-    return burn !== undefined ? formatPoke(burn) : '—';
+    return burn !== undefined ? formatPokeFromAtoms(burn) : '—';
   }
   const fee = tournament.entryFee ?? tournament.economics?.entryFee;
   return fee !== undefined ? formatPoke(fee) : '—';

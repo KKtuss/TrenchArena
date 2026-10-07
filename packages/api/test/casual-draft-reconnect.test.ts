@@ -562,11 +562,15 @@ async function fundedSolDraft() {
     roomId: uuidToBytes(room.id),
     side: 1,
   }));
+  casual.markSolDeposit(room.id, 'creator');
   await casual.acceptRoom(room.id, opponent.toBase58());
   casual.setReady(room.id, creator.toBase58(), true);
   casual.setReady(room.id, opponent.toBase58(), true);
-  casual.selectTeam(room.id, creator.toBase58(), [0, 2], false);
   await confirmDeposits(chainStore, room.id, creator.toBase58(), opponent.toBase58());
+  casual.markSolDeposit(room.id, 'creator');
+  casual.markSolDeposit(room.id, 'opponent');
+  await casual.startBattle(room.id, creator.toBase58());
+  casual.selectTeam(room.id, creator.toBase58(), [0, 2], false);
   const server = new ApiServer({
     allowDemoAuth: false,
     devFaucet: false,

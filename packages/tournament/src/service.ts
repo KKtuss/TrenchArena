@@ -11,7 +11,7 @@ import {
   type ChoiceSubmission,
 } from '@pokearena/battle-engine';
 
-import { buildSingleEliminationBracket } from './bracket';
+import { buildSingleEliminationBracket, isThirdPlaceMatch, readTournamentPlaces } from './bracket';
 import {
   DuplicateRegistrationError,
   InsufficientPlayersError,
@@ -32,8 +32,8 @@ import {
 import {
   TEAM_FINALIZATION_MS,
   BURN_PAYMENT_WINDOW_MS,
-  CHAIN_TOURNAMENT_MAX_PLAYERS,
   TOURNAMENT_BURN_FEE_ATOMS,
+  tournamentBurnFeeRequirement,
   type BattleInstanceId,
   type CreateTournamentInput,
   type RegisterPlayerInput,
@@ -90,11 +90,11 @@ export class TournamentService {
     if (![4, 8, 16, 32].includes(input.maxPlayers)) {
       throw new TournamentError('maxPlayers must be 4, 8, 16, or 32.');
     }
-    if (input.rail === 'sol_chain' && input.maxPlayers !== CHAIN_TOURNAMENT_MAX_PLAYERS) {
-      throw new TournamentError('Chain tournaments use a fixed 32-player field.');
+    if (input.rail === 'sol_chain' && !isChainFieldSize(input.maxPlayers)) {
+      throw new TournamentError('Chain tournaments use a 16-player or 32-player field.');
     }
     if (input.rail === 'sol_chain' && input.entryAtoms !== TOURNAMENT_BURN_FEE_ATOMS) {
-      throw new TournamentError(`Chain tournament burn fee must be exactly ${TOURNAMENT_BURN_FEE_ATOMS} atoms.`);
+      throw new TournamentError(tournamentBurnFeeRequirement());
     }
     if (
       input.matchTimeoutMs !== undefined &&
@@ -125,6 +125,8 @@ export class TournamentService {
       ...(input.entryAtoms !== undefined ? { entryAtoms: input.entryAtoms } : {}),
       ...(input.entryQuoteId ? { entryQuoteId: input.entryQuoteId } : {}),
       ...(input.prizeLamports !== undefined ? { prizeLamports: input.prizeLamports } : {}),
+      ...(input.prizeCardsRaw !== undefined ? { prizeCardsRaw: input.prizeCardsRaw } : {}),
+      ...(input.scheduledKey ? { scheduledKey: input.scheduledKey } : {}),
       players: [],
       matchIds: [],
       createdAt: timestamp,
@@ -361,6 +363,7 @@ export class TournamentService {
       tournament.bracketSeed,
       this.now(),
       () => randomUUID() as TournamentMatchId,
+      { thirdPlace: registered.length >= 4 },
     );
     tournament.matchIds = matches.map(match => match.id);
     tournament.status = 'ready';
@@ -685,14 +688,17 @@ export class TournamentService {
     const tournament = await this.requireTournament(tournamentId);
     if (tournament.status !== 'completed' || !tournament.winner) return undefined;
     const matches = await this.repository.listMatches(tournament.id);
-    const finalMatch = matches.find(match => (
-      match.round === Math.max(...matches.map(item => item.round))
-    ));
-    if (!finalMatch) throw new TournamentError('Completed tournament has no final match.');
+    const places = readTournamentPlaces(matches);
+    if (!places || places.firstId !== tournament.winner) {
+      throw new TournamentError('Completed tournament has no final match.');
+    }
     return {
       tournamentId: tournament.id,
-      winner: tournament.winner,
-      finalMatchId: finalMatch.id,
+      winner: places.firstId,
+      runnerUp: places.secondId,
+      ...(places.thirdId ? { thirdPlace: places.thirdId } : {}),
+      finalMatchId: places.finalMatchId,
+      ...(places.thirdMatchId ? { thirdPlaceMatchId: places.thirdMatchId } : {}),
       completedAt: tournament.completedAt!,
     };
   }
@@ -788,33 +794,51 @@ export class TournamentService {
 
     const tournament = await this.requireTournament(current.tournamentId);
     const matches = await this.repository.listMatches(tournament.id);
-    const finalRound = Math.max(...matches.map(candidate => candidate.round));
+    const placement = matches.find(candidate => isThirdPlaceMatch(candidate, matches));
+    const finalRound = Math.max(...matches
+      .filter(candidate => !isThirdPlaceMatch(candidate, matches))
+      .map(candidate => candidate.round));
+    const championship = current.round === finalRound && !isThirdPlaceMatch(current, matches);
     let nextMatch: TournamentMatch | undefined;
-    let completedTournament: Tournament | undefined;
-    if (current.round === finalRound) {
+    let placementMatch: TournamentMatch | undefined;
+    let persistedTournament: Tournament | undefined;
+    if (isThirdPlaceMatch(current, matches)) {
+      const finalMatch = matches.find(candidate => (
+        candidate.round === finalRound && candidate.bracketPosition === 0
+      ));
+      if (finalMatch && hasDecidedWinner(finalMatch) && finalMatch.winner) {
+        tournament.winner = finalMatch.winner;
+        tournament.completedAt = timestamp;
+        transitionTournament(tournament, 'completed', 'complete tournament', timestamp);
+        persistedTournament = tournament;
+      }
+    } else if (championship && (!placement || hasDecidedWinner(placement))) {
       tournament.winner = winner;
       tournament.completedAt = timestamp;
       transitionTournament(tournament, 'completed', 'complete tournament', timestamp);
-      completedTournament = tournament;
-    } else {
+      persistedTournament = tournament;
+    } else if (!championship) {
       nextMatch = matches.find(candidate => (
         candidate.round === current.round + 1 &&
         candidate.bracketPosition === Math.floor(current.bracketPosition / 2)
       ));
       if (!nextMatch) throw new TournamentError('Could not find the next bracket match.');
-      if (current.bracketPosition % 2 === 0) nextMatch.player1 = winner;
-      else nextMatch.player2 = winner;
-      if (nextMatch.player1 && nextMatch.player2 && nextMatch.status === 'pending') {
-        nextMatch.status = 'ready';
+      seatPlayer(nextMatch, winner, current.bracketPosition, timestamp);
+      if (nextMatch.round === finalRound && nextMatch.bracketPosition === 0 && placement) {
+        const loser = winner === current.player1 ? current.player2 : current.player1;
+        if (loser) {
+          seatPlayer(placement, loser, current.bracketPosition, timestamp);
+          placementMatch = placement;
+        }
       }
-      nextMatch.updatedAt = timestamp;
     }
 
     try {
       await this.repository.commitMatchOutcome({
         match: current,
         ...(nextMatch ? { nextMatch } : {}),
-        ...(completedTournament ? { tournament: completedTournament } : {}),
+        ...(placementMatch ? { placementMatch } : {}),
+        ...(persistedTournament ? { tournament: persistedTournament } : {}),
       });
     } catch (error) {
       remapPersistenceError(error);
@@ -903,6 +927,22 @@ function transitionTournament(
   tournament.updatedAt = timestamp;
 }
 
+function isChainFieldSize(value: number): value is 16 | 32 {
+  return value === 16 || value === 32;
+}
+
+function seatPlayer(
+  match: TournamentMatch,
+  player: TournamentPlayerId,
+  sourcePosition: number,
+  timestamp: number,
+): void {
+  if (sourcePosition % 2 === 0) match.player1 = player;
+  else match.player2 = player;
+  if (match.player1 && match.player2 && match.status === 'pending') match.status = 'ready';
+  match.updatedAt = timestamp;
+}
+
 function validateBracketPlayerCount(count: number): void {
   if (count < 2) throw new InsufficientPlayersError(count);
   if ((count & (count - 1)) !== 0) throw new InvalidBracketSizeError(count);
@@ -924,6 +964,11 @@ function hash(value: string): number {
 
 function isSettledMatch(match: TournamentMatch): boolean {
   return match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied';
+}
+
+/** A tie is terminal for that battle, but it does not decide a podium place. */
+function hasDecidedWinner(match: TournamentMatch | undefined): boolean {
+  return Boolean(match?.winner) && (match?.status === 'completed' || match?.status === 'forfeited');
 }
 
 function sameResult(left: BattleResult | undefined, right: BattleResult): boolean {

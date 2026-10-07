@@ -5,8 +5,7 @@ export const TREASURY_BPS = 9000;
 export const OPERATOR_BPS = 1000;
 export const BPS_DENOM = 10_000;
 
-/** USD cents required for Arena passport eligibility. */
-export const PASSPORT_USD_CENTS = 2_000;
+export { PASSPORT_USD_CENTS, POKEARENA_PASSPORT_MIN_USD } from './passport-threshold';
 /** Approximate tournament entry cost in USD cents. */
 export const TOURNAMENT_ENTRY_USD_CENTS = 500;
 export {

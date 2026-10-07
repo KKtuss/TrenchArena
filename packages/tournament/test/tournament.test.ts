@@ -110,9 +110,10 @@ test('runs a complete four-player tournament through BattleEngine', async () => 
   assert.equal(started.status, 'in-progress');
 
   const initialBracket = await service.getBracket(tournament.id);
-  assert.equal(initialBracket.length, 3);
+  assert.equal(initialBracket.length, 4);
   assert.equal(initialBracket.filter(match => match.round === 1).length, 2);
   assert.equal(initialBracket.filter(match => match.status === 'ready').length, 2);
+  assert.equal(initialBracket.filter(match => match.role === 'third-place').length, 1);
 
   const semifinalOne = initialBracket.find(match => (
     match.round === 1 && match.bracketPosition === 0
@@ -123,11 +124,27 @@ test('runs a complete four-player tournament through BattleEngine', async () => 
   await completeMatch(service, semifinalOne.id);
   await completeMatch(service, semifinalTwo.id);
 
-  const finalMatch = (await service.getBracket(tournament.id)).find(match => match.round === 2)!;
+  const afterSemis = await service.getBracket(tournament.id);
+  const finalMatch = afterSemis.find(match => match.round === 2 && match.bracketPosition === 0)!;
+  const thirdMatch = afterSemis.find(match => match.role === 'third-place')!;
   assert.equal(finalMatch.status, 'ready');
-  await completeMatch(service, finalMatch.id);
+  assert.equal(thirdMatch.status, 'ready');
+  const playedFinal = await completeMatch(service, finalMatch.id);
 
-  assert.equal((await service.getTournament(tournament.id)).status, 'completed');
+  const afterFinal = await service.getTournament(tournament.id);
+  assert.equal(afterFinal.status, 'in-progress');
+  assert.equal(afterFinal.winner, undefined);
+  const playedThird = await completeMatch(service, thirdMatch.id);
+
+  const completed = await service.getTournament(tournament.id);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.winner, playedFinal.winner);
+  const result = await service.getTournamentResult(tournament.id);
+  const runnerUp = playedFinal.winner === playedFinal.player1 ? playedFinal.player2 : playedFinal.player1;
+  assert.equal(result?.winner, completed.winner);
+  assert.equal(result?.runnerUp, runnerUp);
+  assert.equal(result?.thirdPlace, playedThird.winner);
+  assert.notEqual(result?.thirdPlace, result?.winner);
 });
 
 test('rejects duplicate registration and registration after tournament start', async () => {
@@ -208,7 +225,10 @@ test('supports eight- and sixteen-player bracket sizes', async () => {
       });
     }
     await service.startTournament(tournament.id);
-    assert.equal((await service.getBracket(tournament.id)).length, maxPlayers - 1);
+    const matches = await service.getBracket(tournament.id);
+    const elimination = matches.filter(match => match.role !== 'third-place');
+    assert.equal(elimination.length, maxPlayers - 1);
+    assert.equal(matches.filter(match => match.role === 'third-place').length, 1);
   }
 });
 

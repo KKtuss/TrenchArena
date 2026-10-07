@@ -24,6 +24,7 @@ const { securityHeaders } = require('./lib/security-headers');
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  transpilePackages: ['@pokearena/solana-client'],
   outputFileTracingRoot: path.join(__dirname),
   webpack: config => {
     // Windows volume rejects readlink; keep symlink resolution on Linux/VPS

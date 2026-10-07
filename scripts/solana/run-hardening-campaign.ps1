@@ -3,7 +3,7 @@
 # 2) Concurrent soak on live local validator (Pinocchio, then Anchor sample)
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$ProgramId = if ($env:POKEARENA_PROGRAM_ID) { $env:POKEARENA_PROGRAM_ID } else { "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke" }
+$ProgramId = if ($env:POKEARENA_PROGRAM_ID) { $env:POKEARENA_PROGRAM_ID } else { "41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W" }
 $Rpc = if ($env:POKEARENA_SOLANA_RPC) { $env:POKEARENA_SOLANA_RPC } else { "http://127.0.0.1:8899" }
 $OutDir = Join-Path $Root "scripts\solana\parity-out\hardening"
 $WslRoot = "/mnt/d/CursorProj/PokeArena"

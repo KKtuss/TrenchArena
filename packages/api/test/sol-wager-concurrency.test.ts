@@ -797,8 +797,14 @@ test('recovery of a landed win before the intent is confirmed records that winne
   await env.economy.prepareCasualStart(spec.id);
   const winnerBefore = env.ledger.balance(spec.creator.publicKey);
   const loserBefore = env.ledger.balance(spec.opponent.publicKey);
-  env.chainStore.setIntentStatus = async () => {
-    throw new Error('Database update delayed.');
+  const setIntentStatus = env.chainStore.setIntentStatus.bind(env.chainStore);
+  let databaseUpdateInterrupted = true;
+  env.chainStore.setIntentStatus = async (...args) => {
+    if (databaseUpdateInterrupted) {
+      databaseUpdateInterrupted = false;
+      throw new Error('Database update delayed.');
+    }
+    return setIntentStatus(...args);
   };
   await assert.rejects(() => settleRoom(env, spec), /Database update delayed/);
   assert.equal(env.ledger.escrow(spec.id).wins, 1);
@@ -811,6 +817,10 @@ test('recovery of a landed win before the intent is confirmed records that winne
   assert.equal(env.ledger.balance(spec.creator.publicKey) - winnerBefore, payoutOf(spec.collateral));
   assert.equal(env.ledger.balance(spec.opponent.publicKey) - loserBefore, 0n);
   assert.equal(env.ledger.escrow(spec.id).ties, 0);
+  const winnerAfterRecovery = env.ledger.balance(spec.creator.publicKey);
+  await env.economy.recoverCasualRoom(after!, env.economics);
+  assert.equal(env.ledger.balance(spec.creator.publicKey), winnerAfterRecovery);
+  assert.equal((await env.chainStore.getIntentByScope('sol_match_win', spec.id))?.status, 'confirmed');
 });
 
 test('boot-style recovery tie-settles a dead battle and leaves a settled room paid once', async () => {

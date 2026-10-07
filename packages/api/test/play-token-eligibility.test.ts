@@ -19,6 +19,7 @@ import {
 } from '../src/play-token-oracle';
 import {
   createPlayTokenEligibilityService,
+  DEFAULT_PLAY_TOKEN_MIN_USD,
   loadPlayTokenConfig,
   PlayTokenEligibilityService,
   type PlayTokenCheckResult,
@@ -79,7 +80,7 @@ function fakeConnection(input: {
   fail?: 'mint' | 'accounts' | 'token2022';
 }): SplBalanceConnection & { programScans: number } {
   const decimals = input.decimals ?? 6;
-  const owner = input.owner ?? TOKEN_PROGRAM_ID;
+  const owner = input.owner ?? TOKEN_2022_PROGRAM_ID;
   let programScans = 0;
   const connection: SplBalanceConnection & { programScans: number } = {
     programScans: 0,
@@ -92,8 +93,10 @@ function fakeConnection(input: {
         programScans += 1;
         connection.programScans = programScans;
         if (input.fail === 'token2022') throw new Error('rpc down');
+        const rows = input.token2022Accounts
+          ?? (owner.equals(TOKEN_2022_PROGRAM_ID) ? input.accounts ?? [] : []);
         return {
-          value: (input.token2022Accounts ?? []).map(account => tokenAccount(
+          value: rows.map(account => tokenAccount(
             MINT,
             account.amount,
             account.decimals ?? decimals,
@@ -242,16 +245,73 @@ test('token accounts for the same mint are summed and deduped', async () => {
 
   const classic = fakeConnection({
     decimals: 0,
+    owner: TOKEN_PROGRAM_ID,
     accounts: [{ amount: '1' }, { amount: '2' }],
   });
   const classicService = serviceWith({
     body: jupiterBody(MINT, '1'),
     connection: classic,
   }).service;
-  const summed = await classicService.check({ mint: MINT, wallet, minimumUsd: '2' });
+  const rejected = await classicService.check({ mint: MINT, wallet, minimumUsd: '2' });
   assert.equal(classic.programScans, 0);
-  assert.equal(summed.tokenBalanceRaw, '3');
-  assert.equal(summed.eligible, true);
+  assert.equal(rejected.eligible, false);
+  assert.equal(rejected.status, 'invalid_mint');
+  assert.equal(rejected.reason, 'not_mint');
+});
+
+test('Token-2022 passport uses the Token-2022 scan and ignores a classic mint filter', async () => {
+  const wallet = Keypair.generate().publicKey.toBase58();
+  const connection = fakeConnection({
+    owner: TOKEN_2022_PROGRAM_ID,
+    accounts: [{ amount: '999000000000' }],
+    token2022Accounts: [{ amount: '5000000' }],
+  });
+  const { service } = serviceWith({
+    body: jupiterBody(MINT, '1'),
+    connection,
+  });
+  const held = await service.check({ mint: MINT, wallet, minimumUsd: DEFAULT_PLAY_TOKEN_MIN_USD });
+  assert.equal(connection.programScans, 1);
+  assert.equal(held.tokenBalanceRaw, '5000000');
+  assert.equal(held.decimals, 6);
+  assert.equal(held.eligible, true);
+
+  const classicOnly = fakeConnection({
+    owner: TOKEN_2022_PROGRAM_ID,
+    accounts: [{ amount: '5000000' }],
+    token2022Accounts: [],
+  });
+  const missed = await serviceWith({
+    body: jupiterBody(MINT, '1'),
+    connection: classicOnly,
+  }).service.check({ mint: MINT, wallet, minimumUsd: DEFAULT_PLAY_TOKEN_MIN_USD });
+  assert.equal(classicOnly.programScans, 1);
+  assert.equal(missed.tokenBalanceRaw, '0');
+  assert.equal(missed.eligible, false);
+});
+
+test('passport accepts exactly the configured USD minimum and rejects less', async () => {
+  const wallet = Keypair.generate().publicKey.toBase58();
+  const { service } = serviceWith({
+    body: jupiterBody(MINT, '1'),
+    connection: fakeConnection({ accounts: [{ amount: '5000000' }] }),
+  });
+  const exact = await service.check({ mint: MINT, wallet, minimumUsd: DEFAULT_PLAY_TOKEN_MIN_USD });
+  assert.equal(exact.eligible, true);
+  assert.equal(exact.usdValue, '5');
+  const short = serviceWith({
+    body: jupiterBody(MINT, '1'),
+    connection: fakeConnection({ accounts: [{ amount: '4999999' }] }),
+  });
+  const under = await short.service.check({ mint: MINT, wallet, minimumUsd: DEFAULT_PLAY_TOKEN_MIN_USD });
+  assert.equal(under.eligible, false);
+  const over = serviceWith({
+    body: jupiterBody(MINT, '1'),
+    connection: fakeConnection({ accounts: [{ amount: '5000001' }] }),
+  });
+  const above = await over.service.check({ mint: MINT, wallet, minimumUsd: DEFAULT_PLAY_TOKEN_MIN_USD });
+  assert.equal(above.eligible, true);
+  assert.equal(DEFAULT_PLAY_TOKEN_MIN_USD, '5.00');
 });
 
 test('missing, thin, and failed prices do not grant eligibility', async () => {

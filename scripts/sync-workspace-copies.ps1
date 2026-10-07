@@ -33,4 +33,6 @@ function Sync-Package($name, $extraTargets = @()) {
 Sync-Package "battle-engine"
 Sync-Package "tournament"
 Sync-Package "db"
-Sync-Package "solana-client"
+Sync-Package "solana-client" @(
+  (Join-Path $root "apps\web\node_modules\@pokearena\solana-client")
+)
