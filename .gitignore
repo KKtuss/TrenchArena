@@ -9,6 +9,7 @@ target/
 .anchor/
 test-ledger/
 **/*.so
+!deploy/program-archive/**/*.so
 programs/**/Cargo.lock
 *.tgz
 *.tsbuildinfo

@@ -1,0 +1,111 @@
+{
+  "kind": "pokearena-production-launch-manifest",
+  "recordedAt": "2026-10-07T17:21:53.560Z",
+  "application": {
+    "canonicalCommit": "bf130a91d0b90f0c64c44e173c0215e341c975c5",
+    "gitTag": "pokearena-staging-proven-2026-10-07",
+    "tagObject": "81a515686712a299f6f4283554d91d0d00d8493d",
+    "branchAtTag": "main",
+    "runtimeNode": "v22.23.3",
+    "hostPnpm": "12.10.1",
+    "reproductionBuild": {
+      "node": "v22.18.0",
+      "pnpm": "12.6.0",
+      "result": "Clean checkout installed and built solana-client, db, battle-engine, tournament, API, and Next.js."
+    },
+    "provenRuntimeHashes": {
+      "packages/api/dist/src/server.js": "f1b4185f5c7a7d1f372738ca50da2af6a484eb795bf9796bfd2474d8bfed3dd6",
+      "packages/api/dist/src/chain-economy.js": "98c86a84dcdd8d172d83a09292af095923b40d7fb4ab23654f14ee5d03b5bebd",
+      "packages/api/dist/src/tournament-cards-payout.js": "a21ae5fedb28272345b9336edd58a28c05cd5413a28bc21a3c1b6bf5488a921e",
+      "packages/api/dist/src/creator-rewards.js": "ae6890e8f76e8a4452f56c4f73011d9e9eb982d3701f136ba7f6066e7e309985",
+      "packages/api/dist/src/tournament-scheduler.js": "085461ca0491ff11fe2ed66a85ec17e0fab32edc369ecfb73fe0094cce7e9254",
+      "packages/db/dist/src/tournament-completion.js": "c8660f3ab3fa42111427432293fb99cd92f0697544cedceaa8725168b2cff93e",
+      "packages/tournament/dist/src/bracket.js": "c4c5f47622499018c86b9d1cfc4cc61863efdc66e962e22ac398fefb33a6f236"
+    },
+    "gitReproductionHashes": {
+      "packages/api/dist/src/server.js": "f1b4185f5c7a7d1f372738ca50da2af6a484eb795bf9796bfd2474d8bfed3dd6",
+      "packages/api/dist/src/chain-economy.js": "550a9c03e8a0b6154b88a474d1ba1e84b2c5673714994235ce6562ac0f3cab30",
+      "packages/api/dist/src/tournament-cards-payout.js": "a21ae5fedb28272345b9336edd58a28c05cd5413a28bc21a3c1b6bf5488a921e",
+      "packages/api/dist/src/creator-rewards.js": "ae6890e8f76e8a4452f56c4f73011d9e9eb982d3701f136ba7f6066e7e309985",
+      "packages/api/dist/src/tournament-scheduler.js": "085461ca0491ff11fe2ed66a85ec17e0fab32edc369ecfb73fe0094cce7e9254",
+      "packages/db/dist/src/tournament-completion.js": "c8660f3ab3fa42111427432293fb99cd92f0697544cedceaa8725168b2cff93e",
+      "packages/tournament/dist/src/bracket.js": "c4c5f47622499018c86b9d1cfc4cc61863efdc66e962e22ac398fefb33a6f236"
+    },
+    "webBuildHash": "UNKNOWN / NEEDS VERIFICATION"
+  },
+  "onChain": {
+    "cluster": "mainnet-beta",
+    "programId": "HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk",
+    "programData": "5FkXYdQpgNnB2bZDwKseH527ayArL4hM1jU3kTA1c6xb",
+    "upgradeAuthority": "8C5oWBFxk4J57BXkHrSE1Dg2F7tkvsJrAWPLSSpLKFwC",
+    "loader": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "deployedArtifactSha256": "b40496e84cd4748b3530ef8769232dc4af9be992812ad78151693a679e30db90",
+    "deployedArtifactBytes": 120160,
+    "programDataAccountBytes": 120205,
+    "lastDeploySlot": 453995537,
+    "lastDeployedAt": "2026-10-06T19:29:43.000Z",
+    "deploySignature": "4Vctso86gBzpMxYrN7v1UHJpPX9rx8fGyHVUmKswfx52zy6TXRovnvsRxQysbkTk1gCXXRyybJAXy6Rd2HCjbSPq",
+    "archive": "deploy/program-archive/HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk/arena_escrow.so"
+  },
+  "config": {
+    "configAccount": "GmXeZM9hb1aoAFNEnhexWkwWrLCppKFRfpwdqVxtCED5",
+    "configAuthority": "67sQcfcocfoq91oHZKxPZyiGndQvSgNfu2UmmNuRbFGi",
+    "quoteAuthority": "67sQcfcocfoq91oHZKxPZyiGndQvSgNfu2UmmNuRbFGi",
+    "keeper": "DFo1hqiFQ5crfZrrUVfV82RputSKPevRsZjNDwCfs6Co",
+    "feeVault": "FemDYs5uiiTCdCmM1ftX4UN7NQXWD5ro3Zteb8ppXYv5",
+    "treasuryVault": "CgzKZ6n2mLBtQSeh2VVPeEYZdrio5zMw3LzqU8tzza9N",
+    "operatorVault": "CBX2c86gumyCU4TfpMjE78suhFG6yvP8CwTDJuHRe1Hf",
+    "cardsMint": "CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp",
+    "pokeMint": "4oc27vsDaJeYhbhUybhhoPrjxobDzgPgKpZEMWwWpump",
+    "feeBps": 200,
+    "treasuryBps": 9000,
+    "operatorBps": 1000,
+    "buybackBps": 0,
+    "minBuybackLamports": 50000000
+  },
+  "secrets": "provided separately through server environment / secret store",
+  "database": {
+    "migrationLevel": "016_tournament_scheduler.sql",
+    "migrationsApplied": [
+      "001_initial.sql",
+      "002_tournament_holds_without_parent.sql",
+      "003_restore_tournament_parent_fks.sql",
+      "004_interrupted_matches.sql",
+      "005_chain_intents.sql",
+      "006_asset_accounts.sql",
+      "007_treasury_ledger.sql",
+      "008_tournament_ruleset.sql",
+      "009_tournament_finalization.sql",
+      "010_tournament_burn_payment.sql",
+      "011_cards_prize_rail.sql",
+      "012_creator_rewards.sql",
+      "013_creator_reward_allocation.sql",
+      "014_creator_reward_operator_claim.sql",
+      "015_tournament_place_payouts.sql",
+      "016_tournament_scheduler.sql"
+    ],
+    "rowsAreRuntimeState": true,
+    "note": "Database rows and balances are runtime state. Git recreates the schema through migrations. It does not recreate the live rows.",
+    "scheduler": {
+      "enabled": false,
+      "nextTournamentStartAt": null,
+      "nextRotationIndex": 0
+    }
+  },
+  "behavior": {
+    "chainCupPayout": "CARDS vault collected once to the keeper, then a 50/35/15 integer CARDS podium",
+    "twoPlayerChainCup": "payTournamentCardsPrize pays the whole CARDS vault to the winner. There is no SOL tournament prize fallback.",
+    "solChainRail": "sol_chain is the 1v1 SOL settlement rail and the chain-cup rail name. Chain-cup prizes are CARDS.",
+    "casualFeeBps": 200,
+    "tournamentCapacity": "Rotation indexes 0, 1, and 2 are 16-player events. Later rotation indexes are 32-player events.",
+    "scheduler": "Disabled by default. Enabling sets one start anchor 30 minutes ahead. The live row is disabled with a null start and rotation index 0.",
+    "creatorRewards": "CARDS creator fees split 90% tournament / 10% operator. Poll default 60000 ms. Minimum claim 1 raw unit. Signer path is not recorded here.",
+    "pokePassportMinUsd": "5.00",
+    "placeRecovery": "A CARDS place payment persists the signed transaction before broadcast. The same bytes are rebroadcast while the blockhash can still land. A replacement is signed only after the stored signature is confirmed absent and cannot be replayed. Place 3 uses that path."
+  },
+  "recordedDifferences": [
+    "Anchor.toml inside bf130a91d0b90f0c64c44e173c0215e341c975c5 names program 26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke. That is not the deployed program. The client constant STAGING_PROGRAM_ID is HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk.",
+    "The uncommitted working tree changes Anchor.toml to 41GGgA4QzQfWxqUmqkitkhhcyrfMuVxq7Gr2FDwdbu4W. That is also not the deployed program. It was not tagged.",
+    "A clean build of the tagged sources reproduces every recorded runtime hash except packages/api/dist/src/chain-economy.js. The running file uses Number.isFinite(result.lastValidBlockHeight). The tagged source compiles to lastValidBlockHeight !== undefined. The other six recorded files match."
+  ]
+}

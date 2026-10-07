@@ -1,0 +1,17 @@
+{
+  "cluster": "mainnet-beta",
+  "programId": "HRN7567mTaH27Bhngu4Rg7JUQ8bvZp6Ymmf7XRT99rZk",
+  "programData": "5FkXYdQpgNnB2bZDwKseH527ayArL4hM1jU3kTA1c6xb",
+  "upgradeAuthority": "8C5oWBFxk4J57BXkHrSE1Dg2F7tkvsJrAWPLSSpLKFwC",
+  "loader": "BPFLoaderUpgradeab1e11111111111111111111111",
+  "artifact": "arena_escrow.so",
+  "artifactSha256": "b40496e84cd4748b3530ef8769232dc4af9be992812ad78151693a679e30db90",
+  "artifactBytes": 120160,
+  "elfMagic": "7f454c46",
+  "programDataAccountBytes": 120205,
+  "lastDeploySlot": 453995537,
+  "lastDeployedAt": "2026-10-06T19:29:43.000Z",
+  "deploySignature": "4Vctso86gBzpMxYrN7v1UHJpPX9rx8fGyHVUmKswfx52zy6TXRovnvsRxQysbkTk1gCXXRyybJAXy6Rd2HCjbSPq",
+  "source": "Read-only extraction of the ProgramData account. The host had no matching on-disk ELF. The extracted file was copied locally and its SHA-256 matched the chain extraction.",
+  "mustNotReplaceWithUnverifiedRustBuild": true
+}
