@@ -11,8 +11,11 @@ arena_escrow = "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke"
 [programs.devnet]
 arena_escrow = "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke"
 
+# SAFETY: no production program is selected in this checked-in deployment config.
+# A future production deployment must generate and review a separate Anchor config
+# with its explicitly approved program ID before invoking Anchor.
 [programs.mainnet]
-arena_escrow = "26fttiarz4KzXfcyB5W24WfXpMw8UqZHqKoTF9wWm2Ke"
+arena_escrow = "11111111111111111111111111111111"
 
 [registry]
 url = "https://api.apr.dev"
