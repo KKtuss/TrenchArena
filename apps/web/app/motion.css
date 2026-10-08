@@ -5,8 +5,20 @@
    impact — countdown, lock, result, payout
    Durations live on :root in globals.css. */
 
-.pa-route {
-  animation: pa-enter var(--motion-short) var(--ease-out);
+.pa-route.is-held {
+  opacity: 0;
+}
+
+.pa-route.is-arriving {
+  animation: pa-route-arrive 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pa-route-leave-clone {
+  position: fixed;
+  z-index: 5;
+  margin: 0;
+  pointer-events: none;
+  animation: pa-route-leave 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
 .pa-btn,
@@ -383,6 +395,28 @@
   color: #00f0ff;
 }
 
+@keyframes pa-route-leave {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-56px);
+  }
+}
+
+@keyframes pa-route-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(64px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @keyframes pa-enter {
   from {
     opacity: 0;
@@ -452,7 +486,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pa-route,
   .pa-btn,
   .btn,
   .badge,

@@ -1,19 +1,34 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
+import { ErrorToast } from '@/components/error-toast';
 import { PageHeader, Panel, SectionHeader } from '@/components/shell';
 import { CasualRoomCard, ResultCard } from '@/components/ui';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke } from '@/lib/api-client';
+import { casualChallengeAccess } from '@/lib/play-access';
 
 export default function CasualLobbyPage() {
-  const { client, snapshot, refreshSnapshot } = useArena();
+  const {
+    client,
+    snapshot,
+    refreshSnapshot,
+    walletConnected,
+    chainEconomyEnabled,
+  } = useArena();
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     void client.request({ type: 'casual.list' }).then(() => refreshSnapshot());
   }, [client, refreshSnapshot]);
+
+  const playAccess = casualChallengeAccess({
+    walletConnected,
+    chainEconomyEnabled,
+    passport: snapshot?.passport,
+  });
 
   return (
     <div className="stack">
@@ -21,8 +36,19 @@ export default function CasualLobbyPage() {
         eyebrow="Casual // player-funded fights"
         title="Call your match."
         description="Gen 9 Singles. Post collateral each, fill the room, then fight. One 2% fee comes off the gross pool at match start."
-        action={<Link className="btn btn-primary" href="/casual/create">Create challenge</Link>}
+        action={playAccess.ok ? (
+          <Link className="btn btn-primary" href="/casual/create">Create challenge</Link>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setNotice(playAccess.reason)}
+          >
+            Create challenge
+          </button>
+        )}
       />
+      <ErrorToast error={notice} onDismiss={() => setNotice(null)} />
       <div className="queue-banner">
         <div><span className="micro-label">Available to stake</span><strong>{snapshot ? formatPoke(snapshot.wallet.balance) : 'Loading…'}</strong></div>
         <span className="muted">Mock economics · 2% once from gross pool at match start · winner receives 98% · no withdrawal tax</span>

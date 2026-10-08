@@ -282,6 +282,18 @@ export function formatPokeValue(amount: number): string {
   return amount.toLocaleString('en-US');
 }
 
+/** Whole POKE from raw 6-decimal atoms. */
+export function formatPokeAtomsValue(atoms: string | number): string {
+  const raw = typeof atoms === 'number' ? BigInt(Math.trunc(atoms)) : BigInt(atoms);
+  if (raw < 0n) return '0';
+  const whole = raw / 1_000_000n;
+  const frac = raw % 1_000_000n;
+  const wholeText = whole.toLocaleString('en-US');
+  if (frac === 0n) return wholeText;
+  const fracText = frac.toString().padStart(6, '0').replace(/0+$/, '');
+  return `${wholeText}.${fracText}`;
+}
+
 export function formatCardsRaw(raw: number): string {
   return `${raw.toLocaleString('en-US')} CARDS`;
 }

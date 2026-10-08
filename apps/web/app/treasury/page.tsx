@@ -36,8 +36,8 @@ export default function TreasuryPage() {
         <h1>Treasury &amp; Economy</h1>
         <p className="pa-lead">
           {chain
-            ? 'Poke is your passport. SOL is what you wager in the Arena. $CARDS is what you fight for in the Tournaments.'
-            : 'Mock ledger mode. Casual fights wager POKE. Tournament prizes come from held entry fees (90% champion / 10% ops). Casual collateral never funds cups.'}
+            ? 'Poke is your passport. CARDS is what you wager in the Arena. $CARDS is what you fight for in the Tournaments.'
+            : 'Mock ledger mode. Arena fights wager POKE. Tournament prizes come from held entry fees (90% champion / 10% ops). Arena collateral never funds cups.'}
         </p>
         {chain && snapshot?.solBalances ? (
           <p className="pa-lead">
@@ -78,15 +78,15 @@ export default function TreasuryPage() {
             <h2><span>◆</span> {chain ? 'Creator rewards routing' : 'Tournament prize split'}</h2>
             <p>
               {chain
-                ? 'Token trading rewards split once. This route never includes casual collateral.'
-                : 'Held entry fees split once at settlement. Casual collateral never enters this route.'}
+                ? 'Token trading rewards split once. This route never includes arena collateral.'
+                : 'Held entry fees split once at settlement. Arena collateral never enters this route.'}
             </p>
           </div>
           <span className="pa-live-pill"><i /> {chain ? 'On-chain allocation' : 'Legacy ledger'}</span>
         </header>
         <article className="pa-route-block creator">
           <div className="pa-route-source">
-            <b>{chain ? 'Creator / dev rewards' : 'Entry fee holds'}</b>
+            <b>{chain ? 'Creator / Dev Rewards - $CARDS' : 'Entry fee holds'}</b>
             <span>{chain ? 'Source · token trading activity' : 'Source · registered players'}</span>
           </div>
           <div className="pa-split-bar" role="img" aria-label="90 percent prize path, 10 percent project or ops">
@@ -127,7 +127,7 @@ export default function TreasuryPage() {
       <section className="pa-fly">
         <header>
           <div>
-            <h2><span>◆</span> Creator / Dev rewards - $CARDS</h2>
+            <h2><span>◆</span> Arena wager routing</h2>
             <p>A different route. One fee from the player-funded gross pool. No withdrawal tax.</p>
           </div>
           <span className="pa-live-pill">
@@ -164,8 +164,8 @@ export default function TreasuryPage() {
           <article className="pa-mode-panel casual">
             <header>
               <div>
-                <small>Casual</small>
-                <h3>{chain ? 'Wager SOL in casual fights.' : 'Wager POKE in casual fights.'}</h3>
+                <small>Arena</small>
+                <h3>{chain ? 'Wager CARDS in arena fights.' : 'Wager POKE in arena fights.'}</h3>
               </div>
               <span>Player-funded</span>
             </header>

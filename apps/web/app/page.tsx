@@ -118,18 +118,18 @@ export default function LandingPage() {
 
   const flywheel = chain
     ? [
-      { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards', copy: 'Token trading activity generates creator and developer rewards for the project.' },
+      { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards - $CARDS', copy: 'Token trading activity generates creator and developer rewards for the project.' },
       { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Tournament Treasury', copy: 'Ninety percent of those rewards fund the Tournament Treasury that banks competition prizes.' },
-      { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw SOL from the Treasury so players compete without large collateral.' },
+      { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw CARDS from the Treasury so players compete without large collateral.' },
       { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Fixed POKE burn after fill. Gen brackets on the stadium calendar.' },
-      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the Treasury prize 50/35/15. Casual fights stay separate and player-funded.' },
+      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the Treasury prize 50/35/15. Arena fights stay separate and player-funded.' },
     ]
     : [
       { n: '01', tone: 'cyan', kicker: 'Source', title: 'Entry holds', copy: 'Players post POKE entry fees when they register for a cup.' },
       { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Prize pool', copy: 'Ninety percent of held entries form the prize pool, paid 50/35/15.' },
       { n: '03', tone: 'amber', kicker: 'Fund', title: 'Field prize', copy: 'The prize grows with the field — it is not a separate vault balance.' },
       { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Low-entry tournaments put Gen brackets on the stadium calendar.' },
-      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the prize pool 50/35/15. Casual fights stay separate and player-funded.' },
+      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the prize pool 50/35/15. Arena fights stay separate and player-funded.' },
     ];
 
   return (
@@ -143,12 +143,14 @@ export default function LandingPage() {
         </span>
       </div>
       <section className="pa-hero">
-        <h1>POKEARENA</h1>
+        <h1>
+          <img className="pa-wordmark" src="/brand/pokearena-wordmark.png?v=3" alt="PokeArena" />
+        </h1>
         <p className="pa-tag">Battle. Compete. Climb.</p>
         <p className="pa-lead">
           <span className="pa-lead-intro">{chain ? 'Hold POKE to enter.' : 'Connect and compete.'}</span>{' '}
           {chain
-            ? 'Wager SOL in the arena, or enter a tournament and fight for Treasury-funded $CARDS prizes.'
+            ? 'Wager CARDS in the arena, or enter a tournament and fight for Treasury-funded $CARDS prizes.'
             : 'Wager POKE in the arena, or enter a tournament and fight for a prize funded by the field.'}
         </p>
         {saved?.species.some(Boolean) ? (
@@ -238,12 +240,12 @@ export default function LandingPage() {
             <h2><span>◆</span> Two competitive paths</h2>
             <p>
               {chain
-                ? 'Casual fights wager SOL. Tournaments burn a fixed POKE fee after fill and pay SOL from the Treasury.'
-                : 'Casual fights wager POKE. Tournaments hold entry fees and pay the champion from the field pool.'}
+                ? 'Arena fights wager CARDS. Tournaments burn a fixed POKE fee after fill and pay CARDS from the Treasury.'
+                : 'Arena fights wager POKE. Tournaments hold entry fees and pay the champion from the field pool.'}
             </p>
           </div>
           <span className="pa-live-pill">
-            <i /> {chain ? 'POKE passport · SOL wagers' : 'Mock ledger · POKE stakes'}
+            <i /> {chain ? 'POKE passport · CARDS wagers' : 'Mock ledger · POKE stakes'}
           </span>
         </header>
         <CompetitivePaths chain={chain} />
@@ -255,8 +257,8 @@ export default function LandingPage() {
             <h2><span>◆</span> Tournament flywheel</h2>
             <p>
               {chain
-                ? 'Creator and developer rewards fund cups. Casual collateral never enters this loop.'
-                : 'Held entry fees fund the champion. Casual collateral never enters this loop.'}
+                ? 'Creator and developer rewards fund cups. Arena collateral never enters this loop.'
+                : 'Held entry fees fund the champion. Arena collateral never enters this loop.'}
             </p>
           </div>
           <span className="pa-live-pill">
@@ -273,7 +275,7 @@ export default function LandingPage() {
           ))}
         </div>
         <p className="pa-econ-note" style={{ marginTop: '0.85rem' }}>
-          Separate track: casual fights take one 2% protocol fee from the gross player-funded pool
+          Separate track: arena fights take one 2% protocol fee from the gross player-funded pool
           {chain ? ' at match start' : ' at settlement'}. No withdrawal tax.
         </p>
       </section>
@@ -281,7 +283,7 @@ export default function LandingPage() {
       <section className="pa-split">
         <div>
           <header>
-            <h2>Live casual board</h2>
+            <h2>Live arena board</h2>
             <span>{rooms.length} {rooms.length === 1 ? 'fight' : 'fights'}</span>
           </header>
           {board.length ? board.map(room => (
@@ -319,12 +321,12 @@ export default function LandingPage() {
                   {chain
                     ? (snapshot?.solBalances
                       ? `Live vault ${formatSolLamports(snapshot.solBalances.treasuryLamports)}`
-                      : 'Configured SOL prize for the open cup')
+                      : 'Configured CARDS prize for the open cup')
                     : '90% of held entries · provisional until settle'}
                 </span>
               </div>
               <div>
-                <small>Recent casual payouts</small>
+                <small>Recent arena payouts</small>
                 <strong className="ok">{paidOutLabel}</strong>
                 <span>Player-funded wins after protocol fee</span>
               </div>
@@ -332,15 +334,15 @@ export default function LandingPage() {
             <div className="pa-legend">
               <span><i className="escrow" /> {chain ? 'Tournament Treasury 90%' : 'Prize pool 90%'}</span>
               <span><i className="ops" /> {chain ? 'Project funds 10%' : 'Ops share 10%'}</span>
-              <span><i className="vault" /> Casual pools stay player-funded</span>
+              <span><i className="vault" /> Arena pools stay player-funded</span>
             </div>
             <div className="pa-contract">
               <span>
-                Casual fee 2%
+                Arena fee 2%
                 {chain ? ' at match start' : ' at settlement'}
                 {' · no withdrawal tax'}
               </span>
-              <span>{chain ? 'SOL prizes · POKE burn' : 'Mock ledger'}</span>
+              <span>{chain ? 'CARDS prizes · POKE burn' : 'Mock ledger'}</span>
             </div>
             <Link href="/treasury">Open Treasury map</Link>
           </div>
@@ -353,7 +355,7 @@ export default function LandingPage() {
             <h2><span>◆</span> Tournament radar</h2>
             <p>
               {chain
-                ? 'Fixed POKE burn. Competitive SOL prize from the Tournament Treasury.'
+                ? 'Fixed POKE burn. Competitive CARDS prize from the Tournament Treasury.'
                 : 'Entry held at join. Competitive prize from the field pool.'}
             </p>
           </div>

@@ -65,6 +65,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${barlow.variable} ${barlowCondensed.variable} ${teko.variable} ${jetbrains.variable} ${anton.variable} ${inter.variable}`}>
       <body>
+        <div className="site-backdrop" aria-hidden>
+          <img src="/brand/night-horizon.png" alt="" />
+        </div>
         <ArenaProvider>
           <ArenaShell>{children}</ArenaShell>
         </ArenaProvider>

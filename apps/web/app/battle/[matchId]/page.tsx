@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 import { CasualSelectBoard } from '@/components/casual-select';
@@ -15,6 +15,8 @@ import { formatRoomAmount, formatTournamentPrize } from '@/lib/api-client';
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
   const matchId = params?.matchId ?? '';
+  const router = useRouter();
+  const openedResult = useRef(false);
   const {
     client,
     playerId,
@@ -120,6 +122,14 @@ export default function BattlePage() {
     : match?.id
       ? `/result/${match.id}`
       : null;
+  const fightOver = Boolean(battleView?.result);
+  const payoutSettled = match?.status === 'completed';
+
+  useEffect(() => {
+    if (!payoutSettled || !resultHref || openedResult.current) return;
+    openedResult.current = true;
+    router.push(resultHref);
+  }, [payoutSettled, resultHref, router]);
 
   return (
     <div className="pa-page battle-page">
@@ -195,10 +205,19 @@ export default function BattlePage() {
           onLock={() => void sendTournamentSelection(selectedSlots, true)}
         />
       ) : null}
-      {match?.status === 'completed' && resultHref ? (
+      {fightOver && !payoutSettled ? (
+        <div className="pa-live-strip pa-fight-banner" role="status">
+          <span className="pa-live-pill warn"><i /> Settling</span>
+          <span>Fight is over. Waiting for the on-chain SOL payout to confirm.</span>
+          {resultHref ? (
+            <Link className="pa-btn pa-btn-surface pa-btn-sm" href={resultHref}>Open result</Link>
+          ) : null}
+        </div>
+      ) : null}
+      {payoutSettled && resultHref ? (
         <div className="pa-live-strip pa-fight-banner">
           <span className="pa-live-pill"><i /> Fight over</span>
-          <span>This fight is over. {match.winner ? `${match.winner} takes it.` : 'The pot is settled.'}</span>
+          <span>This fight is over. {match?.winner ? `${match.winner} takes it.` : 'The pot is settled.'}</span>
           <Link className="pa-btn pa-btn-primary pa-btn-sm" href={resultHref}>View result</Link>
         </div>
       ) : null}

@@ -134,6 +134,7 @@ export interface PassportSnapshot {
   atomsForEntryAndPassport: string;
   quote: {
     priceMicroUsd: number;
+    priceUsdScaled?: string;
     decimals: number;
     observedAt: number;
     source: string;

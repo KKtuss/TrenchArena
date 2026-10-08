@@ -368,11 +368,11 @@ export function CompetitivePaths({ chain = false }: { chain?: boolean }) {
   return (
     <div className="pa-paths">
       <article className="pa-path casual">
-        <small>Casual</small>
-        <strong>{chain ? 'Wager SOL' : 'Wager POKE'}</strong>
+        <small>Arena</small>
+        <strong>{chain ? 'Wager CARDS' : 'Wager POKE'}</strong>
         <p>
           {chain
-            ? 'Each side posts SOL collateral, one 2% fee comes off the gross pool at match start. Two gamemodes : pick three from a random curated six, or bring your own Gen 9 OU team.'
+            ? 'Each side posts CARDS collateral, one 2% fee comes off the gross pool at match start. Two gamemodes : pick three from a random curated six, or bring your own Gen 9 OU team.'
             : 'Each side posts POKE collateral, one 2% fee comes off the gross pool at settlement. Two gamemodes : pick three from a random curated six, or bring your own Gen 9 OU team.'}
         </p>
         <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Find a fight</Link>
@@ -382,8 +382,8 @@ export function CompetitivePaths({ chain = false }: { chain?: boolean }) {
         <strong>{chain ? 'Burn fee. Treasury prizes.' : 'Entry hold. Prize from the field.'}</strong>
         <p>
           {chain
-            ? 'Compete for SOL prizes funded by the Tournament Treasury. A fixed POKE burn is paid after the field fills. Gamemode is determined by the tournament rules.'
-            : 'Compete for a POKE prize funded by held entry fees. 1st, 2nd, and 3rd split that prize 50/35/15. Casual collateral never enters this loop. Gamemode is determined by the tournament rules.'}
+            ? 'Compete for CARDS prizes funded by the Tournament Treasury. A fixed POKE burn is paid after the field fills. Gamemode is determined by the tournament rules.'
+            : 'Compete for a POKE prize funded by held entry fees. 1st, 2nd, and 3rd split that prize 50/35/15. Arena collateral never enters this loop. Gamemode is determined by the tournament rules.'}
         </p>
         <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/tournaments">Browse cups</Link>
       </article>
@@ -430,7 +430,7 @@ export function TournamentEconomicsBlock({
         </>
       ) : (
         <p className="economy-note">
-          {chain ? 'Fixed POKE burn. SOL prize from Treasury.' : 'Entry held at join. Prize from the field.'}
+          {chain ? 'Fixed POKE burn. CARDS prize from Treasury.' : 'Entry held at join. Prize from the field.'}
         </p>
       )}
     </div>

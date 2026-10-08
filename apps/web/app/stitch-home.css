@@ -1,8 +1,10 @@
 .shell-nav-stitch {
   --shell-chip-h: 40px;
   --shell-brand-mark-h: calc(var(--shell-chip-h) + 3px);
+  --shell-side-chip-w: 10.5rem;
   height: 64px;
-  background: rgba(8, 13, 26, 0.92);
+  overflow: visible;
+  background: #080d1a;
   border-bottom: 1px solid #13213d;
 }
 
@@ -63,9 +65,52 @@
   color: #b9cacb;
 }
 
+.shell-nav-stitch .shell-wordmark {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  align-self: center;
+  height: 64px;
+  overflow: visible;
+}
+
+.shell-nav-stitch .shell-wordmark img {
+  display: block;
+  height: 64px;
+  width: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.45));
+}
+
+.shell-nav-stitch .shell-wallet {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.shell-nav-stitch .shell-passport-menu {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 30;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.shell-nav-stitch .shell-wallet:hover .shell-passport-menu,
+.shell-nav-stitch .shell-wallet:focus-within .shell-passport-menu {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
 .shell-nav-stitch .nav-links {
   align-self: stretch;
   align-items: stretch;
+  justify-content: center;
+  flex: 1;
   gap: 0.5rem;
   flex-wrap: nowrap;
   height: 100%;
@@ -131,6 +176,13 @@
   padding: 0.25rem 0.75rem;
 }
 
+.shell-nav-stitch .trainer-control {
+  box-sizing: border-box;
+  width: var(--shell-side-chip-w);
+  min-width: var(--shell-side-chip-w);
+  max-width: var(--shell-side-chip-w);
+}
+
 .shell-nav-stitch .trainer-control.is-active {
   border-color: #00f0ff;
   color: #00f0ff;
@@ -146,9 +198,10 @@
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
   align-self: center;
-  width: 10.5rem;
-  min-width: 10.5rem;
-  max-width: 10.5rem;
+  box-sizing: border-box;
+  width: var(--shell-side-chip-w);
+  min-width: var(--shell-side-chip-w);
+  max-width: var(--shell-side-chip-w);
   min-height: var(--shell-chip-h);
   height: var(--shell-chip-h);
   gap: 0;
@@ -305,6 +358,8 @@
 }
 
 .pa-stadium-trainers {
+  /* Temporarily hidden. Restore by removing this display rule. */
+  display: none;
   position: absolute;
   z-index: 0;
   inset: 0 0 auto;
@@ -378,14 +433,17 @@
 
 .pa-hero h1 {
   margin: 0;
-  font-family: var(--font-anton), Impact, sans-serif;
-  font-size: clamp(3.75rem, 8vw, 6rem);
-  font-weight: 400;
-  line-height: 1;
-  letter-spacing: -0.02em;
-  text-transform: uppercase;
-  color: #f2ede4;
-  text-shadow: 0 12px 32px rgba(0, 0, 0, 0.8);
+  line-height: 0;
+}
+
+.pa-wordmark {
+  display: block;
+  width: min(46rem, 92vw);
+  height: auto;
+  margin: calc(min(46rem, 92vw) * -152 / 2172) auto calc(min(46rem, 92vw) * -146 / 2172);
+  filter:
+    drop-shadow(0 6px 10px rgba(0, 0, 0, 0.28))
+    drop-shadow(0 18px 36px rgba(0, 0, 0, 0.32));
 }
 
 .pa-tag {
@@ -2741,8 +2799,8 @@
 
 .pa-schedule-card.is-upcoming {
   position: relative;
-  opacity: 0.72;
-  filter: saturate(0.65);
+  opacity: 1;
+  filter: saturate(0.85);
   border-color: rgba(142, 160, 192, 0.18);
   box-shadow: none;
   overflow: hidden;
@@ -2751,7 +2809,7 @@
 .pa-schedule-card.is-upcoming .pa-schedule-card-mark,
 .pa-schedule-card.is-upcoming .pa-gen1-stage,
 .pa-schedule-card.is-upcoming .pa-schedule-card-close {
-  filter: brightness(0.78);
+  filter: none;
 }
 
 .pa-schedule-card.is-upcoming .pa-schedule-card-mark strong,
@@ -2834,8 +2892,7 @@
   border-color: rgba(255, 204, 51, 0.45);
   border-left: 3px solid #c23b22;
   background:
-    linear-gradient(105deg, rgba(8, 12, 24, 0.98) 0%, rgba(8, 12, 24, 0.94) 55%, rgba(18, 12, 6, 0.88) 100%),
-    #080c18;
+    linear-gradient(105deg, #080c18 0%, #0b101c 55%, #120c06 100%);
   box-shadow: 0 0 0 1px rgba(255, 204, 51, 0.06), 0 18px 40px rgba(0, 0, 0, 0.32);
 }
 
@@ -2882,8 +2939,7 @@
   border-color: rgba(255, 204, 51, 0.45);
   border-left: 3px solid #c23b22;
   background:
-    linear-gradient(105deg, rgba(8, 12, 24, 0.98) 0%, rgba(8, 12, 24, 0.94) 55%, rgba(18, 12, 6, 0.88) 100%),
-    #080c18;
+    linear-gradient(105deg, #080c18 0%, #0b101c 55%, #120c06 100%);
   box-shadow: 0 0 0 1px rgba(255, 204, 51, 0.06), 0 18px 40px rgba(0, 0, 0, 0.32);
 }
 
@@ -6009,7 +6065,7 @@
     margin-left: auto;
   }
 
-  .shell-nav-stitch .wallet-chip {
+  .shell-nav-stitch .shell-actions .wallet-chip {
     display: none;
   }
 
@@ -6402,12 +6458,6 @@
     flex-shrink: 1;
     min-width: 0;
     gap: 0.35rem;
-  }
-
-  .shell-nav-stitch .passport-chip {
-    width: 9.5rem;
-    min-width: 9.5rem;
-    max-width: 9.5rem;
   }
 
   .shell-nav-stitch .brand-copy {

@@ -6,6 +6,7 @@ import {
   choiceFromAvailable,
   formatPoke,
   formatPokeFromAtoms,
+  formatPokeAtomsValue,
   formatPokeValue,
   formatRoomAmount,
   formatSolLamports,
@@ -133,6 +134,7 @@ test('room amounts use the room rail, never lamports as POKE', () => {
 
 test('compact balance values do not repeat their currency labels', () => {
   assert.equal(formatPokeValue(0), '0');
+  assert.equal(formatPokeAtomsValue('1838457824085'), '1,838,457.824085');
   assert.equal(formatPoke(0), '0 POKE');
   assert.equal(formatSolLamportsValue(19_031_431), '0.02');
   assert.equal(formatSolLamports(19_031_431), '0.02 SOL');

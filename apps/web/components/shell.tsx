@@ -2,9 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 
-import { BrandMark } from '@/components/brand-mark';
 import { ErrorToast } from '@/components/error-toast';
 import { AnimatedAmount } from '@/components/motion';
 import { TrainerName } from '@/components/profile-trainer';
@@ -12,6 +11,127 @@ import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke, formatPokeValue, formatSolLamportsValue } from '@/lib/api-client';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
+
+const backdropZoomScale = 1.94;
+const backdropZoomMs = 460;
+
+function readBackdropScale(image: HTMLElement) {
+  const transform = getComputedStyle(image).transform;
+  if (!transform || transform === 'none') return 1;
+  const match = /matrix(?:3d)?\(([^)]+)\)/.exec(transform);
+  if (!match?.[1]) return 1;
+  const parts = match[1].split(',').map(part => Number(part.trim()));
+  const scale = parts[0];
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+type BackdropZoom = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
+};
+
+type BackdropMotion = {
+  scale: number | null;
+  zoom: BackdropZoom | null;
+  ticking: boolean;
+  lastFrame: number;
+};
+
+function backdropMotion(): BackdropMotion {
+  const host = window as Window & { __paBackdrop?: BackdropMotion };
+  host.__paBackdrop ??= { scale: null, zoom: null, ticking: false, lastFrame: 0 };
+  return host.__paBackdrop;
+}
+
+function applyBackdropScale(scale: number) {
+  const image = document.querySelector('.site-backdrop img');
+  if (!(image instanceof HTMLImageElement)) return;
+  image.style.transform = `scale(${scale})`;
+  const backdrop = image.parentElement;
+  if (!(backdrop instanceof HTMLElement)) return;
+  const amount = Math.min(1, Math.max(0, (scale - 1) / (backdropZoomScale - 1)));
+  backdrop.style.setProperty('--backdrop-dim', amount.toFixed(3));
+}
+
+function easeInOut(progress: number) {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - ((-2 * progress + 2) ** 3) / 2;
+}
+
+function tickBackdropZoom(now: number) {
+  const motion = backdropMotion();
+  const zoom = motion.zoom;
+  if (!zoom) {
+    motion.ticking = false;
+    return;
+  }
+  const delta = motion.lastFrame ? Math.min(32, now - motion.lastFrame) : 16;
+  motion.lastFrame = now;
+  zoom.elapsed += delta;
+  const linear = Math.min(1, zoom.elapsed / zoom.duration);
+  const progress = easeInOut(linear);
+  const scale = zoom.from + (zoom.to - zoom.from) * progress;
+  motion.scale = scale;
+  applyBackdropScale(scale);
+  if (linear >= 1) {
+    motion.zoom = null;
+    motion.ticking = false;
+    motion.lastFrame = 0;
+    return;
+  }
+  window.setTimeout(() => tickBackdropZoom(performance.now()), 16);
+}
+
+function rememberLeavingRoute() {
+  const route = document.querySelector('.pa-route');
+  if (!(route instanceof HTMLElement)) return;
+  document.querySelectorAll('.pa-route-leave-clone').forEach(node => node.remove());
+  const clone = route.cloneNode(true);
+  if (!(clone instanceof HTMLElement)) return;
+  const rect = route.getBoundingClientRect();
+  clone.classList.remove('is-held', 'is-arriving');
+  clone.classList.add('pa-route-leave-clone');
+  clone.setAttribute('aria-hidden', 'true');
+  clone.style.top = `${rect.top}px`;
+  clone.style.left = `${rect.left}px`;
+  clone.style.width = `${rect.width}px`;
+  document.body.appendChild(clone);
+  route.classList.add('is-held');
+  window.setTimeout(() => clone.remove(), 280);
+}
+
+function playBackdropZoom(image: HTMLImageElement, to: number, fromClick: boolean) {
+  const motion = backdropMotion();
+  if (motion.zoom?.to === to) return;
+  if (!motion.zoom && motion.scale === to) {
+    applyBackdropScale(to);
+    return;
+  }
+
+  const from = motion.zoom
+    ? (motion.scale ?? readBackdropScale(image))
+    : (fromClick ? readBackdropScale(image) : (motion.scale ?? to));
+  const firstPaint = !fromClick && motion.scale == null && !motion.zoom;
+  motion.scale = to;
+  if (firstPaint || Math.abs(from - to) < 0.01) {
+    motion.zoom = null;
+    motion.scale = to;
+    applyBackdropScale(to);
+    return;
+  }
+
+  motion.zoom = { from, to, elapsed: 0, duration: backdropZoomMs };
+  motion.scale = from;
+  motion.lastFrame = 0;
+  applyBackdropScale(from);
+  if (!motion.ticking) {
+    motion.ticking = true;
+    window.setTimeout(() => tickBackdropZoom(performance.now()), 16);
+  }
+}
 
 export function ArenaShell({ children }: { children: ReactNode }) {
   const {
@@ -42,15 +162,49 @@ export function ArenaShell({ children }: { children: ReactNode }) {
       : []),
   ];
   const isHome = pathname === '/';
+
+  useLayoutEffect(() => {
+    const route = document.querySelector('.pa-route');
+    if (!(route instanceof HTMLElement)) return;
+    const leaving = document.querySelector('.pa-route-leave-clone');
+    if (!route.classList.contains('is-held') && !leaving) return;
+    route.classList.remove('is-held', 'is-arriving');
+    void route.offsetWidth;
+    route.classList.add('is-arriving');
+  }, [pathname]);
+
+  useEffect(() => {
+    const image = document.querySelector('.site-backdrop img');
+    if (!(image instanceof HTMLImageElement)) return;
+
+    const to = pathname === '/' ? 1 : backdropZoomScale;
+    playBackdropZoom(image, to, false);
+  }, [pathname]);
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest('a');
+      if (!(link instanceof HTMLAnchorElement) || link.target === '_blank') return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+      rememberLeavingRoute();
+      const image = document.querySelector('.site-backdrop img');
+      if (!(image instanceof HTMLImageElement)) return;
+      playBackdropZoom(image, url.pathname === '/' ? 1 : backdropZoomScale, true);
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, []);
+
   return (
     <>
       <header className="shell-nav shell-nav-stitch">
         <div className="shell-nav-inner">
-          <Link href="/" className="brand">
-            <BrandMark className="brand-mark" />
-            <span className="brand-copy">
-              <strong>POKEARENA</strong>
-            </span>
+          <Link href="/" className="shell-wordmark" aria-label="PokeArena home">
+            <img src="/brand/pokearena-wordmark.png" alt="" />
           </Link>
           <button
             type="button"
@@ -84,53 +238,57 @@ export function ArenaShell({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <div className="shell-actions">
-            {chainEconomyEnabled ? (
-              <span className="wallet-chip passport-chip">
-                <span className="passport-chip-row passport-chip-status">
-                  <small>Passport</small>
-                  <strong className={
-                    snapshot?.passport
-                      ? (snapshot.passport.eligible ? 'is-eligible' : 'is-ineligible')
-                      : 'is-pending'
-                  }>
-                    {snapshot?.passport
-                      ? (snapshot.passport.eligible
-                        ? 'Eligible'
-                        : `Need $${(snapshot.passport.thresholdUsdCents / 100).toFixed(0)}`)
-                      : (connected ? '—' : 'Connect')}
-                  </strong>
-                </span>
-                <span className="passport-chip-row passport-chip-balances">
-                  <span className="passport-chip-balance">
-                    <small>POKE</small>
-                    <strong>{snapshot ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPokeValue} /> : '—'}</strong>
+            <div className="shell-wallet">
+              <TrainerProfileControl />
+              <div className="shell-passport-menu">
+                {chainEconomyEnabled ? (
+                  <span className="wallet-chip passport-chip">
+                    <span className="passport-chip-row passport-chip-status">
+                      <small>Passport</small>
+                      <strong className={
+                        snapshot?.passport
+                          ? (snapshot.passport.eligible ? 'is-eligible' : 'is-ineligible')
+                          : 'is-pending'
+                      }>
+                        {snapshot?.passport
+                          ? (snapshot.passport.eligible
+                            ? 'Eligible'
+                            : `Need $${(snapshot.passport.thresholdUsdCents / 100).toFixed(0)}`)
+                          : (connected ? '—' : 'Connect')}
+                      </strong>
+                    </span>
+                    <span className="passport-chip-row passport-chip-balances">
+                      <span className="passport-chip-balance">
+                        <small>POKE</small>
+                        <strong>{snapshot ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPokeValue} /> : '—'}</strong>
+                      </span>
+                      <span className="passport-chip-balance">
+                        <small>SOL</small>
+                        <strong>
+                          {snapshot?.solBalances
+                            ? <AnimatedAmount value={Number(snapshot.solBalances.freeLamports)} format={formatSolLamportsValue} />
+                            : '—'}
+                        </strong>
+                      </span>
+                    </span>
                   </span>
-                  <span className="passport-chip-balance">
-                    <small>SOL</small>
+                ) : (
+                  <span className="wallet-chip">
+                    <small>Poke</small>
                     <strong>
-                      {snapshot?.solBalances
-                        ? <AnimatedAmount value={Number(snapshot.solBalances.freeLamports)} format={formatSolLamportsValue} />
+                      {snapshot
+                        ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPoke} />
                         : '—'}
                     </strong>
+                    <span
+                      className={`connection-dot ${connected ? 'online' : ''}`}
+                      title={connected ? connectionState : 'offline'}
+                      aria-label={connected ? `Connection ${connectionState}` : 'offline'}
+                    />
                   </span>
-                </span>
-              </span>
-            ) : (
-              <span className="wallet-chip">
-                <small>Poke</small>
-                <strong>
-                  {snapshot
-                    ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPoke} />
-                    : '—'}
-                </strong>
-                <span
-                  className={`connection-dot ${connected ? 'online' : ''}`}
-                  title={connected ? connectionState : 'offline'}
-                  aria-label={connected ? `Connection ${connectionState}` : 'offline'}
-                />
-              </span>
-            )}
-            <TrainerProfileControl />
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </header>
