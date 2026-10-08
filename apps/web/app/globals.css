@@ -595,7 +595,7 @@ main.is-home {
   right: 0;
   top: calc(100% + 8px);
   z-index: 80;
-  width: min(260px, calc(100vw - 24px));
+  width: min(280px, calc(100vw - 24px));
   display: grid;
   gap: 0.7rem;
   border: 1px solid #13213d;
@@ -4972,6 +4972,24 @@ main:has(.is-cup-hub) {
   color: #d8f3ff;
   background: rgba(9, 24, 38, 0.96);
   animation: pa-toast-invitation 1.5s ease-in-out;
+}
+
+.pa-toast-lobby {
+  align-items: center;
+  border: 1px solid rgba(89, 196, 255, 0.6);
+  color: #d8f3ff;
+  background: rgba(9, 24, 38, 0.96);
+}
+
+.pa-toast-refund {
+  align-items: center;
+  border: 1px solid rgba(94, 214, 154, 0.65);
+  color: #d9ffe9;
+  background: rgba(8, 28, 18, 0.96);
+}
+
+.pa-toast-stack:has(+ .pa-toast-stack) {
+  bottom: 112px;
 }
 
 .pa-toast span {

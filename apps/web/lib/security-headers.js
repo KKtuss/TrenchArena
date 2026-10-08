@@ -47,7 +47,9 @@ function securityHeaders() {
     { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
     { key: 'X-Frame-Options', value: 'DENY' },
     { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
-    { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+    // Do not set Cross-Origin-Opener-Policy. Phantom's approval window needs
+    // the browser default (`unsafe-none`). `same-origin` and
+    // `same-origin-allow-popups` both come back as Phantom's "Unexpected error".
     { key: 'X-DNS-Prefetch-Control', value: 'off' },
   ];
 }

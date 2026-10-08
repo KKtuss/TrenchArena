@@ -9,11 +9,12 @@ import { AnimatedAmount } from '@/components/motion';
 import { TrainerName } from '@/components/profile-trainer';
 import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatPokeValue, formatSolLamportsValue } from '@/lib/api-client';
+import { formatPoke, formatPokeAtomsValue, formatPokeValue, formatSolLamportsValue } from '@/lib/api-client';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
 
 const backdropZoomScale = 1.94;
 const backdropZoomMs = 460;
+const LOBBY_STATUSES = new Set(['open', 'pending_deposit', 'full', 'drafting', 'ready', 'starting']);
 
 function readBackdropScale(image: HTMLElement) {
   const transform = getComputedStyle(image).transform;
@@ -140,6 +141,8 @@ export function ArenaShell({ children }: { children: ReactNode }) {
     snapshot,
     error,
     clearError,
+    stakeRefund,
+    clearStakeRefund,
     connected,
     chainEconomyEnabled,
   } = useArena();
@@ -151,6 +154,18 @@ export function ArenaShell({ children }: { children: ReactNode }) {
     && room.status === 'open'
     && room.invitedPlayerId === playerId
   ));
+  const lobby = snapshot?.myCasualRooms.find(room => (
+    LOBBY_STATUSES.has(room.status)
+    && (room.creatorId === playerId || room.opponentId === playerId)
+  ));
+  const showLobbyToast = Boolean(lobby && pathname !== `/casual/${lobby.id}`);
+  const showInvitation = Boolean(invitation && invitation.id !== dismissedInvitationId);
+
+  useEffect(() => {
+    if (!stakeRefund) return undefined;
+    const timer = window.setTimeout(() => clearStakeRefund(), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [stakeRefund, clearStakeRefund]);
   const navItems = [
     { href: '/arena', label: 'Arena', active: pathname.startsWith('/arena') || pathname.startsWith('/casual') || pathname.startsWith('/battle') },
     { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
@@ -260,7 +275,10 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                     <span className="passport-chip-row passport-chip-balances">
                       <span className="passport-chip-balance">
                         <small>POKE</small>
-                        <strong>{snapshot ? <AnimatedAmount value={snapshot.wallet.balance} format={formatPokeValue} /> : '—'}</strong>
+                        <strong>{snapshot?.passport
+                          ? <AnimatedAmount value={Number(snapshot.passport.liquidAtoms)} format={formatPokeAtomsValue} />
+                          : '—'}
+                        </strong>
                       </span>
                       <span className="passport-chip-balance">
                         <small>SOL</small>
@@ -298,26 +316,57 @@ export function ArenaShell({ children }: { children: ReactNode }) {
           {children}
         </div>
       </main>
-      {invitation && invitation.id !== dismissedInvitationId ? (
+      {showLobbyToast || showInvitation || stakeRefund ? (
         <div className="pa-toast-stack" aria-live="polite">
-          <div className="pa-toast pa-toast-invitation" role="status">
-            <span>
-              <strong>Fight invitation</strong>
-              <br />
-              You have been challenged to a private fight.
-            </span>
-            <Link className="pa-btn pa-btn-primary pa-btn-sm" href={`/casual/${invitation.id}`}>
-              Review
-            </Link>
-            <button
-              type="button"
-              className="pa-toast-dismiss"
-              onClick={() => setDismissedInvitationId(invitation.id)}
-              aria-label="Dismiss fight invitation"
-            >
-              Dismiss
-            </button>
-          </div>
+          {stakeRefund ? (
+            <div className="pa-toast pa-toast-refund" role="status">
+              <span>
+                <strong>Stake refunded</strong>
+                <br />
+                {stakeRefund}
+              </span>
+              <button
+                type="button"
+                className="pa-toast-dismiss"
+                onClick={clearStakeRefund}
+                aria-label="Dismiss refund notice"
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+          {showLobbyToast && lobby ? (
+            <div className="pa-toast pa-toast-lobby" role="status">
+              <span>
+                <strong>In a lobby</strong>
+                <br />
+                You are currently in a lobby.
+              </span>
+              <Link className="pa-btn pa-btn-primary pa-btn-sm" href={`/casual/${lobby.id}`}>
+                Back to lobby
+              </Link>
+            </div>
+          ) : null}
+          {showInvitation && invitation ? (
+            <div className="pa-toast pa-toast-invitation" role="status">
+              <span>
+                <strong>Fight invitation</strong>
+                <br />
+                You have been challenged to a private fight.
+              </span>
+              <Link className="pa-btn pa-btn-primary pa-btn-sm" href={`/casual/${invitation.id}`}>
+                Review
+              </Link>
+              <button
+                type="button"
+                className="pa-toast-dismiss"
+                onClick={() => setDismissedInvitationId(invitation.id)}
+                aria-label="Dismiss fight invitation"
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
       <ErrorToast error={error} onDismiss={clearError} />

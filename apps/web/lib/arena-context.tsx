@@ -12,6 +12,7 @@ import {
 } from 'react';
 
 import { ArenaApiClient } from './api-client';
+import { stakeRefundNotice } from './stake-refund';
 import { isDemoAuthEnabled } from './demo-auth';
 import type {
   ArenaSnapshot,
@@ -30,6 +31,7 @@ import {
   detectSolanaWallets,
   disconnectWallet,
   signAuthMessage,
+  walletErrorMessage,
   type DetectedWallet,
   type SolanaWalletAdapter,
 } from './solana-wallet';
@@ -53,6 +55,8 @@ interface ArenaContextValue {
   snapshot: ArenaSnapshot | null;
   error: string | null;
   clearError: () => void;
+  stakeRefund: string | null;
+  clearStakeRefund: () => void;
   refreshSnapshot: () => Promise<void>;
   lastCasualResult: { room: CasualRoom; payout?: MockPayoutResult } | null;
   lastTournamentResult: { tournament: any; payout?: MockPayoutResult } | null;
@@ -121,6 +125,7 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   );
   const [snapshot, setSnapshot] = useState<ArenaSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stakeRefund, setStakeRefund] = useState<string | null>(null);
   const [lastCasualResult, setLastCasualResult] = useState<{
     room: CasualRoom;
     payout?: MockPayoutResult;
@@ -133,7 +138,9 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
   const [battleView, setBattleView] = useState<BattleView | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
-  const walletRestoreAttempts = useRef(new Set<string>());
+  const connectGeneration = useRef(0);
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
 
   const client = useMemo(() => new ArenaApiClient(), []);
 
@@ -171,6 +178,11 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
         break;
       case 'casual.state':
       case 'casual.created':
+        if (message.type === 'casual.state') {
+          const previous = snapshotRef.current?.myCasualRooms.find(room => room.id === message.room.id);
+          const notice = stakeRefundNotice(previous, message.room, playerId);
+          if (notice) setStakeRefund(notice);
+        }
         setSnapshot(current => {
           if (!current) return current;
           const rooms = current.myCasualRooms.filter(room => room.id !== message.room.id);
@@ -271,23 +283,29 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     selected: DetectedWallet,
     options: InjectedWalletConnectOptions = {},
   ): Promise<boolean> => {
+    const generation = ++connectGeneration.current;
     setConnectingWallet(true);
     setAuthBusy(true);
     setError(null);
+    let stage: 'connect' | 'sign' = 'connect';
     try {
+      if (generation !== connectGeneration.current) return false;
       const address = await connectWallet(selected.adapter, {
         onlyIfTrusted: options.onlyIfTrusted,
       });
+      if (generation !== connectGeneration.current) return false;
       setWalletAdapter(selected.adapter);
       setWalletAddress(address);
       const stored = readTrainerProfile(address);
       setTrainerSpriteIdState(getTrainerSprite(stored?.spriteId).id);
       setTrainerUsername(stored?.username || null);
       setNeedsProfileSetup(!stored?.username);
+      stage = 'sign';
       await client.authenticateWallet({
         address,
         signMessage: message => signAuthMessage(selected.adapter, message),
       });
+      if (generation !== connectGeneration.current) return false;
       setPlayerIdState(address);
       setConnected(true);
       setConnectionState(client.connectionState);
@@ -295,47 +313,32 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
       if (stored?.username) publishTrainerProfile(stored.username, stored.spriteId);
       return true;
     } catch (err) {
+      if (generation !== connectGeneration.current) return false;
       setConnected(false);
       setPlayerIdState(null);
       setWalletAddress(null);
       client.clearAuth();
-      if (!options.silent) setError(err instanceof Error ? err.message : String(err));
+      if (!options.silent) {
+        const where = stage === 'sign' ? 'Could not sign the login' : 'Could not open the wallet';
+        setError(`${where}: ${walletErrorMessage(err)}`);
+      }
       return false;
     } finally {
-      setConnectingWallet(false);
-      setAuthBusy(false);
+      if (generation === connectGeneration.current) {
+        setConnectingWallet(false);
+        setAuthBusy(false);
+      }
     }
   }, [client, publishTrainerProfile, resetMatchState]);
 
   const connectInjectedWallet = useCallback(async (wallet?: DetectedWallet) => {
     const selected = wallet ?? detectSolanaWallets()[0];
     if (!selected) {
-      setError('No Solana wallet detected. Install Phantom, Backpack, or a compatible MetaMask Solana wallet.');
+      setError('No Solana wallet detected. Install Phantom, Solflare, Backpack, or MetaMask.');
       return;
     }
     await connectInjectedWalletSession(selected);
   }, [connectInjectedWalletSession]);
-
-  useEffect(() => {
-    if (walletAddress || connectingWallet || !availableWallets.length) return;
-    const candidates = availableWallets.filter(wallet => !walletRestoreAttempts.current.has(wallet.id));
-    if (!candidates.length) return;
-    let cancelled = false;
-    const restore = async () => {
-      for (const wallet of candidates) {
-        walletRestoreAttempts.current.add(wallet.id);
-        const restored = await connectInjectedWalletSession(wallet, {
-          onlyIfTrusted: true,
-          silent: true,
-        });
-        if (restored || cancelled) break;
-      }
-    };
-    void restore();
-    return () => {
-      cancelled = true;
-    };
-  }, [availableWallets, connectingWallet, connectInjectedWalletSession, walletAddress]);
 
   const connectPreviewSession = useCallback(async (playerId: DemoPlayerId = 'demo-player-1') => {
     if (!isDemoAuthEnabled()) {
@@ -422,6 +425,8 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     publishTrainerProfile(trainerUsername, trainerSpriteId);
   }, [connected, playerId, publishTrainerProfile, trainerSpriteId, trainerUsername, trainers]);
 
+  const clearStakeRefund = useCallback(() => setStakeRefund(null), []);
+
   const refreshSnapshot = useCallback(async () => {
     const response = await client.request({ type: 'arena.snapshot' });
     if (response.type === 'arena.snapshot') {
@@ -456,6 +461,8 @@ export function ArenaProvider({ children }: { children: ReactNode }) {
     snapshot,
     error,
     clearError: () => setError(null),
+    stakeRefund,
+    clearStakeRefund,
     refreshSnapshot,
     lastCasualResult,
     lastTournamentResult,

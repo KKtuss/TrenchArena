@@ -165,22 +165,36 @@ export class JupiterTokenPriceOracle implements TokenPriceOracle {
         headers: this.options.headers,
         signal: AbortSignal.timeout(timeoutMs),
       });
-    } catch {
+    } catch (error) {
+      const cause = error instanceof Error ? error.cause : undefined;
+      console.warn('[pokearena-price]', {
+        stage: 'fetch',
+        mint,
+        message: error instanceof Error ? error.message : String(error),
+        cause: cause instanceof Error ? cause.message : typeof cause === 'object' && cause && 'code' in cause ? String(cause.code) : undefined,
+      });
       return unavailable({ mint, reason: 'upstream_error', timestamp });
     }
     if (!response.ok) {
+      console.warn('[pokearena-price]', { stage: 'status', mint, status: response.status });
       return unavailable({ mint, reason: 'upstream_error', timestamp });
     }
     let body: string;
     try {
       body = await response.text();
-    } catch {
+    } catch (error) {
+      console.warn('[pokearena-price]', {
+        stage: 'body',
+        mint,
+        message: error instanceof Error ? error.message : String(error),
+      });
       return unavailable({ mint, reason: 'upstream_error', timestamp });
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
     } catch {
+      console.warn('[pokearena-price]', { stage: 'json', mint, bytes: body.length });
       return unavailable({ mint, reason: 'upstream_error', timestamp });
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

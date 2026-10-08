@@ -42,7 +42,7 @@ import type { ChainIntentRow, DurableCasualRoom, EconomicsStore, PostgresChainSt
 import { encodeBase58 } from './wallet-auth';
 import { AsyncLimiter } from './async-limit';
 import { settleCardsPlace, splitCardsPrize } from './tournament-cards-payout';
-import { decimalToScaled } from './play-token-math';
+import { decimalToScaled, USD_PRICE_SCALE } from './play-token-math';
 import {
   DEFAULT_MIN_LIQUIDITY_USD,
   JupiterTokenPriceOracle,
@@ -267,8 +267,20 @@ export class ChainEconomyService {
   requirePokeEconomy(): void {
     this.requireEnabled();
     if (!this.pokeConfigured) {
-      throw new Error('POKE economy is not configured. POKEARENA_POKE_MINT is unset.');
+      throw new Error('POKE economy is not enabled. Set POKEARENA_POKE_MINT as the startup feature hint.');
     }
+  }
+
+  private async currentPokeMint(): Promise<PublicKey> {
+    this.requirePokeEconomy();
+    const client = this.client as ArenaChainClient & {
+      getConfiguredPokeMint?: () => Promise<PublicKey>;
+    };
+    if (typeof client.getConfiguredPokeMint === 'function') {
+      return client.getConfiguredPokeMint();
+    }
+    if (!this.config.pokeMint.equals(PublicKey.default)) return this.config.pokeMint;
+    throw new Error('POKE mint is not configured.');
   }
 
   resolveQuote(env: NodeJS.ProcessEnv = process.env): PokeUsdQuote {
@@ -283,17 +295,25 @@ export class ChainEconomyService {
   async resolvePassportQuote(env: NodeJS.ProcessEnv = this.env): Promise<PokeUsdQuote> {
     this.requirePokeEconomy();
     if (this.config.cluster === 'localnet') return this.resolveQuote(env);
-    const price = await this.priceOracle().getUsdPrice(this.config.pokeMint.toBase58());
+    const pokeMint = await this.currentPokeMint();
+    const price = await this.priceOracle().getUsdPrice(pokeMint.toBase58());
     if (!price.available || !price.priceUsd) {
       throw new Error(`Live POKE quote is unavailable (${price.reason}).`);
     }
-    const micro = decimalToScaled(price.priceUsd, 6);
-    if (micro === null || micro <= 0n || micro > BigInt(Number.MAX_SAFE_INTEGER)) {
+    const scaled = decimalToScaled(price.priceUsd, USD_PRICE_SCALE);
+    if (scaled === null || scaled <= 0n) {
+      throw new Error('Live POKE quote is not a usable USD price.');
+    }
+    const micro = scaled / 10n ** BigInt(USD_PRICE_SCALE - 6);
+    if (micro > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error('Live POKE quote is not a usable USD price.');
     }
     const observedAt = Date.parse(price.timestamp);
     return {
-      priceMicroUsd: Number(micro),
+      // Persistence still requires a positive micro-USD integer. Sub-micro
+      // prices store 1 here and keep the exact 18-decimal value for math.
+      priceMicroUsd: micro > 0n ? Number(micro) : 1,
+      priceUsdScaled: scaled.toString(),
       decimals: POKE_MINT_DECIMALS,
       observedAt: Number.isFinite(observedAt) ? observedAt : Date.now(),
       source: 'oracle',
@@ -393,18 +413,48 @@ export class ChainEconomyService {
     options?: { liquidAtoms?: bigint },
   ): Promise<PassportStatus> {
     this.requirePokeEconomy();
-    const quote = await this.resolvePassportQuote(env);
-    await this.persistQuote(quote);
     const owner = new PublicKey(playerId);
     const held = this.chainStore
       ? BigInt(await this.chainStore.sumReservedEntryAtoms(playerId))
       : 0n;
-    return this.client!.getPassportStatus({
-      owner,
-      heldEntryAtoms: held,
-      quote,
-      ...(options?.liquidAtoms !== undefined ? { liquidAtoms: options.liquidAtoms } : {}),
-    });
+    const liquidAtoms = options?.liquidAtoms !== undefined
+      ? options.liquidAtoms
+      : await this.client!.getPokeBalance(owner);
+    try {
+      const quote = await this.resolvePassportQuote(env);
+      try {
+        await this.persistQuote(quote);
+      } catch (error) {
+        console.warn('[pokearena-passport] quote persist failed', {
+          playerId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return this.client!.getPassportStatus({
+        owner,
+        heldEntryAtoms: held,
+        quote,
+        liquidAtoms,
+      });
+    } catch (error) {
+      // A missing price must not hide the wallet's POKE. Eligibility stays closed.
+      console.warn('[pokearena-passport]', {
+        playerId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return evaluatePassport({
+        liquidAtoms,
+        heldEntryAtoms: held,
+        quote: {
+          priceMicroUsd: 0,
+          decimals: POKE_MINT_DECIMALS,
+          observedAt: 0,
+          source: 'oracle',
+          confidenceBps: 0,
+          quoteId: 'unavailable',
+        },
+      });
+    }
   }
 
   async assertCanPlay(playerId: string, env: NodeJS.ProcessEnv = process.env): Promise<PassportStatus> {
@@ -677,6 +727,7 @@ export class ChainEconomyService {
     }
     const quote = this.resolveQuote();
     await this.persistQuote(quote);
+    const pokeMint = await this.currentPokeMint();
     if (
       input.fixedBurnFee
       && input.entryAtoms !== undefined
@@ -695,7 +746,7 @@ export class ChainEconomyService {
     const owner = new PublicKey(input.playerId);
     const playerPokeAta = input.playerPokeAta
       ? new PublicKey(input.playerPokeAta)
-      : await this.client!.getPokeAta(owner);
+      : await this.client!.getPokeAta(owner, pokeMint);
 
     const quoteIdBytes = sha256Key([quoteId]);
     const intent = await this.chainStore.createIntent({
@@ -716,6 +767,7 @@ export class ChainEconomyService {
           program: this.config.programId.toBase58(),
           instruction: 'deposit_poke_entry',
           discriminator: IX.depositPokeEntry.toString('hex'),
+          pokeMint: pokeMint.toBase58(),
           quoteId: quoteIdBytes.toString('hex'),
         },
       },
@@ -725,7 +777,7 @@ export class ChainEconomyService {
       programId: this.config.programId,
       player: owner,
       config: this.client!.configAddress,
-      pokeMint: this.config.pokeMint,
+      pokeMint,
       playerPoke: playerPokeAta,
       tournamentId: uuidToBytes(input.tournamentId),
       amount: entryAtoms,
@@ -794,6 +846,10 @@ export class ChainEconomyService {
       if (entryState.status !== 0) {
         throw new Error(`POKE entry is not burnable for ${playerId}.`);
       }
+      const entryMint = await this.client!.getEntryEscrowMint(
+        uuidToBytes(input.tournamentId),
+        new PublicKey(playerId),
+      );
       const burnKey = sha256Key([`burn`, input.tournamentId, playerId]);
       burnKeys.push(burnKey.toString('hex'));
       if (this.chainStore) {
@@ -811,7 +867,7 @@ export class ChainEconomyService {
         programId: this.config.programId,
         authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
-        pokeMint: this.config.pokeMint,
+        pokeMint: entryMint,
         tournamentId: uuidToBytes(input.tournamentId),
         player: new PublicKey(playerId),
         burnKey,
@@ -880,12 +936,16 @@ export class ChainEconomyService {
         continue;
       }
       const burnKey = sha256Key(['burn', input.tournamentId, playerId]);
+      const entryMint = await this.client!.getEntryEscrowMint(
+        uuidToBytes(input.tournamentId),
+        new PublicKey(playerId),
+      );
       const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
         burnPokeEntryIx({
           programId: this.config.programId,
           authority: this.keeperPublicKey(),
           config: this.client!.configAddress,
-          pokeMint: this.config.pokeMint,
+          pokeMint: entryMint,
           tournamentId: uuidToBytes(input.tournamentId),
           player: new PublicKey(playerId),
           burnKey,
@@ -1062,12 +1122,16 @@ export class ChainEconomyService {
       await this.chainStore.markEntryRefunded(input.tournamentId, input.playerId);
       return;
     }
+    const entryMint = await this.client!.getEntryEscrowMint(
+      uuidToBytes(input.tournamentId),
+      new PublicKey(input.playerId),
+    );
     const result = await this.submitKeeperTransaction(this.keeperKeypair(), [
       refundPokeEntryIx({
         programId: this.config.programId,
         authority: this.keeperPublicKey(),
         config: this.client!.configAddress,
-        pokeMint: this.config.pokeMint,
+        pokeMint: entryMint,
         playerPoke: new PublicKey(input.playerPokeAta),
         tournamentId: uuidToBytes(input.tournamentId),
         player: new PublicKey(input.playerId),
@@ -2216,13 +2280,14 @@ export class ChainEconomyService {
     const persisted = await this.persistedMatchSettlement(room.id);
     if (persisted && (state.status === 2 || state.status === 3)) {
       const opponentId = room.opponentId ?? state.opponent.toBase58();
-      await this.settleCasual({
+      if (await this.settleCasualDuringRecovery({
         roomId: room.id,
         creatorId: room.creatorId,
         opponentId,
         ...(persisted.winnerId ? { winnerId: persisted.winnerId } : {}),
-      });
-      await this.syncSettledCasualRoom(room, economics);
+      })) {
+        await this.syncSettledCasualRoom(room, economics);
+      }
       return;
     }
     const battleDied = room.status === 'battling'
@@ -2235,12 +2300,13 @@ export class ChainEconomyService {
       if (opponentId && opponentId !== PublicKey.default.toBase58()) {
         // The simulator is gone and no result was stored. Return the stakes
         // with the program's tie rules instead of leaving the vault locked.
-        await this.settleCasual({
+        if (await this.settleCasualDuringRecovery({
           roomId: room.id,
           creatorId: room.creatorId,
           opponentId,
-        });
-        await this.syncSettledCasualRoom(room, economics);
+        })) {
+          await this.syncSettledCasualRoom(room, economics);
+        }
       }
       return;
     }
@@ -2248,6 +2314,33 @@ export class ChainEconomyService {
     if (state.status === 1 && (state.creatorDeposited || state.opponentDeposited)) return;
     await this.refundCasual(room.id, room.creatorId, room.opponentId);
     await releaseSolRoomRecord(economics, room);
+  }
+
+  /**
+   * Boot must not treat an unknown submitted settlement as failure or success.
+   * Live settlement already retries this condition; crashing listen would
+   * strand the process without sending a replacement transaction.
+   */
+  private async settleCasualDuringRecovery(input: {
+    roomId: string;
+    creatorId: string;
+    opponentId: string;
+    winnerId?: string;
+  }): Promise<boolean> {
+    try {
+      await this.settleCasual(input);
+      return true;
+    } catch (error) {
+      if (error instanceof SettlementUnknownError) {
+        this.logSettlementUnknown({
+          roomId: input.roomId,
+          operation: 'recoverCasualRoom',
+          message: error.message,
+        });
+        return false;
+      }
+      throw error;
+    }
   }
 
   /** A settlement that was already requested. Not inferred from escrow status. */
@@ -2776,6 +2869,30 @@ export class ChainEconomyService {
     await store.mergeIntentMetadata(id, patch);
   }
 
+  private expectedPokeMint(
+    intent: ChainIntentRow,
+    expected: Record<string, unknown>,
+  ): PublicKey {
+    if (typeof expected.pokeMint === 'string') {
+      return new PublicKey(expected.pokeMint);
+    }
+    const serialized = intent.metadata.serializedTx;
+    if (typeof serialized === 'string' && serialized.length > 0) {
+      try {
+        const transaction = Transaction.from(Buffer.from(serialized, 'base64'));
+        const instruction = transaction.instructions.find(candidate => (
+          candidate.programId.equals(this.config.programId)
+          && Buffer.from(candidate.data).subarray(0, 8).equals(IX.depositPokeEntry)
+        ));
+        const mint = instruction?.keys[2]?.pubkey;
+        if (mint) return mint;
+      } catch {
+        // Fall through to an explicit failure instead of using stale config.
+      }
+    }
+    throw new Error('Issued POKE deposit is missing its mint binding.');
+  }
+
   private expectedVerification(intent: ChainIntentRow): IntentVerification | undefined {
     const expected = intent.metadata.expected as Record<string, unknown> | undefined;
     if (
@@ -2794,7 +2911,7 @@ export class ChainEconomyService {
       : [
           signer,
           this.client!.configAddress,
-          this.config.pokeMint,
+          this.expectedPokeMint(intent, expected),
           new PublicKey(String(intent.metadata.playerPokeAta)),
           entryEscrowAddress(this.config.programId, intent.tournamentId!, signer),
           entryVaultAddress(this.config.programId, intent.tournamentId!, signer),

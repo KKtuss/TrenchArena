@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
+import { listWalletOptions } from '@/lib/solana-wallet';
 import {
   isTrainerUsername,
   searchTrainerSprites,
@@ -17,7 +18,6 @@ import {
 export function TrainerProfileControl() {
   const {
     walletConnected,
-    availableWallets,
     connectingWallet,
     connectInjectedWallet,
     connectPreviewSession,
@@ -80,19 +80,35 @@ export function TrainerProfileControl() {
           <div className="trainer-popover-head">
             <small>Wallet</small>
             <strong>Connect</strong>
-            <p>Phantom, Backpack, or another Solana wallet.</p>
+            <p>Phantom, Solflare, Backpack, MetaMask, or another Solana wallet.</p>
           </div>
           <div className="trainer-wallet-actions">
-              {(availableWallets.length ? availableWallets : [{ id: 'any', name: 'Solana wallet', adapter: null as any }]).map(wallet => (
-                <button
-                  key={wallet.id}
-                  type="button"
-                  className="pa-btn pa-btn-primary"
-                  disabled={connectingWallet || authBusy}
-                  onClick={() => void connectInjectedWallet(wallet.adapter ? wallet : undefined)}
-                >
-                  {connectingWallet ? 'Connecting…' : `Connect ${wallet.name}`}
-                </button>
+              {listWalletOptions().map(wallet => (
+                wallet.installed && wallet.adapter ? (
+                  <button
+                    key={wallet.id}
+                    type="button"
+                    className="pa-btn pa-btn-primary"
+                    disabled={connectingWallet || authBusy}
+                    onClick={() => void connectInjectedWallet({
+                      id: wallet.id,
+                      name: wallet.name,
+                      adapter: wallet.adapter!,
+                    })}
+                  >
+                    {connectingWallet ? 'Connecting…' : `Connect ${wallet.name}`}
+                  </button>
+                ) : (
+                  <a
+                    key={wallet.id}
+                    className="pa-btn pa-btn-surface"
+                    href={wallet.installUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Get {wallet.name}
+                  </a>
+                )
               ))}
               {isDemoAuthEnabled() ? (
                 <>

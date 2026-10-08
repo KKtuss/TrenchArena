@@ -18,13 +18,18 @@ test('production CSP is same-origin, has no wildcards, and skips unsafe-eval', (
     assert.equal(csp.includes('*'), false);
     assert.equal(csp.includes('unsafe-eval'), false);
     assert.equal(csp.includes('wss:'), false);
-    const keys = securityHeaders().map((header: { key: string }) => header.key);
+    const headers = securityHeaders() as Array<{ key: string; value: string }>;
+    const keys = headers.map(header => header.key);
     assert.deepEqual(
       keys.includes('Content-Security-Policy')
         && keys.includes('X-Content-Type-Options')
         && keys.includes('Referrer-Policy')
         && keys.includes('X-Frame-Options'),
       true,
+    );
+    assert.equal(
+      headers.find(header => header.key === 'Cross-Origin-Opener-Policy'),
+      undefined,
     );
   } finally {
     if (previousWs === undefined) delete process.env.NEXT_PUBLIC_WS_URL;

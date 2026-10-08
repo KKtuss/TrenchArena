@@ -11,12 +11,15 @@ import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer'
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatRoomAmount, formatTournamentPrize } from '@/lib/api-client';
+import { settlementRevealDelay } from '@/lib/settlement-reveal';
 
 export default function BattlePage() {
   const params = useParams<{ matchId: string }>();
   const matchId = params?.matchId ?? '';
   const router = useRouter();
   const openedResult = useRef(false);
+  const joinedFinished = useRef<boolean | null>(null);
+  const fightEndedAt = useRef<number | null>(null);
   const {
     client,
     playerId,
@@ -42,6 +45,9 @@ export default function BattlePage() {
     introRestore.current = connectionState === 'reconnecting'
       || match.status === 'completed'
       || (battleView?.turn ?? 0) > 1;
+  }
+  if (match && joinedFinished.current === null) {
+    joinedFinished.current = match.status === 'completed';
   }
 
   useEffect(() => {
@@ -126,9 +132,22 @@ export default function BattlePage() {
   const payoutSettled = match?.status === 'completed';
 
   useEffect(() => {
+    if (fightEndedAt.current !== null) return;
+    if (fightOver || payoutSettled) fightEndedAt.current = Date.now();
+  }, [fightOver, payoutSettled]);
+
+  useEffect(() => {
     if (!payoutSettled || !resultHref || openedResult.current) return;
-    openedResult.current = true;
-    router.push(resultHref);
+    const wait = settlementRevealDelay({
+      alreadyFinished: joinedFinished.current === true,
+      fightEndedAt: fightEndedAt.current ?? Date.now(),
+      now: Date.now(),
+    });
+    const timer = window.setTimeout(() => {
+      openedResult.current = true;
+      router.push(resultHref);
+    }, wait);
+    return () => window.clearTimeout(timer);
   }, [payoutSettled, resultHref, router]);
 
   return (

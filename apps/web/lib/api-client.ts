@@ -33,8 +33,13 @@ export function getDefaultWsUrl(): string {
   const configured = process.env.NEXT_PUBLIC_WS_URL;
   if (configured) return configured;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = process.env.NEXT_PUBLIC_API_HOST ?? '127.0.0.1:3000';
-  return `${protocol}//${host}/ws`;
+  const apiHost = process.env.NEXT_PUBLIC_API_HOST;
+  if (apiHost) return `${protocol}//${apiHost}/ws`;
+  const pageHost = window.location.hostname;
+  if (pageHost === 'localhost' || pageHost === '127.0.0.1' || pageHost === '[::1]') {
+    return `${protocol}//127.0.0.1:3000/ws`;
+  }
+  return `${protocol}//${window.location.host}/ws`;
 }
 
 export class ArenaApiClient {

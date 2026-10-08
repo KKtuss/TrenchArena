@@ -442,26 +442,34 @@ export class ApiServer {
           if (!chainEconomy.pokeConfigured || !chainEconomy.cardsConfigured || !tournament.winner) {
             throw new Error(`CARDS tournament ${tournament.id} cannot be recovered while chain economy is disabled.`);
           }
-          const matches = await tournaments.listMatches(tournament.id);
-          const places = readChainPodium(matches);
-          const finalRound = matches.reduce((max, match) => Math.max(max, match.round), 0);
-          const hasThird = matches.some(match => match.round === finalRound && match.bracketPosition === 1);
-          if (hasThird && !places) {
-            throw new Error(`Tournament ${tournament.id} podium is not ready to pay.`);
-          }
-          if (places) {
-            await chainEconomy.payTournamentCardsPodium({
+          try {
+            const matches = await tournaments.listMatches(tournament.id);
+            const places = readChainPodium(matches);
+            const finalRound = matches.reduce((max, match) => Math.max(max, match.round), 0);
+            const hasThird = matches.some(match => match.round === finalRound && match.bracketPosition === 1);
+            if (hasThird && !places) {
+              throw new Error(`Tournament ${tournament.id} podium is not ready to pay.`);
+            }
+            if (places) {
+              await chainEconomy.payTournamentCardsPodium({
+                tournamentId: tournament.id,
+                firstId: places.firstId,
+                secondId: places.secondId,
+                thirdId: places.thirdId,
+              });
+              return;
+            }
+            await chainEconomy.payTournamentCardsPrize({
               tournamentId: tournament.id,
-              firstId: places.firstId,
-              secondId: places.secondId,
-              thirdId: places.thirdId,
+              winnerId: tournament.winner,
             });
-            return;
+          } catch (error) {
+            // Pre-fresh HRN CARDS reserves are not on the new program. Skip them
+            // so boot can listen; new cups fund reserves on this program.
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes('CARDS prize reserve account was not found')) return;
+            throw error;
           }
-          await chainEconomy.payTournamentCardsPrize({
-            tournamentId: tournament.id,
-            winnerId: tournament.winner,
-          });
         },
       });
     } catch (error) {
@@ -3180,14 +3188,25 @@ export class ApiServer {
   private async settleDisconnectForfeit(playerId: string): Promise<void> {
     if (this.sessionsByPlayer.has(playerId) || this.shuttingDown) return;
     for (const room of this.casual.listRoomsForPlayer(playerId)) {
+      // Only abandon an unfunded create attempt. A funded open lobby (creator
+      // stake locked, waiting for a rival) must survive short disconnects /
+      // wallet popups / page navigations — cancel+refund here is how stakes
+      // vanish from the lobby while the chain refund is easy to miss.
       if (
         room.status === 'pending_deposit'
-        || room.status === 'open'
-        || room.status === 'full'
-        || room.status === 'ready'
-        || room.status === 'drafting'
+        && room.creatorId === playerId
+        && !room.deposits?.creator
+        && !room.deposits?.opponent
+        && !room.opponentId
       ) {
         try {
+          if (
+            room.rail === 'sol_chain'
+            && this.chainEconomy.enabled
+            && await this.chainEconomy.depositStillLive(room.id)
+          ) {
+            continue;
+          }
           const cancelled = await this.casual.cancelRoom(room.id, playerId);
           this.broadcastCasual(cancelled.id);
           await this.broadcastArenaSnapshots();
