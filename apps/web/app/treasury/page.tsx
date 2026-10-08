@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatRoomAmount, formatSolLamports, formatTournamentPrize } from '@/lib/api-client';
+import { formatSolLamports } from '@/lib/api-client';
 
 export default function TreasuryPage() {
   const { client, snapshot, refreshSnapshot, chainEconomyEnabled } = useArena();
@@ -28,26 +28,7 @@ export default function TreasuryPage() {
     ]).then(() => refreshSnapshot());
   }, [client, refreshSnapshot]);
 
-  const rooms = snapshot?.openCasualRooms ?? [];
-  const tournaments = snapshot?.tournaments ?? [];
   const chain = chainEconomyEnabled;
-
-  const chainCups = tournaments.filter(item => item.rail === 'sol_chain');
-  const legacyCups = tournaments.filter(item => item.rail !== 'sol_chain');
-  const prizeTargetsLamports = chainCups.reduce((sum, item) => sum + (item.prizeLamports ?? 0), 0);
-  const prizeTargetsPoke = legacyCups.reduce((sum, item) => sum + item.economics.prizePool, 0);
-  const projectSharePoke = legacyCups.reduce((sum, item) => sum + item.economics.devOpsShare, 0);
-  const operatorFromDeposits = deposits.reduce((sum, row) => sum + row.operatorLamports, 0);
-
-  const boardRooms = rooms.filter(room => (chain ? room.rail === 'sol_chain' : room.rail !== 'sol_chain'));
-  const casualGross = boardRooms.reduce((sum, room) => sum + room.economics.totalPot, 0);
-  const casualFees = boardRooms.reduce((sum, room) => sum + room.economics.protocolFee, 0);
-  const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => {
-    if (chain && room.rail !== 'sol_chain') return sum;
-    if (!chain && room.rail === 'sol_chain') return sum;
-    return sum + (room.payout?.amount ?? 0);
-  }, 0);
-  const money = (amount: number) => (amount ? formatRoomAmount(amount, chain ? 'sol_chain' : 'legacy_poke') : '—');
 
   return (
     <div className="pa-page">
@@ -55,7 +36,7 @@ export default function TreasuryPage() {
         <h1>Treasury &amp; Economy</h1>
         <p className="pa-lead">
           {chain
-            ? 'POKE is your passport. SOL is what you compete for. Creator-reward SOL deposits split 90/10 into the tournament treasury and operator allocation. Casual fights wager SOL with a 2% fee at match start.'
+            ? 'Poke is your passport. SOL is what you wager in the Arena. $CARDS is what you fight for in the Tournaments.'
             : 'Mock ledger mode. Casual fights wager POKE. Tournament prizes come from held entry fees (90% champion / 10% ops). Casual collateral never funds cups.'}
         </p>
         {chain && snapshot?.solBalances ? (
@@ -146,7 +127,7 @@ export default function TreasuryPage() {
       <section className="pa-fly">
         <header>
           <div>
-            <h2><span>◆</span> Casual protocol fee</h2>
+            <h2><span>◆</span> Creator / Dev rewards - $CARDS</h2>
             <p>A different route. One fee from the player-funded gross pool. No withdrawal tax.</p>
           </div>
           <span className="pa-live-pill">
@@ -155,7 +136,7 @@ export default function TreasuryPage() {
         </header>
         <article className="pa-route-block protocol">
           <div className="pa-route-source">
-            <b>Gross match pool</b>
+            <b>Gross match pool - SOL</b>
             <span>Source · collateral from every fighter</span>
           </div>
           <div className="pa-split-bar" role="img" aria-label="98 percent winner payout, 2 percent protocol fee">
@@ -180,76 +161,6 @@ export default function TreasuryPage() {
           </div>
         </header>
         <div className="pa-mode-pair">
-          <article className="pa-mode-panel cup">
-            <header>
-              <div>
-                <small>Tournament</small>
-                <h3>{chain ? 'Burn fee. Treasury prize.' : 'Entry hold. Field prize.'}</h3>
-              </div>
-              <span>{chain ? 'Treasury-funded' : 'Field-funded'}</span>
-            </header>
-            <div className="pa-flow">
-              <div className="pa-flow-step">
-                <b>{chain ? 'Burn fee' : 'Entry fee'}</b>
-                <span>
-                  {chain
-                    ? 'Fixed POKE access cost after the field fills. Not the prize source.'
-                    : 'Held at join and consumed at settlement. This is the prize source.'}
-                </span>
-              </div>
-              <div className="pa-flow-step">
-                <b>{chain ? 'Treasury' : 'Field pool'}</b>
-                <span>
-                  {chain
-                    ? '90% creator rewards bank the SOL prize pool.'
-                    : '90% of held entries pay the champion.'}
-                </span>
-              </div>
-              <div className="pa-flow-step">
-                <b>Champion</b>
-                <span>
-                  {chain
-                    ? 'Takes the Treasury-funded SOL prize.'
-                    : 'Takes the field-funded POKE prize.'}
-                </span>
-              </div>
-            </div>
-            <div className="pa-vault-grid">
-              <div>
-                <small>Prize targets</small>
-                <strong>
-                  {chain
-                    ? (prizeTargetsLamports ? formatSolLamports(prizeTargetsLamports) : '—')
-                    : (prizeTargetsPoke ? formatPoke(prizeTargetsPoke) : '—')}
-                </strong>
-                <span>
-                  {chain
-                    ? 'Sum of open cup SOL prizes'
-                    : 'Sum of provisional POKE field prizes'}
-                </span>
-              </div>
-              <div>
-                <small>{chain ? 'Operator from deposits' : 'Project-fund figure'}</small>
-                <strong>
-                  {chain
-                    ? (operatorFromDeposits ? formatSolLamports(operatorFromDeposits) : '—')
-                    : (projectSharePoke ? formatPoke(projectSharePoke) : '—')}
-                </strong>
-                <span>
-                  {chain
-                    ? '10% share from realized creator deposits'
-                    : 'Mock 10% display from entry holds'}
-                </span>
-              </div>
-            </div>
-            {tournaments[0] ? (
-              <p className="pa-route-copy" style={{ marginTop: '0.75rem' }}>
-                Flagship example: {formatTournamentPrize(tournaments[0])}
-              </p>
-            ) : null}
-            <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/tournaments">Open tournaments</Link>
-          </article>
-
           <article className="pa-mode-panel casual">
             <header>
               <div>
@@ -273,29 +184,49 @@ export default function TreasuryPage() {
               </div>
               <div className="pa-flow-step">
                 <b>Winner</b>
-                <span>Receives the remaining 98%.</span>
-              </div>
-            </div>
-            <div className="pa-vault-grid">
-              <div>
-                <small>Open gross pools</small>
-                <strong>{money(casualGross)}</strong>
-                <span>{boardRooms.length} room{boardRooms.length === 1 ? '' : 's'} · player collateral</span>
-              </div>
-              <div>
-                <small>Protocol fees on board</small>
-                <strong>{money(casualFees)}</strong>
-                <span>Recent payouts {money(paidOut)}</span>
+                <span>Receives the pot after fight completion.</span>
               </div>
             </div>
             <Link className="pa-btn pa-btn-primary pa-btn-sm" href="/arena">Open Arena</Link>
           </article>
+
+          <article className="pa-mode-panel cup">
+            <header>
+              <div>
+                <small>Tournament</small>
+                <h3>{chain ? 'Burn fee entry. Creator rewards raffle.' : 'Entry hold. Field prize raffle.'}</h3>
+              </div>
+              <span>{chain ? 'Treasury-funded' : 'Field-funded'}</span>
+            </header>
+            <div className="pa-flow">
+              <div className="pa-flow-step">
+                <b>{chain ? 'Burn fee' : 'Entry fee'}</b>
+                <span>
+                  {chain
+                    ? 'Fixed POKE access cost after the field fills. Not the prize source.'
+                    : 'Held at join and consumed at settlement. This is the prize source.'}
+                </span>
+              </div>
+              <div className="pa-flow-step">
+                <b>{chain ? 'Treasury' : 'Field pool'}</b>
+                <span>
+                  {chain
+                    ? '90% creator rewards bank the CARDS prize pool.'
+                    : '90% of held entries fund the prize pool.'}
+                </span>
+              </div>
+              <div className="pa-flow-step">
+                <b>Prize split</b>
+                <span>
+                  {chain
+                    ? '1st 50% · 2nd 35% · 3rd 15% of the Treasury CARDS prize.'
+                    : '1st 50% · 2nd 35% · 3rd 15% of the field prize.'}
+                </span>
+              </div>
+            </div>
+            <Link className="pa-btn pa-btn-danger pa-btn-sm" href="/tournaments">Open tournaments</Link>
+          </article>
         </div>
-        <p className="pa-route-copy">
-          {chain
-            ? 'Live vault balance and public deposits come from the chain API when available. Cup prize targets are the configured SOL prizes for open tournaments.'
-            : 'Mock ledger figures. Creator-reward SOL deposits and a live vault appear only when chain economy is enabled.'}
-        </p>
       </section>
     </div>
   );

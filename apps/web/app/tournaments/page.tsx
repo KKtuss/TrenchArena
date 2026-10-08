@@ -178,39 +178,6 @@ export default function TournamentsPage() {
         </div>
       </section>
 
-      <section className="pa-mode-pair">
-        <article className="pa-mode-panel casual">
-          <header>
-            <div>
-              <small>Casual</small>
-              <h3>Player-funded</h3>
-            </div>
-            <span>Collateral</span>
-          </header>
-          <p>
-            {chain
-              ? 'Each side posts SOL collateral. One 2% fee from the gross pool at match start.'
-              : 'Each side posts POKE collateral. One 2% fee from the gross pool at settlement.'}
-          </p>
-          <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/arena">Open arena</Link>
-        </article>
-        <article className="pa-mode-panel cup">
-          <header>
-            <div>
-              <small>Tournament</small>
-              <h3>{chain ? 'Treasury-funded' : 'Field-funded'}</h3>
-            </div>
-            <span>{chain ? 'Burn fee' : 'Entry hold'}</span>
-          </header>
-          <p>
-            {chain
-              ? `${formatPokeFromAtoms(TOURNAMENT_BURN_FEE_ATOMS)} of POKE is burned after the field fills. The CARDS prize pays 1st 50%, 2nd 35%, and 3rd the remainder. A two-player final pays the winner the full prize.`
-              : `${formatPoke(TOURNAMENT_ENTRY_POKE)} POKE is held at join. 90% of those entries form the prize pool, paid 50/35/15.`}
-          </p>
-          <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/treasury">See funding</Link>
-        </article>
-      </section>
-
       <div className="pa-soon">
         <span>Register</span>
         <span aria-hidden>→</span>

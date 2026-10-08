@@ -32,6 +32,15 @@ const nextConfig = {
     if (process.platform === 'win32') {
       config.resolve.symlinks = false;
     }
+    // Workspace copy under apps/web/node_modules is not always linked; pin the
+    // browser-safe rotation entry so Next does not fall through to package root.
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      '@pokearena/tournament/rotation': path.join(
+        __dirname,
+        'node_modules/@pokearena/tournament/dist/src/rotation.js',
+      ),
+    };
     config.cache = false;
     return config;
   },

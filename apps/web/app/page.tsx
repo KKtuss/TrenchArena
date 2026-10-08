@@ -148,7 +148,7 @@ export default function LandingPage() {
         <p className="pa-lead">
           <span className="pa-lead-intro">{chain ? 'Hold POKE to enter.' : 'Connect and compete.'}</span>{' '}
           {chain
-            ? 'Wager SOL in the arena, or enter a tournament and fight for Treasury-funded SOL prizes.'
+            ? 'Wager SOL in the arena, or enter a tournament and fight for Treasury-funded $CARDS prizes.'
             : 'Wager POKE in the arena, or enter a tournament and fight for a prize funded by the field.'}
         </p>
         {saved?.species.some(Boolean) ? (
@@ -408,7 +408,6 @@ export default function LandingPage() {
 
       <footer className="pa-foot">
         <div>
-          <span className="pa-foot-mark">PA</span>
           <div>
             <strong>PokeArena Protocol</strong>
             <small>Competitive stadium engine for Gen 9 tier play. Showdown synced.</small>

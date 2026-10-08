@@ -130,18 +130,9 @@ export default function ArenaPage() {
             </article>
           );
         }) : (
-          <p className="pa-empty">
-            No fights on the board yet.{' '}
-            <Link href="/casual/create">Create challenge →</Link>
-          </p>
+          <p className="pa-empty">No fights on the board yet.</p>
         )}
       </section>
-
-      <div className="pa-soon">
-        <span className="pa-kicker" style={{ margin: 0 }}><i /> Coming soon</span>
-        <strong>2v2 Multi</strong>
-        <span>Rooms can be configured, but starts are not live yet.</span>
-      </div>
     </div>
   );
 }

@@ -627,10 +627,12 @@ export default function CasualRoomPage() {
               <div className="pa-vault">
                 <div className="pa-lobby-actions pa-room-actions">
                   {isPlayer && real && !yourStakeLocked && (
-                    room.status === 'pending_deposit'
-                    || room.status === 'open'
-                    || room.status === 'full'
-                    || room.status === 'ready'
+                    youAreCreator
+                      // Creator payment opens the room (`open`). Never ask them
+                      // to pay again once the lobby is public.
+                      ? room.status === 'pending_deposit'
+                      : Boolean(room.opponentId === playerId)
+                        && (room.status === 'full' || room.status === 'ready' || room.status === 'open')
                   ) ? (
                     <button
                       type="button"

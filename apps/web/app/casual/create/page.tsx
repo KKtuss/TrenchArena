@@ -2,13 +2,31 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 import { previewSolCasual } from '@pokearena/solana-client';
 
 import { useArena } from '@/lib/arena-context';
-import { formatPoke, formatSolLamports } from '@/lib/api-client';
-import type { CasualEconomicsPreview, CasualRuleset } from '@/lib/protocol';
+import { formatSolLamports } from '@/lib/api-client';
+import type { CasualRuleset } from '@/lib/protocol';
+
+function solInputToLamports(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const sol = Number(trimmed);
+  if (!Number.isFinite(sol) || sol <= 0) return null;
+  const lamports = Math.round(sol * 1e9);
+  if (!Number.isSafeInteger(lamports) || lamports <= 0) return null;
+  return lamports;
+}
+
+function safePreviewSolCasual(collateralLamports: number) {
+  try {
+    return previewSolCasual(collateralLamports);
+  } catch {
+    return null;
+  }
+}
 
 export default function CreateCasualPage() {
   const {
@@ -21,54 +39,31 @@ export default function CreateCasualPage() {
     chainEconomyEnabled,
   } = useArena();
   const router = useRouter();
-  const [roomType, setRoomType] = useState<'private' | 'open'>('open');
+  const [roomType, setRoomType] = useState<'private' | 'open'>('private');
   const [battleSize, setBattleSize] = useState<'1v1' | '2v2'>('1v1');
   const [ruleset, setRuleset] = useState<CasualRuleset>('casual');
-  const chain = chainEconomyEnabled;
-  const [stakeChoice, setStakeChoice] = useState<'mock' | 'real' | null>(null);
-  const stake = stakeChoice ?? (chain ? 'real' : 'mock');
-  const real = stake === 'real';
-  const [collateral, setCollateral] = useState(10_000_000);
+  const [collateralInput, setCollateralInput] = useState('0.01');
   const [confirmedStake, setConfirmedStake] = useState(false);
   const [invitedPlayerId, setInvitedPlayerId] = useState('');
-  const [preview, setPreview] = useState<CasualEconomicsPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!chain || stakeChoice !== null) return;
-    setCollateral(10_000_000);
-    setRoomType('private');
-  }, [chain, stakeChoice]);
-
-  useEffect(() => {
-    if (!walletConnected || real) return;
-    let cancelled = false;
-    void client.request({ type: 'casual.preview', collateral, stake: 'mock' }).then(response => {
-      if (!cancelled && response.type === 'casual.preview' && 'collateral' in response.economics) {
-        setPreview(response.economics);
-      }
-    }).catch(err => {
-      if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [client, collateral, walletConnected, real]);
-
-  const realPreview = real ? previewSolCasual(collateral) : null;
-  const shown = real
+  const collateral = solInputToLamports(collateralInput);
+  const preview = collateral !== null ? safePreviewSolCasual(collateral) : null;
+  const shown = preview
     ? {
-        collateral,
-        totalPot: realPreview!.totalPotLamports,
-        protocolFee: realPreview!.protocolFeeLamports,
-        winnerPayout: realPreview!.winnerPayoutLamports,
+        collateral: preview.collateralLamports,
+        totalPot: preview.totalPotLamports,
+        protocolFee: preview.protocolFeeLamports,
+        winnerPayout: preview.winnerPayoutLamports,
       }
-    : preview;
+    : null;
   const freeLamports = snapshot?.solBalances?.freeLamports;
-  const overBalance = real
-    ? Boolean(freeLamports && BigInt(Math.max(0, collateral)) + 10_000n > BigInt(freeLamports))
-    : Boolean(snapshot && collateral > snapshot.wallet.balance);
+  const overBalance = Boolean(
+    collateral !== null
+    && freeLamports
+    && BigInt(collateral) + 10_000n > BigInt(freeLamports),
+  );
   const formatLabel = ruleset === 'competitive' ? 'Competitive · Gen 9 OU' : 'Casual 6 → 3';
   const setupNote = battleSize === '2v2'
     ? '2v2 rooms can be configured, but battle start is not available yet.'
@@ -79,8 +74,16 @@ export default function CreateCasualPage() {
         : 'Open challenges are visible in the queue. One shared six stays sealed until both trainers ready and the countdown ends.';
 
   const onCreate = async () => {
+    if (!chainEconomyEnabled) {
+      setError('Chain economy is required to create a challenge.');
+      return;
+    }
     if (!walletConnected) {
       setError('Connect a wallet before creating a challenge.');
+      return;
+    }
+    if (collateral === null || !preview) {
+      setError('Enter a valid SOL stake greater than zero.');
       return;
     }
     setBusy(true);
@@ -92,8 +95,8 @@ export default function CreateCasualPage() {
         battleSize,
         ruleset,
         collateral,
-        stake,
-        ...(real ? { collateralLamports: collateral } : {}),
+        stake: 'real',
+        collateralLamports: collateral,
         ...(roomType === 'private' && invitedPlayerId.trim()
           ? { invitedPlayerId: invitedPlayerId.trim() }
           : {}),
@@ -131,11 +134,9 @@ export default function CreateCasualPage() {
     <div className="pa-page">
       <header className="pa-page-head pa-page-head-row">
         <div>
-          <h1>{real ? 'Create a real-stake challenge.' : 'Set a mock fight.'}</h1>
+          <h1>Create a real-stake challenge.</h1>
           <p className="pa-lead">
-            {real
-              ? 'Your SOL stake is locked first. Once it confirms, the challenge becomes visible to the invited or queued opponent. A 2% fee comes off the pool at match start.'
-              : 'Mock fights use the development POKE ledger. No SOL moves. This is the default path.'}
+            Your SOL stake is locked first. Once it confirms, the challenge becomes visible to the invited or queued opponent. A 2% fee comes off the pool at match start.
           </p>
         </div>
         <Link className="pa-btn pa-btn-surface" href="/arena">Back to arena</Link>
@@ -158,38 +159,6 @@ export default function CreateCasualPage() {
 
           <div className="pa-setup">
             <div className="pa-field pa-field-wide">
-              <label>Fight type</label>
-              <div className="pa-segmented">
-                <button
-                  type="button"
-                  className={stake === 'mock' ? 'selected' : ''}
-                  onClick={() => {
-                    setStakeChoice('mock');
-                    setConfirmedStake(false);
-                    setCollateral(100_000);
-                  }}
-                >
-                  Mock fight
-                </button>
-                <button
-                  type="button"
-                  className={stake === 'real' ? 'selected' : ''}
-                  disabled={!chain}
-                  title={chain ? 'The creator signs after room creation; the opponent signs after joining' : 'Chain economy is not enabled'}
-                  onClick={() => {
-                    setStakeChoice('real');
-                    setConfirmedStake(false);
-                    setRoomType('private');
-                    setCollateral(10_000_000);
-                  }}
-                >
-                  Real stake
-                </button>
-              </div>
-              {!chain ? <p className="pa-econ-note">Real stake needs chain economy. Mock fight stays available.</p> : null}
-            </div>
-
-            <div className="pa-field pa-field-wide">
               <label>Format</label>
               <div className="pa-format-choice">
                 <button
@@ -198,7 +167,6 @@ export default function CreateCasualPage() {
                   aria-pressed={ruleset === 'casual'}
                   onClick={() => setRuleset('casual')}
                 >
-                  <span className="format-icon">C</span>
                   <span>
                     <strong>Casual</strong>
                     <small>Assigned curated six · pick three · no team building</small>
@@ -210,7 +178,6 @@ export default function CreateCasualPage() {
                   aria-pressed={ruleset === 'competitive'}
                   onClick={() => setRuleset('competitive')}
                 >
-                  <span className="format-icon">OU</span>
                   <span>
                     <strong>Competitive</strong>
                     <small>Bring your own Gen 9 OU team from My Teams</small>
@@ -249,37 +216,22 @@ export default function CreateCasualPage() {
             </div>
 
             <div className="pa-field pa-field-wide">
-              <label htmlFor="collateral">
-                {real ? 'Stake each (SOL)' : 'Collateral each (POKE)'}
-              </label>
-              {real ? (
-                <input
-                  id="collateral"
-                  type="number"
-                  min={0.001}
-                  step={0.001}
-                  value={collateral / 1e9}
-                  onChange={event => {
-                    const next = Math.round(Number(event.target.value) * 1e9);
-                    setCollateral(Number.isFinite(next) ? next : 0);
-                    setConfirmedStake(false);
-                  }}
-                />
-              ) : (
-                <input
-                  id="collateral"
-                  type="number"
-                  min={1}
-                  value={collateral}
-                  onChange={event => setCollateral(Number(event.target.value))}
-                />
-              )}
-              {real ? (
-                <p className="pa-econ-note">
-                  {formatSolLamports(collateral)} each
-                  {freeLamports !== undefined ? ` · wallet ${formatSolLamports(freeLamports)}` : ''}
-                </p>
-              ) : null}
+              <label htmlFor="collateral">Stake each (SOL)</label>
+              <input
+                id="collateral"
+                type="number"
+                min={0.001}
+                step={0.001}
+                value={collateralInput}
+                onChange={event => {
+                  setCollateralInput(event.target.value);
+                  setConfirmedStake(false);
+                }}
+              />
+              <p className="pa-econ-note">
+                {collateral !== null ? `${formatSolLamports(collateral)} each` : 'Enter a stake amount'}
+                {freeLamports !== undefined ? ` · wallet ${formatSolLamports(freeLamports)}` : ''}
+              </p>
             </div>
 
             {roomType === 'private' ? (
@@ -295,80 +247,86 @@ export default function CreateCasualPage() {
             ) : null}
           </div>
           <p className="pa-econ-note">{setupNote}</p>
+          {!chainEconomyEnabled ? (
+            <p className="pa-setup-warn">Chain economy is required. Challenges cannot be created without it.</p>
+          ) : null}
         </div>
 
-        <div className="pa-vault">
-            <header>
-              <h2>{real ? 'Stake terms' : 'Match economics'}</h2>
-              <span className={real ? 'warn' : 'ok'}>{real ? 'Escrow' : 'Mock ledger'}</span>
-            </header>
-            <div className="pa-econ-rows">
-              <div>
-                <span>{real ? 'Your stake' : 'Collateral each'}</span>
-                <strong>{shown ? (real ? formatSolLamports(shown.collateral) : formatPoke(shown.collateral)) : '—'}</strong>
-              </div>
-              <div>
-                <span>Opponent stake</span>
-                <strong>{shown ? (real ? formatSolLamports(shown.collateral) : formatPoke(shown.collateral)) : '—'}</strong>
-              </div>
-              <div>
-                <span>{real ? 'Amount locked' : 'Gross match pool'}</span>
-                <strong>{shown ? (real ? formatSolLamports(shown.totalPot) : formatPoke(shown.totalPot)) : '—'}</strong>
-              </div>
-              <div className="fee">
-                <span>Platform fee · 2% at match start</span>
-                <strong>{shown ? (real ? formatSolLamports(shown.protocolFee) : formatPoke(shown.protocolFee)) : '—'}</strong>
-              </div>
-              <div className="payout">
-                <span>Potential payout</span>
-                <strong>{shown ? (real ? formatSolLamports(shown.winnerPayout) : formatPoke(shown.winnerPayout)) : '—'}</strong>
-              </div>
+        <div className="pa-vault pa-stake-panel">
+          <header>
+            <h2>Stake terms</h2>
+            <span className="warn">Escrow</span>
+          </header>
+          <div className="pa-econ-rows">
+            <div>
+              <span>Your stake</span>
+              <strong>{shown ? formatSolLamports(shown.collateral) : '—'}</strong>
             </div>
-            <p className="pa-econ-note">
-              {real
-                ? 'Loser receives nothing from the pool. Funds stay locked until the server settles the battle result.'
-                : 'Mock fight. Development POKE only. No SOL moves.'}
-            </p>
-            {real ? (
-              <label className="pa-econ-note" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                <input
-                  type="checkbox"
-                  checked={confirmedStake}
-                  onChange={event => setConfirmedStake(event.target.checked)}
-                />
-                <span>I confirm this 0.01 SOL wager. The creator signs after the room is created; the opponent signs after joining.</span>
-              </label>
-            ) : null}
+            <div>
+              <span>Opponent stake</span>
+              <strong>{shown ? formatSolLamports(shown.collateral) : '—'}</strong>
+            </div>
+            <div>
+              <span>Amount locked</span>
+              <strong>{shown ? formatSolLamports(shown.totalPot) : '—'}</strong>
+            </div>
+            <div className="fee">
+              <span>Platform fee · 2% at match start</span>
+              <strong>{shown ? formatSolLamports(shown.protocolFee) : '—'}</strong>
+            </div>
+            <div className="payout">
+              <span>Potential payout</span>
+              <strong>{shown ? formatSolLamports(shown.winnerPayout) : '—'}</strong>
+            </div>
+          </div>
+          <p className="pa-econ-note">
+            Loser receives nothing from the pool. Funds stay locked until the server settles the battle result.
+          </p>
+
+          <div className="pa-stake-footer">
+            <label className="pa-stake-confirm">
+              <input
+                type="checkbox"
+                checked={confirmedStake}
+                onChange={event => setConfirmedStake(event.target.checked)}
+              />
+              <span>
+                I confirm this {collateral !== null ? formatSolLamports(collateral) : '—'} wager. The creator signs after the room is created; the opponent signs after joining.
+              </span>
+            </label>
             {!walletConnected ? <p className="pa-setup-warn">Connect a wallet to create a challenge.</p> : null}
-            {overBalance ? (
-              <p className="pa-setup-warn">
-                {real ? 'Insufficient SOL for this stake.' : 'Collateral exceeds your development balance.'}
-              </p>
-            ) : null}
-            {real && snapshot?.passport && !snapshot.passport.eligible ? (
+            {overBalance ? <p className="pa-setup-warn">Insufficient SOL for this stake.</p> : null}
+            {snapshot?.passport && !snapshot.passport.eligible ? (
               <p className="pa-setup-warn">Passport is below the play threshold. Real stake will be rejected.</p>
             ) : null}
-            <div className="pa-lobby-actions" style={{ marginTop: '1rem' }}>
-              {!walletConnected ? (
-                <button
-                  type="button"
-                  className="pa-btn pa-btn-primary"
-                  disabled={connectingWallet}
-                  onClick={() => void connectInjectedWallet()}
-                >
-                  {connectingWallet ? 'Connecting…' : 'Connect wallet'}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="pa-btn pa-btn-primary"
-                  disabled={busy || overBalance || collateral <= 0 || (roomType === 'private' && !invitedPlayerId.trim()) || (real && !confirmedStake)}
-                  onClick={() => void onCreate()}
-                >
-                  {busy ? 'Creating challenge…' : real ? 'Create real-stake challenge' : 'Create mock fight'}
-                </button>
-              )}
-            </div>
+            {!walletConnected ? (
+              <button
+                type="button"
+                className="pa-btn pa-btn-primary pa-stake-submit"
+                disabled={connectingWallet}
+                onClick={() => void connectInjectedWallet()}
+              >
+                {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="pa-btn pa-btn-primary pa-stake-submit"
+                disabled={
+                  busy
+                  || !chainEconomyEnabled
+                  || overBalance
+                  || collateral === null
+                  || !preview
+                  || !confirmedStake
+                  || (roomType === 'private' && !invitedPlayerId.trim())
+                }
+                onClick={() => void onCreate()}
+              >
+                {busy ? 'Creating challenge…' : 'Create challenge'}
+              </button>
+            )}
+          </div>
         </div>
       </section>
       <ErrorToast error={error} onDismiss={() => setError(null)} />

@@ -94,7 +94,9 @@ export function ArenaShell({ children }: { children: ReactNode }) {
                       : 'is-pending'
                   }>
                     {snapshot?.passport
-                      ? (snapshot.passport.eligible ? 'Eligible' : 'Need $20')
+                      ? (snapshot.passport.eligible
+                        ? 'Eligible'
+                        : `Need $${(snapshot.passport.thresholdUsdCents / 100).toFixed(0)}`)
                       : (connected ? '—' : 'Connect')}
                   </strong>
                 </span>

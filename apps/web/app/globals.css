@@ -152,9 +152,17 @@ main.is-home {
   width: min(1440px, calc(100% - 32px));
 }
 
+.shell-nav-home .brand {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  align-items: center;
+}
+
 .shell-nav-home .brand-mark {
-  width: 36px;
-  height: 36px;
+  width: 0.72em;
+  height: 0.72em;
+  width: 1cap;
+  height: 1cap;
 }
 
 .shell-nav-home .brand-copy strong {
@@ -217,8 +225,12 @@ main.is-home {
 .brand-mark {
   display: block;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 0.72em;
+  height: 0.72em;
+  width: 1cap;
+  height: 1cap;
+  object-fit: contain;
+  image-rendering: pixelated;
 }
 
 .brand-copy {
@@ -3164,7 +3176,7 @@ main:has(.is-cup-hub) {
 }
 
 .pa-path .pa-btn {
-  margin-top: 0.35rem;
+  margin-top: auto;
   align-self: flex-start;
 }
 
@@ -3385,12 +3397,15 @@ main:has(.is-cup-hub) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.85rem;
+  align-items: stretch;
 }
 
 .pa-mode-panel {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
+  min-height: 100%;
+  height: 100%;
   padding: 1rem 1.05rem 1.15rem;
   border: 1px solid #13213d;
   border-radius: 4px;
@@ -3451,6 +3466,28 @@ main:has(.is-cup-hub) {
   background: rgba(0, 240, 255, 0.04);
 }
 
+.pa-mode-panel .pa-flow {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  min-height: 0;
+}
+
+.pa-mode-panel .pa-flow-step {
+  flex: none;
+  height: auto;
+  min-height: 100%;
+  /* Reset .pa-fly article div:last-child mono/uppercase bleed on the 3rd step. */
+  margin-top: 0;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 .pa-mode-panel.cup .pa-flow-step {
   background: rgba(255, 113, 125, 0.05);
 }
@@ -3463,14 +3500,35 @@ main:has(.is-cup-hub) {
   text-transform: uppercase;
 }
 
-.pa-flow-step span {
+.pa-flow-step span,
+.pa-mode-panel .pa-flow-step span {
   color: #8ea0c0;
+  font-family: var(--font-inter), Inter, sans-serif;
   font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0;
   line-height: 1.35;
+  text-transform: none;
 }
 
 .pa-mode-panel .pa-btn {
-  align-self: flex-start;
+  width: 100%;
+  margin-top: auto;
+  align-self: stretch;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.pa-mode-panel.cup .pa-btn {
+  background: #ff4655;
+  color: #050914;
+  border: 0;
+  box-shadow: 0 0 24px rgba(255, 70, 85, 0.45);
+}
+
+.pa-mode-panel.cup .pa-btn:hover {
+  background: #ff717d;
+  color: #050914;
 }
 
 @media (max-width: 900px) {
@@ -3478,9 +3536,20 @@ main:has(.is-cup-hub) {
     grid-template-columns: 1fr;
   }
 
+  .pa-mode-panel {
+    height: auto;
+    min-height: 0;
+  }
+
   .pa-split-bar .project,
   .pa-split-bar .fee {
     font-size: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .pa-mode-panel .pa-flow {
+    grid-template-columns: 1fr;
   }
 }
 

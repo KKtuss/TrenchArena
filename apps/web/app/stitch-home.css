@@ -1,4 +1,6 @@
 .shell-nav-stitch {
+  --shell-chip-h: 40px;
+  --shell-brand-mark-h: calc(var(--shell-chip-h) + 3px);
   height: 64px;
   background: rgba(8, 13, 26, 0.92);
   border-bottom: 1px solid #13213d;
@@ -13,27 +15,45 @@
 }
 
 .shell-nav-stitch .brand {
-  gap: 0.4rem;
+  display: flex;
+  gap: 0.35rem;
   flex-shrink: 0;
+  align-items: center;
+  align-self: center;
+  height: var(--shell-chip-h);
+  overflow: visible;
+  font-family: var(--font-anton), Impact, sans-serif;
 }
 
 .shell-nav-stitch .brand-mark {
-  width: 32px;
-  height: 32px;
+  width: var(--shell-brand-mark-h);
+  height: var(--shell-brand-mark-h);
+  object-fit: contain;
+  image-rendering: pixelated;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
 }
 
-.shell-nav-stitch .brand-copy strong {
-  display: inline-flex;
+.shell-nav-stitch .brand-copy {
+  display: flex;
+  flex-direction: row;
   align-items: center;
-  font-family: var(--font-anton), Impact, sans-serif;
-  font-size: 2rem;
+  height: var(--shell-chip-h);
+  overflow: visible;
+}
+
+.shell-nav-stitch .brand-copy strong {
+  display: block;
+  overflow: visible;
+  font-family: inherit;
+  /* Cap height near logo; slightly under so text doesn't overpower the mark. */
+  font-size: calc((var(--shell-brand-mark-h) - 4px) / 0.7);
+  font-size: calc((var(--shell-brand-mark-h) - 4px) * 1em / 1cap);
   font-weight: 400;
   letter-spacing: 0.01em;
+  line-height: 1;
   text-transform: uppercase;
   color: #dee2f3;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
-  transform: translateY(1px);
 }
 
 .shell-nav-stitch .brand-copy small {
@@ -126,11 +146,13 @@
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-items: center;
   align-self: center;
-  width: 14rem;
-  min-height: 40px;
-  height: 40px;
+  width: 10.5rem;
+  min-width: 10.5rem;
+  max-width: 10.5rem;
+  min-height: var(--shell-chip-h);
+  height: var(--shell-chip-h);
   gap: 0;
-  padding: 0.2rem 0.7rem;
+  padding: 0.15rem 0.45rem;
   background:
     linear-gradient(180deg, rgba(17, 29, 51, 0.96), rgba(8, 14, 28, 0.96)),
     #0b1222;
@@ -155,13 +177,13 @@
   display: inline-flex;
   align-items: center;
   min-height: 1rem;
-  padding: 0.12rem 0.35rem;
+  padding: 0.1rem 0.28rem;
   border: 1px solid rgba(0, 240, 255, 0.32);
   border-radius: 2px;
   background: rgba(0, 240, 255, 0.07);
   color: #00f0ff;
-  font-size: 0.62rem;
-  letter-spacing: 0.07em;
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -200,7 +222,7 @@
 }
 
 .shell-nav-stitch .passport-chip-balance + .passport-chip-balance {
-  padding-left: 0.7rem;
+  padding-left: 0.45rem;
   border-left: 1px solid rgba(142, 160, 192, 0.16);
 }
 
@@ -378,11 +400,12 @@
 }
 
 .pa-hero .pa-lead {
-  max-width: 22rem;
+  max-width: 34rem;
   margin: 0.75rem auto 1rem;
   color: #b9cacb;
   font-size: 0.875rem;
   line-height: 1.45;
+  text-wrap: balance;
 }
 
 .pa-lead {
@@ -1013,7 +1036,8 @@
 }
 
 .pa-duel-foot {
-  padding: 0 1.5rem 1.25rem;
+  align-items: center;
+  padding: 0.7rem 1.5rem;
 }
 
 .pa-duel-foot > div {
@@ -1161,6 +1185,43 @@
   display: grid;
   grid-template-columns: 1.4fr 1fr;
   gap: 1rem;
+  align-items: stretch;
+}
+
+.pa-stake-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.pa-stake-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-top: 1rem;
+}
+
+.pa-stake-confirm {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin: 0;
+  color: #8ea0c0;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pa-stake-confirm input {
+  margin-top: 0.1rem;
+  flex: 0 0 auto;
+}
+
+.pa-stake-submit {
+  width: 100%;
+  justify-content: center;
 }
 
 .pa-split-side {
@@ -4294,7 +4355,7 @@
 .pa-format-choice button {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: center;
   width: 100%;
   border: 1px solid #13213d;
   border-radius: 2px;
@@ -4302,7 +4363,7 @@
   padding: 0.85rem;
   color: inherit;
   cursor: pointer;
-  text-align: left;
+  text-align: center;
 }
 
 .pa-format-choice button.selected {
@@ -4324,27 +4385,11 @@
   line-height: 1.35;
 }
 
-.pa-format-choice span:last-child {
+.pa-format-choice button > span {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 0.2rem;
-}
-
-.pa-format-choice .format-icon {
-  display: grid;
-  width: 2.4rem;
-  height: 2.4rem;
-  place-items: center;
-  border: 1px solid rgba(0, 240, 255, 0.4);
-  color: #00f0ff;
-  font-family: var(--font-jetbrains), monospace;
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.pa-format-choice button.selected .format-icon {
-  border-color: #00f0ff;
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.25);
 }
 
 .pa-segmented {
@@ -5852,14 +5897,6 @@
     row-gap: 0.15rem;
   }
 
-  .shell-nav-stitch .brand {
-    transform: translateY(0.25rem);
-  }
-
-  .shell-nav-stitch .brand-copy strong {
-    font-size: 1.7rem;
-  }
-
   .shell-nav-mobile-toggle {
     display: flex;
     order: 3;
@@ -6357,15 +6394,20 @@
 }
 
 @media (max-width: 360px) {
+  .shell-nav-stitch {
+    --shell-chip-h: 36px;
+  }
+
   .shell-nav-stitch .brand {
     flex-shrink: 1;
     min-width: 0;
-    gap: 0.4rem;
+    gap: 0.35rem;
   }
 
-  .shell-nav-stitch .brand-mark {
-    width: 28px;
-    height: 28px;
+  .shell-nav-stitch .passport-chip {
+    width: 9.5rem;
+    min-width: 9.5rem;
+    max-width: 9.5rem;
   }
 
   .shell-nav-stitch .brand-copy {
@@ -6375,7 +6417,6 @@
   .shell-nav-stitch .brand-copy strong {
     max-width: 7rem;
     overflow: hidden;
-    font-size: 1.4rem;
     letter-spacing: 0;
     text-overflow: ellipsis;
     white-space: nowrap;
