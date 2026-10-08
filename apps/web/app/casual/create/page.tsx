@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
-import { previewSolCasual } from '@pokearena/solana-client';
+import { previewSolCasual } from '@pokearena/solana-client/browser';
 
 import { useArena } from '@/lib/arena-context';
 import { formatSolLamports } from '@/lib/api-client';

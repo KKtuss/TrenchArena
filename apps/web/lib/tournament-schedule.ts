@@ -1,4 +1,4 @@
-import { previewLegacyPokeTournament } from '@pokearena/solana-client';
+import { previewLegacyPokeTournament } from '@pokearena/solana-client/browser';
 import { tournamentRotationCapacity } from '@pokearena/tournament/rotation';
 import {
   TOURNAMENT_BURN_FEE_POKE,

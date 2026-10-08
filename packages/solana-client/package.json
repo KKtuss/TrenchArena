@@ -13,6 +13,11 @@
     "./poke-units": {
       "types": "./dist/src/poke-units.d.ts",
       "default": "./dist/src/poke-units.js"
+    },
+    "./browser": {
+      "types": "./dist/src/browser.d.ts",
+      "require": "./dist/src/browser.js",
+      "default": "./dist/src/browser.js"
     }
   },
   "engines": {
