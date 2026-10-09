@@ -416,6 +416,33 @@ export function canOpenMatch(match: BracketMatch): boolean {
   return !match.placeholder && match.status !== 'pending';
 }
 
+export type TournamentPodium = {
+  final?: BracketMatch;
+  thirdPlace?: BracketMatch;
+  first?: string;
+  second?: string;
+  third?: string;
+};
+
+/** Places come from settled matches only. The 3rd-place match is the second match of the last round. */
+export function tournamentPodium(matches: BracketMatch[], winner?: string): TournamentPodium {
+  const real = matches.filter(match => !match.placeholder);
+  const lastRound = real.reduce((max, match) => Math.max(max, match.round), 0);
+  const final = real.find(match => (
+    match.round === lastRound && match.bracketPosition === 0 && match.role !== 'third-place'
+  ));
+  const thirdPlace = real.find(match => (
+    match.role === 'third-place' || (lastRound > 1 && match.round === lastRound && match.bracketPosition === 1)
+  ));
+  const finalWinner = final && isSettledMatch(final.status) ? final.winner : undefined;
+  const first = winner ?? finalWinner;
+  const second = first && final && (final.player1 === first || final.player2 === first)
+    ? opponentId(final, first)
+    : undefined;
+  const third = thirdPlace && isSettledMatch(thirdPlace.status) ? thirdPlace.winner : undefined;
+  return { final, thirdPlace, first, second, third };
+}
+
 export type MockBracketOptions = {
   id?: string;
   title?: string;

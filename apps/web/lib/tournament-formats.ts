@@ -14,10 +14,16 @@ export interface FormatPresentation {
   trainer: string;
   pokemon: readonly string[];
   accent: FormatAccent;
+  /** Scenery behind the format's sprite stage. */
+  backdrop: string;
 }
 
 const REGIONS = ['KANTO', 'JOHTO', 'HOENN', 'SINNOH', 'UNOVA', 'KALOS', 'ALOLA', 'GALAR', 'PALDEA'] as const;
 const TRAINERS = ['red-gen1', 'ethan', 'brendan-gen3', 'lucas', 'hilbert', 'calem', 'elio', 'victor', 'penny'] as const;
+
+function regionBackdrop(index: number): string {
+  return `/stages/${REGIONS[index]!.toLowerCase()}.webp`;
+}
 
 const CUP_POKEMON: readonly (readonly string[])[] = [
   ['Charizard', 'Venusaur', 'Blastoise', 'Pikachu'],
@@ -57,6 +63,7 @@ function cup(generation: number): FormatPresentation {
     trainer: TRAINERS[index]!,
     pokemon: CUP_POKEMON[index]!,
     accent: 'cup',
+    backdrop: regionBackdrop(index),
   };
 }
 
@@ -73,6 +80,7 @@ function casual(generation: number): FormatPresentation {
     trainer: TRAINERS[index]!,
     pokemon: CASUAL_POKEMON[index]!,
     accent: 'casual',
+    backdrop: regionBackdrop(index),
   };
 }
 
@@ -87,6 +95,7 @@ const GEN9_OU: FormatPresentation = {
   trainer: 'penny',
   pokemon: ['Great Tusk', 'Kingambit', 'Gholdengo', 'Dragapult'],
   accent: 'ou',
+  backdrop: '/stages/gen9ou.webp',
 };
 
 const BY_ID = new Map<string, FormatPresentation>();

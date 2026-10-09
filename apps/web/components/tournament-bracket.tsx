@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { CupIcon } from '@/components/cup-icons';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import type { BracketMatch } from '@/lib/tournament-hub';
 import { roundLabel } from '@/lib/tournament-schedule';
@@ -40,16 +41,16 @@ function MatchPlayerRow({
   const mine = Boolean(viewerId && playerId && viewerId === playerId);
   const score = playerScore(match, playerId);
   return (
-    <div className={`pa-tree-row${won ? ' is-won' : ''}${lost ? ' is-lost' : ''}${mine ? ' is-mine' : ''}${playerId ? '' : ' is-empty'}${compact ? ' is-compact' : ''}`}>
+    <div className={`cup-row${won ? ' is-won' : ''}${lost ? ' is-lost' : ''}${mine ? ' is-mine' : ''}${playerId ? '' : ' is-empty'}${compact ? ' is-compact' : ''}`}>
       {playerId && !compact ? (
         <ProfileTrainerSprite label={playerId} side="left" />
       ) : (
-        <span className="pa-tree-avatar" aria-hidden />
+        <span className="cup-row-avatar" aria-hidden />
       )}
-      <span className="pa-tree-name">
+      <span className="cup-row-name">
         {playerId ? <TrainerName playerId={playerId} /> : 'TBD'}
       </span>
-      {score == null ? <span className="pa-tree-score" /> : <span className="pa-tree-score">{score}</span>}
+      {score == null ? <span className="cup-row-score" /> : <span className="cup-row-score">{score}</span>}
     </div>
   );
 }
@@ -78,19 +79,19 @@ function MatchCard({
   const vacant = !match.player1 && !match.player2;
   return (
     <article
-      className={`pa-tree-match is-${tone} is-${layout} is-round-${phase}${mine ? ' is-path' : ''}${youHere ? ' is-you' : ''}${selected ? ' is-selected' : ''}${live ? ' is-live' : ''}${vacant ? ' is-vacant' : ''}`}
+      className={`cup-match is-${tone} is-${layout} is-round-${phase}${mine ? ' is-path' : ''}${youHere ? ' is-you' : ''}${selected ? ' is-selected' : ''}${live ? ' is-live' : ''}${vacant ? ' is-vacant' : ''}`}
       data-match={match.id}
     >
       <button
         type="button"
-        className="pa-tree-match-btn"
+        className="cup-match-btn"
         disabled={!openable}
         onClick={() => onSelect(match)}
         aria-pressed={selected}
       >
-        {youHere ? <span className="pa-tree-you">You</span> : null}
+        {youHere ? <span className="cup-match-you">You</span> : null}
         {tone === 'future' || match.placeholder ? null : (
-          <span className="pa-tree-match-status">{matchStatusLabel(match.status)}</span>
+          <span className="cup-match-tag">{matchStatusLabel(match.status)}</span>
         )}
         <MatchPlayerRow playerId={match.player1} match={match} viewerId={viewerId} compact={layout === 'opening'} />
         <MatchPlayerRow playerId={match.player2} match={match} viewerId={viewerId} compact={layout === 'opening'} />
@@ -165,7 +166,7 @@ function PathRow({
   return (
     <button
       type="button"
-      className={`pa-path-row${mine ? ' is-mine' : ''}${vacant ? ' is-vacant' : ''}${selected ? ' is-selected' : ''}`}
+      className={`cup-pathrow${mine ? ' is-mine' : ''}${vacant ? ' is-vacant' : ''}${selected ? ' is-selected' : ''}`}
       disabled={!openable}
       onClick={() => onSelect(match)}
     >
@@ -188,10 +189,14 @@ function StageMap({
 }) {
   const steps = progressionSteps(maxPlayers, active, status);
   return (
-    <ol className="pa-stage-map" aria-label="Tournament progression">
+    <ol className="cup-stagemap" aria-label="Tournament progression">
       {steps.map(step => (
-        <li key={step.round} className={`is-${step.state === 'upcoming' ? 'future' : step.state}`}>
-          <i aria-hidden />
+        <li
+          key={step.round}
+          className={`is-${step.state === 'upcoming' ? 'future' : step.state}`}
+          aria-current={step.state === 'current' ? 'step' : undefined}
+        >
+          <i aria-hidden>{step.state === 'done' ? '✓' : null}</i>
           <span>{shortRound(step.label)}</span>
         </li>
       ))}
@@ -201,7 +206,7 @@ function StageMap({
 
 function ChampionLine({ winner }: { winner?: string }) {
   return (
-    <div className={`pa-tree-champion${winner ? ' is-crowned' : ' is-empty'}`}>
+    <div className={`cup-champion${winner ? ' is-crowned' : ' is-empty'}`}>
       <span>Champion</span>
       <strong>{winner ? <TrainerName playerId={winner} /> : 'TBD'}</strong>
     </div>
@@ -211,9 +216,9 @@ function ChampionLine({ winner }: { winner?: string }) {
 function CrownBar({ match, winner }: { match: BracketMatch; winner?: string }) {
   const set = Boolean(match.player1 || match.player2);
   return (
-    <div className={`pa-stage-crown${winner ? ' is-crowned' : ''}${set ? ' is-set' : ''}`}>
+    <div className={`cup-crownbar${winner ? ' is-crowned' : ''}${set ? ' is-set' : ''}`}>
       <div>
-        <span>Final</span>
+        <span><CupIcon name="flag" />Final</span>
         <strong>
           <NameSlot id={match.player1} winner={match.winner} />
           <em>vs</em>
@@ -221,8 +226,8 @@ function CrownBar({ match, winner }: { match: BracketMatch; winner?: string }) {
         </strong>
       </div>
       <div>
-        <span>Champion</span>
-        <strong>{winner ? <TrainerName playerId={winner} /> : 'TBD'}</strong>
+        <span><CupIcon name="crown" />Champion</span>
+        <strong>{winner ? <TrainerName playerId={winner} /> : <span className="is-tbd">TBD</span>}</strong>
       </div>
     </div>
   );
@@ -247,8 +252,8 @@ function HeroFinal({
 }) {
   const vacant = !match.player1 && !match.player2;
   return (
-    <div className={`pa-stage-hero${winner ? ' is-crowned' : ''}${vacant ? ' is-waiting' : ''}`}>
-      <span className="pa-stage-kicker">Championship</span>
+    <div className={`cup-final${winner ? ' is-crowned' : ''}${vacant ? ' is-waiting' : ''}`}>
+      <span className="cup-final-kicker"><CupIcon name="trophy" />Championship</span>
       <MatchCard
         match={match}
         viewerId={viewerId}
@@ -286,16 +291,16 @@ function PodBlock({
     ref.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [pod.yours]);
   return (
-    <article ref={ref} className={`pa-pod${pod.yours ? ' is-yours' : ''}`}>
-      <header className="pa-pod-head">
-        <span>Pod {pod.letter}</span>
-        {pod.yours ? <em>You</em> : <em>{pod.current.length} matches</em>}
+    <article ref={ref} className={`cup-pod${pod.yours ? ' is-yours' : ''}`}>
+      <header className="cup-pod-head">
+        <span><b>{pod.letter}</b>Pod {pod.letter}</span>
+        {pod.yours ? <span className="cup-pill is-you">You</span> : <em>{pod.current.length} matches</em>}
       </header>
-      {pod.past.length ? <div className="pa-pod-past">{pod.past.map(renderPath)}</div> : null}
-      <div className="pa-pod-matches">
+      {pod.past.length ? <div className="cup-pod-trail">{pod.past.map(renderPath)}</div> : null}
+      <div className="cup-pod-matches">
         {pod.current.map(match => renderCard(match, cardLayout, 'current'))}
       </div>
-      {pod.ahead.length ? <div className="pa-pod-ahead">{pod.ahead.map(renderPath)}</div> : null}
+      {pod.ahead.length ? <div className="cup-pod-trail">{pod.ahead.map(renderPath)}</div> : null}
     </article>
   );
 }
@@ -322,34 +327,23 @@ function Championship({
   renderPath: (match: BracketMatch) => ReactNode;
 }) {
   const semiRound = lastRound - 1;
+  const placement = matches.find(match => (
+    match.role === 'third-place' || (match.round === lastRound && match.bracketPosition === 1)
+  ));
   return (
-    <div className="pa-stage-late">
-      <header className="pa-stage-now">
+    <div className="cup-late">
+      <header className="cup-round-head">
         <h3>{winner && phase === 'done' ? 'Champion' : 'Final'}</h3>
+        {semiRound >= 1 ? <span>Semifinal results</span> : null}
       </header>
       {semiRound >= 1 ? (
-        <div className="pa-stage-semis is-results">
+        <div className="cup-semis is-results">
           {[0, 1].map(position => {
             const match = matchAt(matches, semiRound, position);
             return match.id.startsWith('gap-') ? null : renderPath(match);
           })}
         </div>
       ) : null}
-      {(() => {
-        const placement = matches.find(match => (
-          match.role === 'third-place' || (match.round === lastRound && match.bracketPosition === 1)
-        ));
-        if (!placement || placement.id.startsWith('gap-')) return null;
-        return (
-          <PathRow
-            match={placement}
-            label="3rd"
-            viewerId={viewerId}
-            selected={selectedId === placement.id}
-            onSelect={onSelect}
-          />
-        );
-      })()}
       <HeroFinal
         match={finalMatch}
         winner={winner}
@@ -359,6 +353,17 @@ function Championship({
         phase={phase}
         youHere={Boolean(viewerId && (finalMatch.player1 === viewerId || finalMatch.player2 === viewerId))}
       />
+      {placement && !placement.id.startsWith('gap-') ? (
+        <div className="cup-third">
+          <PathRow
+            match={placement}
+            label="3rd"
+            viewerId={viewerId}
+            selected={selectedId === placement.id}
+            onSelect={onSelect}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -457,11 +462,11 @@ export function TournamentBracket({
     : [];
 
   return (
-    <div className="pa-stage">
+    <div className="cup-bracket">
       <StageMap maxPlayers={maxPlayers} active={activeRound} status={status} />
       {focus ? (
-        <p className={`pa-stage-locate${lost ? ' is-out' : ''}`}>
-          <b>{lost ? 'Out' : 'You'}</b>
+        <p className={`cup-locate${lost ? ' is-out' : ''}`}>
+          <span className={`cup-pill ${lost ? 'is-live' : 'is-you'}`}>{lost ? 'Out' : 'You'}</span>
           {letter ? <strong>Pod {letter}</strong> : null}
           <span>{lost ? roundLabel(lost.round, maxPlayers) : activeLabel}</span>
           {roundsLeft != null && roundsLeft > 0 && !lost ? (
@@ -469,7 +474,7 @@ export function TournamentBracket({
           ) : null}
         </p>
       ) : preview ? (
-        <p className="pa-stage-note">Matches fill in when the field locks.</p>
+        <p className="cup-stage-note">Matches fill in when the field locks.</p>
       ) : null}
 
       {mode === 'championship' ? (
@@ -485,12 +490,12 @@ export function TournamentBracket({
           renderPath={renderPath}
         />
       ) : mode === 'semis' ? (
-        <div className="pa-stage-late">
-          <header className="pa-stage-now">
+        <div className="cup-late">
+          <header className="cup-round-head">
             <h3>{activeLabel}</h3>
             <span>{expectedInActive} matches</span>
           </header>
-          <div className="pa-stage-semis">
+          <div className="cup-semis">
             {activeMatches.map(match => renderCard(match, 'semi', 'current'))}
           </div>
           <HeroFinal
@@ -504,14 +509,14 @@ export function TournamentBracket({
           />
         </div>
       ) : mode === 'quarters' ? (
-        <div className="pa-stage-late">
-          <header className="pa-stage-now">
+        <div className="cup-late">
+          <header className="cup-round-head">
             <h3>{activeLabel}</h3>
             <span>{expectedInActive} matches</span>
           </header>
-          <div className="pa-stage-quarters">
+          <div className="cup-quarters">
             {[0, 1].map(side => (
-              <section key={side} className="pa-stage-pair">
+              <section key={side} className="cup-pair">
                 {activeMatches
                   .filter(match => Math.floor(match.bracketPosition / 2) === side)
                   .map(match => renderCard(match, 'mid', 'current'))}
@@ -527,14 +532,14 @@ export function TournamentBracket({
           ) : null}
         </div>
       ) : (
-        <div className="pa-stage-early">
-          <header className="pa-stage-now">
+        <div className="cup-early">
+          <header className="cup-round-head">
             <h3>{activeLabel}</h3>
             <span>{expectedInActive} matches</span>
           </header>
           {[0, 1].map(side => (
-            <section key={side} className="pa-stage-lane">
-              <div className="pa-stage-pods">
+            <section key={side} className="cup-lane">
+              <div className="cup-pods">
                 {pods.filter(pod => Math.floor(pod.index / 2) === side).map(pod => (
                   <PodBlock
                     key={pod.letter}
@@ -546,7 +551,7 @@ export function TournamentBracket({
                 ))}
               </div>
               {podRound != null && podRound < lastRound - 1 ? (
-                <div className="pa-lane-next">
+                <div className="cup-lane-next">
                   {renderPath(matchAt(matches, podRound + 1, side))}
                 </div>
               ) : null}
@@ -559,13 +564,29 @@ export function TournamentBracket({
   );
 }
 
+/** Read-only match card for result summaries. */
+export function MatchSummary({ match, viewerId }: { match: BracketMatch; viewerId?: string | null }) {
+  const tone = matchTone(match.status);
+  return (
+    <div className={`cup-match is-${tone} is-semi`}>
+      <div className="cup-match-btn">
+        <span className="cup-match-tag">{matchStatusLabel(match.status)}</span>
+        <MatchPlayerRow playerId={match.player1} match={match} viewerId={viewerId} />
+        <MatchPlayerRow playerId={match.player2} match={match} viewerId={viewerId} />
+      </div>
+    </div>
+  );
+}
+
 export function MatchDetailDialog({
   match,
   viewerId,
+  maxPlayers,
   onClose,
 }: {
   match: BracketMatch | null;
   viewerId?: string | null;
+  maxPlayers?: number;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -583,29 +604,44 @@ export function MatchDetailDialog({
   const mine = Boolean(viewerId && (match.player1 === viewerId || match.player2 === viewerId));
   const settled = isSettledMatch(match.status);
   const forfeit = match.status === 'forfeited' || match.result?.kind === 'forfeit' || match.result?.battleResult?.endedBy === 'timeout';
+  const tone = matchTone(match.status);
+  const thirdPlace = match.role === 'third-place'
+    || Boolean(maxPlayers && match.round === totalRounds(maxPlayers) && match.round > 1 && match.bracketPosition === 1);
+  const stage = thirdPlace
+    ? '3rd-place match'
+    : maxPlayers
+      ? roundLabel(match.round, maxPlayers)
+      : `Round ${match.round}`;
 
   return (
-    <div className="pa-match-overlay" onClick={onClose}>
+    <div className="cup-dialog-overlay" onClick={onClose}>
       <aside
-        className="pa-match-dialog"
+        className="cup-panel is-accent cup-dialog"
         role="dialog"
         aria-modal="true"
         aria-label="Match details"
         onClick={event => event.stopPropagation()}
       >
         <header>
-          <span className={`pa-tree-match-status is-${matchTone(match.status)}`}>
+          <span className={`cup-pill ${tone === 'live' ? 'is-live' : tone === 'ready' ? 'is-accent' : tone === 'waiting' ? 'is-warn' : 'is-done'}`}>
+            {tone === 'live' ? <i className="cup-dot is-pulse" aria-hidden /> : null}
             {matchStatusLabel(match.status)}
           </span>
-          <button type="button" className="pa-match-close" onClick={onClose} aria-label="Close">
+          <span>{stage}</span>
+          <button type="button" className="cup-dialog-close" onClick={onClose} aria-label="Close">
             Close
           </button>
         </header>
-        <div className="pa-match-dialog-fighters">
-          <MatchPlayerRow playerId={match.player1} match={match} viewerId={viewerId} />
-          <MatchPlayerRow playerId={match.player2} match={match} viewerId={viewerId} />
+        <div className={`cup-dialog-fighters cup-match is-${tone}`}>
+          <div className="cup-match-btn">
+            <MatchPlayerRow playerId={match.player1} match={match} viewerId={viewerId} />
+          </div>
+          <span className="cup-dialog-vs" aria-hidden>VS</span>
+          <div className="cup-match-btn">
+            <MatchPlayerRow playerId={match.player2} match={match} viewerId={viewerId} />
+          </div>
         </div>
-        <dl className="pa-cup-facts">
+        <dl className="cup-facts">
           {settled ? (
             <div>
               <dt>Winner</dt>
@@ -635,13 +671,15 @@ export function MatchDetailDialog({
             </div>
           ) : null}
         </dl>
-        {action ? (
-          <Link className="pa-btn pa-btn-primary" href={`/battle/${match.id}`}>
-            {mine && isLiveMatch(match.status) ? 'Enter battle' : action}
-          </Link>
-        ) : (
-          <p className="pa-cup-note">This match is still waiting for both trainers.</p>
-        )}
+        <div className="cup-dialog-foot">
+          {action ? (
+            <Link className="pa-btn pa-btn-primary" href={`/battle/${match.id}`}>
+              {mine && isLiveMatch(match.status) ? 'Enter battle' : action}
+            </Link>
+          ) : (
+            <p className="cup-note"><CupIcon name="clock" />This match is still waiting for both trainers.</p>
+          )}
+        </div>
       </aside>
     </div>
   );

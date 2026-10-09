@@ -100,17 +100,10 @@
   align-items: start;
   margin: 0 0 0.85rem;
   padding: 0.95rem 1rem;
-  border: 1px solid #1d2c4d;
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(18, 28, 52, 0.95), rgba(9, 14, 25, 0.98)),
-    repeating-linear-gradient(
-      -12deg,
-      transparent 0,
-      transparent 10px,
-      rgba(86, 120, 180, 0.04) 10px,
-      rgba(86, 120, 180, 0.04) 11px
-    );
+  border: 1px solid rgba(84, 124, 186, 0.22);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(16, 26, 48, 0.94), rgba(7, 12, 24, 0.95));
+  box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.85);
 }
 
 .tb-format.is-locked {
@@ -194,9 +187,9 @@
   gap: 0.55rem;
   margin: 0 0 0.85rem;
   padding: 0.85rem 1rem;
-  border: 1px solid #1d2c4d;
-  border-radius: 8px;
-  background: #090e19;
+  border: 1px solid rgba(84, 124, 186, 0.22);
+  border-radius: 6px;
+  background: rgba(4, 8, 18, 0.72);
 }
 
 .tb-legality.tone-legal {
@@ -312,8 +305,10 @@
 .tb-set,
 .tb-stats,
 .tb-intel {
-  border-radius: 8px;
-  background: #0b1222;
+  border: 1px solid rgba(84, 124, 186, 0.22);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(16, 26, 48, 0.94), rgba(7, 12, 24, 0.95));
+  box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.85);
   padding: 0.8rem;
 }
 

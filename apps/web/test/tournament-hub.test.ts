@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { splitTournamentPrize } from '../lib/tournament-prize';
+import { splitTournamentPrize, tournamentPayoutView, tournamentPrizeView } from '../lib/tournament-prize';
 import {
   displayHubStatus,
   bracketFieldSize,
@@ -17,6 +17,7 @@ import {
   progressionSteps,
   roundTitles,
   totalRounds,
+  tournamentPodium,
   userMatchIds,
   visibleBracket,
 } from '../lib/tournament-hub';
@@ -140,4 +141,64 @@ test('timeout clock and champion mock stay aligned with cup rules', () => {
   assert.ok(cup.winner);
   assert.equal(playerHubStatus(cup, cup.bracket ?? [], cup.winner).kind, 'champion');
   assert.equal(playerHubStatus(cup, cup.bracket ?? [], 'you').kind, 'champion');
+});
+
+test('podium reads the final and the 3rd-place match', () => {
+  const cup = buildMockTournament({ maxPlayers: 8, champion: true, viewerId: 'you' });
+  const podium = tournamentPodium(cup.bracket ?? [], cup.winner);
+  assert.equal(podium.final?.round, 3);
+  assert.equal(podium.thirdPlace?.role, 'third-place');
+  assert.equal(podium.first, cup.winner);
+  assert.equal(podium.second, podium.final?.player1 === cup.winner ? podium.final?.player2 : podium.final?.player1);
+  assert.ok(podium.third);
+  assert.equal(podium.third, podium.thirdPlace?.winner);
+  assert.equal(new Set([podium.first, podium.second, podium.third]).size, 3);
+});
+
+test('podium stays empty until the deciding matches settle', () => {
+  const live = buildMockTournament({ maxPlayers: 8, currentRound: 2, status: 'in-progress' });
+  const podium = tournamentPodium(live.bracket ?? []);
+  assert.equal(podium.final?.round, 3);
+  assert.equal(podium.first, undefined);
+  assert.equal(podium.second, undefined);
+  assert.equal(podium.third, undefined);
+  assert.equal(tournamentPodium(emptyBracket(8)).final, undefined);
+  const duel = tournamentPodium([
+    { id: 'final', round: 1, bracketPosition: 0, status: 'completed', winner: 'a', player1: 'a', player2: 'b' },
+  ]);
+  assert.deepEqual([duel.first, duel.second, duel.third, duel.thirdPlace], ['a', 'b', undefined, undefined]);
+});
+
+test('prize view keeps each rail in its own unit', () => {
+  const legacy = tournamentPrizeView({}, 1_000);
+  assert.equal(legacy.chainLabel, undefined);
+  assert.equal(legacy.label, '1,000 POKE');
+  assert.deepEqual(legacy.shares, { first: 500, second: 350, third: 150 });
+  assert.equal(legacy.formatShare(500), '500 POKE');
+  const cards = tournamentPrizeView({ rail: 'sol_chain', prizeCardsRaw: 2_000, prizeLamports: 9 }, 1_000);
+  assert.equal(cards.label, '2,000 CARDS');
+  assert.deepEqual(cards.shares, { first: 1_000, second: 700, third: 300 });
+  assert.equal(cards.formatShare(700), '700 CARDS');
+  const sol = tournamentPrizeView({ rail: 'sol_chain', prizeLamports: 2_000_000_000 }, 1_000);
+  assert.equal(sol.label, '2.00 SOL');
+  assert.equal(sol.formatShare(1_000_000_000), '1.00 SOL');
+  const unreserved = tournamentPrizeView({ rail: 'sol_chain' }, 1_000);
+  assert.equal(unreserved.chainLabel, undefined);
+  assert.equal(unreserved.label, '1,000 POKE');
+  assert.equal(unreserved.shares, undefined);
+});
+
+test('payout view only lists podium places for a CARDS podium settlement', () => {
+  assert.equal(tournamentPayoutView(undefined), undefined);
+  const poke = tournamentPayoutView({ symbol: 'POKE', amount: 360_000 });
+  assert.equal(poke?.label, '360,000 POKE');
+  assert.equal(poke?.places, undefined);
+  assert.equal(poke?.format(5), '5 POKE');
+  assert.equal(tournamentPayoutView({ symbol: 'SOL', amount: 1_500_000_000 })?.label, '1.50 SOL');
+  const podium = tournamentPayoutView({ symbol: 'CARDS', amount: 1_000, cardsAmountRaw: 2_000 });
+  assert.equal(podium?.label, '1,000 CARDS');
+  assert.equal(podium?.amount, 1_000);
+  assert.deepEqual(podium?.places, { first: '1,000 CARDS', second: '700 CARDS', third: '300 CARDS' });
+  assert.equal(tournamentPayoutView({ symbol: 'CARDS', amount: 2_000, cardsAmountRaw: 2_000 })?.places, undefined);
+  assert.equal(tournamentPayoutView({ symbol: 'CARDS', amount: 900, cardsAmountRaw: 2_000 })?.places, undefined);
 });

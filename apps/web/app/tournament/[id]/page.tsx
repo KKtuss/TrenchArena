@@ -2,19 +2,21 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
+import { CupIcon, type CupIconName } from '@/components/cup-icons';
+import { CupMeter } from '@/components/cup-meter';
 import { ErrorToast } from '@/components/error-toast';
 import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { MatchDetailDialog, TournamentBracket } from '@/components/tournament-bracket';
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
-import { formatPoke, formatPokeFromAtoms, formatSolLamports, TOURNAMENT_BURN_FEE_ATOMS } from '@/lib/api-client';
+import { formatPoke, formatPokeFromAtoms, TOURNAMENT_BURN_FEE_ATOMS } from '@/lib/api-client';
 import { sendSerializedTransaction } from '@/lib/solana-tx';
 import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
-import { formatById } from '@/lib/tournament-formats';
-import { splitTournamentPrize } from '@/lib/tournament-prize';
+import { formatById, type FormatPresentation } from '@/lib/tournament-formats';
+import { tournamentPrizeView } from '@/lib/tournament-prize';
 import {
   TOURNAMENT_ENTRY_POKE,
   TOURNAMENT_FIELD_SIZE,
@@ -37,6 +39,8 @@ import {
   roundTitles,
   visibleBracket,
   type BracketMatch,
+  type HubStatus,
+  type PlayerHubKind,
   type TournamentDetail,
 } from '@/lib/tournament-hub';
 
@@ -71,57 +75,53 @@ function PlayerStatusCopy({
   return <>Watching the bracket.</>;
 }
 
-function SignupIcon({
-  name,
-}: {
-  name: 'trophy' | 'coins' | 'users' | 'check' | 'clipboard' | 'clock';
-}) {
+const YOU_ICON: Record<PlayerHubKind, CupIconName> = {
+  connect: 'lock',
+  champion: 'crown',
+  complete: 'flag',
+  'watching-final': 'trophy',
+  live: 'bolt',
+  next: 'swords',
+  eliminated: 'flag',
+  'registered-locked': 'check',
+  'registered-waiting': 'check',
+  register: 'ticket',
+  'waiting-next': 'clock',
+  watching: 'users',
+};
+
+const BADGE_TONE: Record<HubStatus, string> = {
+  LIVE: 'is-live',
+  UPCOMING: 'is-info',
+  COMPLETED: 'is-gold',
+  CANCELLED: 'is-done',
+};
+
+function CupArt({ format }: { format?: FormatPresentation }) {
+  const backdrop = format?.backdrop ?? '/stages/kanto.webp';
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      {name === 'trophy' ? (
-        <>
-          <path d="M8 21h8" />
-          <path d="M12 17v4" />
-          <path d="M7 4h10v5a5 5 0 0 1-10 0V4Z" />
-          <path d="M17 8h1.5a3 3 0 0 0 0-6H17" />
-          <path d="M7 8H5.5a3 3 0 0 1 0-6H7" />
-        </>
+    <div className="cup-art" style={{ '--cup-art-bg': `url('${backdrop}')` } as CSSProperties}>
+      {format ? (
+        <span className="cup-art-mark" aria-hidden>
+          {format.region}
+          <small>{format.restriction}</small>
+        </span>
       ) : null}
-      {name === 'coins' ? (
-        <>
-          <ellipse cx="9" cy="15" rx="6" ry="5.2" />
-          <ellipse cx="15" cy="9.2" rx="6" ry="5.2" />
-        </>
-      ) : null}
-      {name === 'users' ? (
-        <>
-          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-          <circle cx="9" cy="7" r="4" />
-          <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-        </>
-      ) : null}
-      {name === 'check' ? (
-        <>
-          <circle cx="12" cy="12" r="9" />
-          <path d="m8.5 12.2 2.4 2.4 4.6-5.1" />
-        </>
-      ) : null}
-      {name === 'clipboard' ? (
-        <>
-          <rect x="8" y="2.5" width="8" height="3.5" rx="1" />
-          <path d="M16 4.2h2a2 2 0 0 1 2 2V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.2a2 2 0 0 1 2-2h2" />
-        </>
-      ) : null}
-      {name === 'clock' ? (
-        <>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 7.5V12l3.2 2" />
-        </>
-      ) : null}
-    </svg>
+      {format?.id === 'gen1cup' || !format ? (
+        <Gen1CupArt />
+      ) : (
+        <FormatStage trainer={format.trainer} pokemon={format.pokemon} />
+      )}
+    </div>
   );
 }
+
+type EntryStep = {
+  key: string;
+  state: 'done' | 'active' | 'todo';
+  label: string;
+  detail: string;
+};
 
 export default function TournamentDetailPage() {
   const params = useParams<{ id: string }>();
@@ -264,24 +264,10 @@ export default function TournamentDetailPage() {
   const prizePool = badge === 'UPCOMING'
     ? projectedPrize
     : (tournament?.economics?.prizePool ?? projectedPrize);
-  const cardsRaw = tournament?.prizeCardsRaw;
-  const chainPrize = cardsRaw !== undefined
-    ? `${cardsRaw.toLocaleString('en-US')} CARDS`
-    : tournament?.rail === 'sol_chain' && tournament.prizeLamports !== undefined
-      ? formatSolLamports(tournament.prizeLamports)
-      : undefined;
-  const prizeLabel = chainPrize ?? formatPoke(prizePool);
-  const sharePool = cardsRaw ?? (tournament?.rail === 'sol_chain' ? tournament.prizeLamports : prizePool);
-  const shares = sharePool !== undefined && Number.isSafeInteger(sharePool)
-    ? splitTournamentPrize(sharePool)
-    : undefined;
-  const formatShare = (amount: number) => (
-    cardsRaw !== undefined
-      ? `${amount.toLocaleString('en-US')} CARDS`
-      : tournament?.rail === 'sol_chain'
-        ? formatSolLamports(amount)
-        : formatPoke(amount)
-  );
+  const prize = tournamentPrizeView(tournament, prizePool);
+  const chainPrize = prize.chainLabel;
+  const prizeLabel = prize.label;
+  const { shares, formatShare } = prize;
   const myAction = myMatch ? matchActionLabel(myMatch, playerId) : null;
   const description = tournament
     ? `${formatCard?.title ?? formatName(rulesetId)} · ${formatCard?.region ?? 'Format'} · ${formatCard?.restriction ?? 'Legal'}. ${formatCard?.teamModeLabel ?? 'Custom team'}. ${maxPlayers} trainers. Best of 1.`
@@ -289,6 +275,7 @@ export default function TournamentDetailPage() {
   const isCustomTeamTournament = !isCasualPreset;
   const hasLegalSavedTeam = Boolean(saved?.validated && saved.paste.trim());
   const canJoinTournament = isCasualPreset ? true : (!isCustomTeamTournament || hasLegalSavedTeam);
+  const accent = formatCard?.accent ?? 'cup';
 
   const joinCup = () => void act(async () => {
     if (!playerId) throw new Error('Connect a wallet before joining.');
@@ -389,115 +376,220 @@ export default function TournamentDetailPage() {
     const lockLabel = tournament.finalizesAt == null || now == null
       ? '--:--'
       : formatCountdown(tournament.finalizesAt, now);
+    const fieldFull = players.length >= maxPlayers;
+
+    const steps: EntryStep[] = [
+      {
+        key: 'wallet',
+        state: walletConnected ? 'done' : 'active',
+        label: 'Wallet',
+        detail: walletConnected ? 'Connected.' : 'Connect a wallet to register.',
+      },
+      {
+        key: 'team',
+        state: isCasualPreset || registered || hasLegalSavedTeam ? 'done' : walletConnected ? 'active' : 'todo',
+        label: 'Team',
+        detail: isCasualPreset
+          ? 'Same 6 for both players • Choose 3'
+          : registered
+            ? 'Submitted with your entry.'
+            : hasLegalSavedTeam
+              ? `Bringing ${saved?.name ?? 'your saved team'}.`
+              : `A legal ${formatCard?.title ?? 'format'} team is required.`,
+      },
+      {
+        key: 'seat',
+        state: registered ? 'done' : waitlisted || (walletConnected && canJoinTournament) ? 'active' : 'todo',
+        label: 'Seat',
+        detail: registered
+          ? `Registered · ${players.length} / ${maxPlayers}`
+          : waitlisted
+            ? 'Waitlisted. Promoted in registration order.'
+            : 'Join to take a seat in the field.',
+      },
+    ];
+    if (tournament.rail === 'sol_chain') {
+      steps.push({
+        key: 'burn',
+        state: me?.burnFeePaid ? 'done' : needsBurnFee && paymentOpen ? 'active' : 'todo',
+        label: 'Burn fee',
+        detail: me?.burnFeePaid ? 'Paid. Your spot is secured.' : `${burnFeeLabel} once the field fills.`,
+      });
+    }
+    if (!isCasualPreset) {
+      steps.push({
+        key: 'lock',
+        state: teamLocked ? 'done' : registered && finalizing ? 'active' : 'todo',
+        label: 'Team lock',
+        detail: teamLocked
+          ? 'Locked. The bracket waits for the shared timer.'
+          : finalizing
+            ? `Locks in ${lockLabel}.`
+            : 'Opens when the field fills.',
+      });
+    }
+
+    const leaveButtons = (
+      <>
+        {registered && !finalizing && tournament.status === 'registration' ? (
+          <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
+            Leave tournament
+          </button>
+        ) : null}
+        {registered && finalizing && tournament.rail !== 'sol_chain' ? (
+          <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
+            Leave before lock
+          </button>
+        ) : null}
+      </>
+    );
+    const hasLeave = (registered && !finalizing && tournament.status === 'registration')
+      || (registered && finalizing && tournament.rail !== 'sol_chain');
+
     return (
-      <div className="pa-page">
+      <div className={`pa-page cup-page cup-accent-${accent}`}>
         <ErrorToast error={error} onDismiss={() => setError(null)} />
-        <section className="pa-signup">
-          <div className="pa-signup-rail">
-            <div className="pa-signup-rail-identity">
-              <span>{formatCard?.title ?? formatName(rulesetId)}</span>
-              <i aria-hidden />
-              <span>{maxPlayers} PLAYER</span>
-              <i aria-hidden />
-              <span>SINGLE ELIMINATION</span>
-            </div>
-            <div className="pa-signup-rail-status">
-              <i aria-hidden />
-              <span>{statusLabel}</span>
-              {registered ? <span>· YOU'RE IN</span> : null}
-              <Link className="pa-signup-back" href="/tournaments">← Back to schedule</Link>
-            </div>
+
+        <nav className="cup-crumbs" aria-label="Tournament">
+          <div className="cup-crumbs-left">
+            <Link className="cup-back" href="/tournaments"><CupIcon name="arrow-left" />Back to schedule</Link>
+            <span className="cup-chip">{formatCard?.title ?? formatName(rulesetId)}</span>
+            <span className="cup-chip">{maxPlayers} player</span>
+            <span className="cup-chip">Single elimination</span>
           </div>
-          <div className="pa-signup-top">
-            <div className="pa-signup-copy">
-              <div className="pa-signup-identity">
-                <span className="pa-signup-mark"><SignupIcon name="trophy" /></span>
-                <div>
-                  <h1>{tournament.title}</h1>
-                  <p className="pa-lead">
-                    Prize pool funded by the PokeArena Tournament Treasury.
-                  </p>
-                </div>
+          <div className="cup-crumbs-right">
+            <span className={`cup-pill ${finalizing ? 'is-warn' : 'is-open'}`}>
+              <i className="cup-dot is-pulse" aria-hidden />
+              {statusLabel}
+            </span>
+            {registered ? <span className="cup-pill is-you">You're in</span> : null}
+          </div>
+        </nav>
+
+        <section className="cup-panel is-accent cup-hero">
+          <div className="cup-hero-copy">
+            <div className="cup-hero-title">
+              <span className="cup-hero-mark"><CupIcon name="trophy" /></span>
+              <div>
+                <span className="cup-kicker">{formatCard ? `${formatCard.region} · ${formatCard.teamModeLabel}` : 'Tournament'}</span>
+                <h1 className="cup-title">{tournament.title}</h1>
               </div>
-              <div className="pa-signup-stats">
-                <div className="pa-signup-stat">
-                  <span className="pa-signup-stat-icon"><SignupIcon name="coins" /></span>
-                  <div>
-                    <span>{tournament.rail === 'sol_chain' ? 'Burn fee after field fills' : 'Entry'}</span>
-                    <strong>{burnFeeLabel ?? formatPoke(entryFee)}</strong>
-                  </div>
-                </div>
-                <div className="pa-signup-stat is-prize">
-                  <span className="pa-signup-stat-icon"><SignupIcon name="trophy" /></span>
-                  <div>
-                    <span>Projected prize</span>
-                    <strong>{chainPrize ?? formatPoke(signupEconomics.prizePool)}</strong>
-                  </div>
-                </div>
-                <div className="pa-signup-stat">
-                  <span className="pa-signup-stat-icon"><SignupIcon name="users" /></span>
-                  <div>
-                    <span>Field</span>
-                    <strong>{players.length} / {maxPlayers}</strong>
-                  </div>
-                </div>
+            </div>
+            <p className="cup-lead">Prize pool funded by the PokeArena Tournament Treasury.</p>
+            <div className="cup-hero-stats">
+              <div className="cup-stat">
+                <span><CupIcon name="coins" />{tournament.rail === 'sol_chain' ? 'Burn fee after field fills' : 'Entry'}</span>
+                <strong>{burnFeeLabel ?? formatPoke(entryFee)}</strong>
               </div>
-              <p className="pa-signup-funding">
-                <SignupIcon name="check" />
-                Treasury-backed prize · projected estimate, not immediately withdrawable.
+              <div className="cup-stat is-prize">
+                <span><CupIcon name="trophy" />Projected prize</span>
+                <strong>{chainPrize ?? formatPoke(signupEconomics.prizePool)}</strong>
+              </div>
+              <div className="cup-stat">
+                <span><CupIcon name="users" />Field</span>
+                <strong>{players.length} / {maxPlayers}</strong>
+                <CupMeter value={players.length} max={maxPlayers} />
+              </div>
+            </div>
+            <p className="cup-funding">
+              <CupIcon name="check" />
+              Treasury-backed prize · projected estimate, not immediately withdrawable.
+            </p>
+            <div className="cup-actions">
+              {!walletConnected ? (
+                <button
+                  type="button"
+                  className="pa-btn pa-btn-primary"
+                  disabled={connectingWallet}
+                  onClick={() => void connectInjectedWallet()}
+                >
+                  {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+                </button>
+              ) : !registered && !waitlisted && canJoinTournament ? (
+                <button
+                  type="button"
+                  className="pa-btn pa-btn-primary"
+                  disabled={busy}
+                  onClick={joinCup}
+                >
+                  Join tournament
+                </button>
+              ) : !registered && !waitlisted && !isCasualPreset ? (
+                <Link className="pa-btn pa-btn-primary" href={`/teams/builder?ruleset=${rulesetId}`}>
+                  {rulesetId === 'gen9ou' ? 'Build Gen 9 OU Team' : `Build Gen ${formatCard?.generation ?? ''} Team`}
+                </Link>
+              ) : !registered && !waitlisted ? (
+                <button type="button" className="pa-btn pa-btn-primary" disabled>
+                  Choose 3 from the shared six
+                </button>
+              ) : null}
+              {needsBurnFee && paymentOpen ? (
+                <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={payBurnFee}>
+                  {burnPayment ? 'Check burn fee confirmation' : `Pay burn fee · ${burnFeeLabel}`}
+                </button>
+              ) : null}
+            </div>
+            {needsBurnFee && paymentOpen && burnPayment ? (
+              <p className="cup-note is-warn">
+                <CupIcon name="clock" />
+                Burn fee submitted. Waiting for confirmation of the original transaction.
               </p>
-              <div className="pa-gen1-hero-actions">
-                {!walletConnected ? (
-                  <button
-                    type="button"
-                    className="pa-btn pa-btn-primary"
-                    disabled={connectingWallet}
-                    onClick={() => void connectInjectedWallet()}
-                  >
-                    {connectingWallet ? 'Connecting…' : 'Connect wallet'}
-                  </button>
-                ) : !registered && !waitlisted && canJoinTournament ? (
-                  <button
-                    type="button"
-                    className="pa-btn pa-btn-primary"
-                    disabled={busy}
-                    onClick={joinCup}
-                  >
-                    Join tournament
-                  </button>
-                ) : !registered && !waitlisted && !isCasualPreset ? (
-                  <Link className="pa-btn pa-btn-primary" href={`/teams/builder?ruleset=${rulesetId}`}>
-                    {rulesetId === 'gen9ou' ? 'Build Gen 9 OU Team' : `Build Gen ${formatCard?.generation ?? ''} Team`}
-                  </Link>
-                ) : !registered && !waitlisted ? (
-                  <button type="button" className="pa-btn pa-btn-primary" disabled>
-                    Choose 3 from the shared six
-                  </button>
-                ) : null}
-                {waitlisted ? (
-                  <p className="pa-cup-note">You are on the waitlist and will be promoted in registration order.</p>
-                ) : null}
-                {needsBurnFee && paymentOpen ? (
-                  <>
-                    <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={payBurnFee}>
-                      {burnPayment ? 'Check burn fee confirmation' : `Pay burn fee · ${burnFeeLabel}`}
-                    </button>
-                    {burnPayment ? (
-                      <p className="pa-cup-note">Burn fee submitted. Waiting for confirmation of the original transaction.</p>
-                    ) : null}
-                  </>
-                ) : null}
-                {tournament.rail === 'sol_chain' && registered && me?.burnFeePaid ? (
-                  <p className="pa-cup-note">Burn fee paid. Your spot is secured while the roster finalizes.</p>
-                ) : null}
-                {registered && finalizing && !isCasualPreset ? (
-                  <>
-                    <p className="pa-cup-note">
-                      Team finalization · locks in {lockLabel}. Everyone has the same deadline.
-                      {teamLocked ? ' Your team is locked.' : ' You can still edit.'}
-                    </p>
-                    {!teamLocked ? (
-                      <>
+            ) : null}
+            {waitlisted ? (
+              <p className="cup-note">
+                <CupIcon name="users" />
+                You are on the waitlist and will be promoted in registration order.
+              </p>
+            ) : null}
+            {tournament.rail === 'sol_chain' && registered && me?.burnFeePaid ? (
+              <p className="cup-note is-good">
+                <CupIcon name="check" />
+                Burn fee paid. Your spot is secured while the roster finalizes.
+              </p>
+            ) : null}
+          </div>
+          <CupArt format={formatCard} />
+        </section>
+
+        {finalizing ? (
+          <section className="cup-panel cup-clock" aria-label={`Roster locks in ${lockLabel}`}>
+            <div className="cup-clock-label">
+              <span><CupIcon name="lock" />Team finalization</span>
+              <small>Everyone has the same deadline. The bracket starts when the timer ends.</small>
+            </div>
+            <strong className="cup-clock-digits">{lockLabel}</strong>
+            {registered && !isCasualPreset ? (
+              <span className={`cup-pill ${teamLocked ? 'is-open' : 'is-warn'}`}>
+                <CupIcon name={teamLocked ? 'lock' : 'clipboard'} />
+                {teamLocked ? 'Your team is locked' : 'You can still edit'}
+              </span>
+            ) : null}
+          </section>
+        ) : null}
+
+        <div className="cup-lobby-grid">
+          <section className="cup-panel">
+            <header className="cup-panel-head">
+              <h2><CupIcon name="ticket" />Your entry</h2>
+              <span>{registered ? "You're in" : waitlisted ? 'Waitlisted' : 'Not registered'}</span>
+            </header>
+            <ol className="cup-steps">
+              {steps.map((step, index) => (
+                <li key={step.key} className={`is-${step.state}`}>
+                  <i>{step.state === 'done' ? <CupIcon name="check" /> : String(index + 1).padStart(2, '0')}</i>
+                  <div>
+                    <b>{step.label}</b>
+                    <small>{step.detail}</small>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {(registered && finalizing && !isCasualPreset) || hasLeave
+              || (!registered && walletConnected) ? (
+                <div className="cup-lobby-actions">
+                  {registered && finalizing && !isCasualPreset ? (
+                    !teamLocked ? (
+                      <div className="cup-actions">
                         <Link className="pa-btn pa-btn-surface" href={`/teams/builder?ruleset=${rulesetId}&tournament=${tournamentId}`}>
                           Edit team
                         </Link>
@@ -507,104 +599,106 @@ export default function TournamentDetailPage() {
                         <button type="button" className="pa-btn pa-btn-gold" disabled={busy} onClick={lockTeam}>
                           Lock team
                         </button>
-                      </>
+                      </div>
                     ) : (
-                      <p className="pa-cup-note">Locked early. The bracket waits for the shared timer.</p>
-                    )}
-                  </>
-                ) : null}
-                {registered && !finalizing && tournament.status === 'registration' ? (
-                  <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
-                    Leave tournament
-                  </button>
-                ) : null}
-                {registered && finalizing && tournament.rail !== 'sol_chain' ? (
-                  <button type="button" className="pa-btn pa-btn-surface" disabled={busy} onClick={leaveCup}>
-                    Leave before lock
-                  </button>
-                ) : null}
-                {!registered && walletConnected && isCasualPreset ? (
-                  <p className="pa-cup-note">Same 6 for both players • Choose 3</p>
-                ) : null}
-                {!registered && walletConnected && !isCasualPreset && hasLegalSavedTeam ? (
-                  <p className="pa-cup-note">
-                    Bringing {saved?.name ?? 'your saved team'}.
-                  </p>
-                ) : null}
-                {!registered && walletConnected && !isCasualPreset && !hasLegalSavedTeam ? (
-                  <p className="pa-cup-note">
-                    <Link href={`/teams/builder?ruleset=${rulesetId}`}>Build a {formatCard?.title ?? 'format'} team</Link>
-                  </p>
-                ) : null}
-              </div>
-            </div>
-            <div className="pa-signup-side">
-              <div className="pa-signup-meta">
-                <div className="pa-signup-rules-panel">
-                  <header>
-                    <SignupIcon name="clipboard" />
-                    Cup rules
-                  </header>
-                  <ul className="pa-signup-rules">
-                    <li>
-                      <strong><SignupIcon name="users" /> Teams</strong>
-                      <span>
-                        {isCasualPreset
-                          ? 'Same 6 for both players • Choose 3. Your three stay hidden until the match starts.'
-                          : finalizing
-                            ? tournament.rail === 'sol_chain'
-                              ? `The field is full. Pay the ${burnFeeLabel} burn fee before the timer ends. Unpaid players are replaced from the waitlist.`
-                              : 'The field is full. Five minutes to edit a legal team. Opponent teams stay hidden. The bracket starts when the timer ends.'
-                            : `Each match is one ${formatCard?.title ?? formatName(rulesetId)} singles battle. A legal team is required before you can join.`}
-                      </span>
-                    </li>
-                    <li>
-                      <strong><SignupIcon name="clock" /> Timeouts</strong>
-                      <span>Matches time out after {formatTimeout(tournament.matchTimeoutMs)}. A no-show advances the opponent. Disconnecting grants 10s to reconnect, then a forfeit.</span>
-                    </li>
-                    <li>
-                      <strong><SignupIcon name="coins" /> Entry</strong>
-                      <span>
-                        {tournament.rail === 'sol_chain'
-                          ? `A fixed ${burnFeeLabel} burn fee is paid after the field fills and burned when the final roster locks.`
-                          : `The ${formatPoke(entryFee)} entry is held at join. 90% of the field forms the prize pool, paid 50/35/15 when the final and 3rd-place match are done.`}
-                      </span>
-                    </li>
-                  </ul>
+                      <p className="cup-note is-good">
+                        <CupIcon name="lock" />
+                        Locked early. The bracket waits for the shared timer.
+                      </p>
+                    )
+                  ) : null}
+                  {hasLeave ? <div className="cup-actions">{leaveButtons}</div> : null}
+                  {!registered && walletConnected && isCasualPreset ? (
+                    <p className="cup-note"><CupIcon name="users" />Same 6 for both players • Choose 3</p>
+                  ) : null}
+                  {!registered && walletConnected && !isCasualPreset && hasLegalSavedTeam ? (
+                    <p className="cup-note is-good">
+                      <CupIcon name="check" />
+                      Bringing {saved?.name ?? 'your saved team'}.
+                    </p>
+                  ) : null}
+                  {!registered && walletConnected && !isCasualPreset && !hasLegalSavedTeam ? (
+                    <p className="cup-note is-warn">
+                      <CupIcon name="clipboard" />
+                      <Link href={`/teams/builder?ruleset=${rulesetId}`}>Build a {formatCard?.title ?? 'format'} team</Link>
+                    </p>
+                  ) : null}
                 </div>
-              </div>
-              <div className="pa-signup-art">
-                {formatCard?.id === 'gen1cup' || !formatCard ? (
-                  <Gen1CupArt />
-                ) : (
-                  <FormatStage trainer={formatCard.trainer} pokemon={formatCard.pokemon} />
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="pa-signup-field">
-            <header>
-              <h2><SignupIcon name="users" /> Field · {players.length} / {maxPlayers}</h2>
-              <span>{players.length >= maxPlayers ? 'FULL' : 'OPEN SLOTS'}</span>
+              ) : null}
+          </section>
+
+          <section className="cup-panel">
+            <header className="cup-panel-head">
+              <h2><CupIcon name="clipboard" />Cup rules</h2>
+              <span>Best of 1</span>
             </header>
-            <div className="pa-roster-grid">
-              {Array.from({ length: maxPlayers }, (_, index) => {
-                const player = players[index];
-                return (
-                  <div key={player?.id ?? `slot-${index}`} className={`pa-roster-slot${player ? ' is-filled' : ''}`}>
-                    {player ? (
-                      <ProfileTrainerSprite label={player.id} side={index % 2 === 0 ? 'left' : 'right'} />
-                    ) : (
-                      <span className="pa-roster-empty" aria-hidden />
-                    )}
-                    <div>
-                      <b>{player ? <TrainerName playerId={player.id} /> : `Slot ${String(index + 1).padStart(2, '0')}`}</b>
-                      <small>{player ? 'Registered' : 'Open'}</small>
-                    </div>
+            <ul className="cup-rules">
+              <li>
+                <i><CupIcon name="users" /></i>
+                <div>
+                  <b>Teams</b>
+                  <span>
+                    {isCasualPreset
+                      ? 'Same 6 for both players • Choose 3. Your three stay hidden until the match starts.'
+                      : finalizing
+                        ? tournament.rail === 'sol_chain'
+                          ? `The field is full. Pay the ${burnFeeLabel} burn fee before the timer ends. Unpaid players are replaced from the waitlist.`
+                          : 'The field is full. Five minutes to edit a legal team. Opponent teams stay hidden. The bracket starts when the timer ends.'
+                        : `Each match is one ${formatCard?.title ?? formatName(rulesetId)} singles battle. A legal team is required before you can join.`}
+                  </span>
+                </div>
+              </li>
+              <li>
+                <i><CupIcon name="clock" /></i>
+                <div>
+                  <b>Timeouts</b>
+                  <span>Matches time out after {formatTimeout(tournament.matchTimeoutMs)}. A no-show advances the opponent. Disconnecting grants 10s to reconnect, then a forfeit.</span>
+                </div>
+              </li>
+              <li>
+                <i><CupIcon name="coins" /></i>
+                <div>
+                  <b>Entry</b>
+                  <span>
+                    {tournament.rail === 'sol_chain'
+                      ? `A fixed ${burnFeeLabel} burn fee is paid after the field fills and burned when the final roster locks.`
+                      : `The ${formatPoke(entryFee)} entry is held at join. 90% of the field forms the prize pool, paid 50/35/15 when the final and 3rd-place match are done.`}
+                  </span>
+                </div>
+              </li>
+            </ul>
+          </section>
+        </div>
+
+        <section className="cup-panel" aria-label="Field">
+          <header className="cup-panel-head cup-seats-head">
+            <h2><CupIcon name="users" />Field · {players.length} / {maxPlayers}</h2>
+            <CupMeter value={players.length} max={maxPlayers} />
+            <span className={`cup-pill ${fieldFull ? 'is-open' : 'is-info'}`}>{fieldFull ? 'FULL' : 'OPEN SLOTS'}</span>
+          </header>
+          <div className="cup-seats">
+            {Array.from({ length: maxPlayers }, (_, index) => {
+              const player = players[index];
+              const mine = Boolean(player && player.id === playerId);
+              return (
+                <div
+                  key={player?.id ?? `slot-${index}`}
+                  className={`cup-seat${player ? ' is-filled' : ' is-open'}${mine ? ' is-you' : ''}`}
+                  style={player ? { animationDelay: `${Math.min(index, 24) * 18}ms` } : undefined}
+                >
+                  {player ? (
+                    <ProfileTrainerSprite label={player.id} side={index % 2 === 0 ? 'left' : 'right'} />
+                  ) : (
+                    <span className="cup-seat-num" aria-hidden>{String(index + 1).padStart(2, '0')}</span>
+                  )}
+                  <div>
+                    <b>{player ? <TrainerName playerId={player.id} /> : `Slot ${String(index + 1).padStart(2, '0')}`}</b>
+                    <small>{player ? 'Registered' : 'Open'}</small>
                   </div>
-                );
-              })}
-            </div>
+                  {mine ? <span className="cup-pill is-you cup-seat-tag">You</span> : null}
+                </div>
+              );
+            })}
           </div>
         </section>
       </div>
@@ -612,140 +706,190 @@ export default function TournamentDetailPage() {
   }
 
   return (
-    <div className="pa-page is-cup-hub">
-      <header className="pa-cup-head">
-        <div className="pa-cup-head-copy">
-          <div className="pa-cup-title-row">
-            <h1>{tournament?.title ?? 'PokeArena Cup'}</h1>
-            <span className={`pa-cup-badge is-${badge.toLowerCase()}`}>{badge}</span>
+    <div className={`pa-page is-cup-hub cup-page cup-accent-${accent}`}>
+      <header className="cup-hub-head">
+        <nav className="cup-crumbs" aria-label="Tournament">
+          <div className="cup-crumbs-left">
+            <Link className="cup-back" href="/tournaments"><CupIcon name="arrow-left" />Schedule</Link>
+            <span className="cup-chip">{formatCard?.title ?? formatName(rulesetId)}</span>
+            <span className="cup-chip">{maxPlayers} players</span>
+            <span className="cup-chip">Single elimination</span>
           </div>
-          <p className="pa-lead">{description}</p>
-          <p className="pa-cup-meta">
-            <span>{players.length} / {maxPlayers} players</span>
-            <i aria-hidden />
-            <span>Round {round} / {rounds.length} · {rounds[round - 1] ?? 'Registration'}</span>
-            <i aria-hidden />
-            <span>{prizeLabel}</span>
+        </nav>
+        <div className="cup-hub-top">
+          <div className="cup-hub-copy">
+            <div className="cup-hub-title">
+              <h1 className="cup-title">{tournament?.title ?? 'PokeArena Cup'}</h1>
+              <span className={`cup-pill ${BADGE_TONE[badge]}`}>
+                {badge === 'LIVE' ? <i className="cup-dot is-pulse" aria-hidden /> : null}
+                {badge}
+              </span>
+            </div>
+            <p className="cup-lead">{description}</p>
+          </div>
+          <div className="cup-actions">
+            {!walletConnected ? (
+              <button
+                type="button"
+                className="pa-btn pa-btn-primary"
+                disabled={connectingWallet}
+                onClick={() => void connectInjectedWallet()}
+              >
+                {connectingWallet ? 'Connecting…' : 'Connect wallet'}
+              </button>
+            ) : !registered && canRegister ? (
+              <button
+                type="button"
+                className="pa-btn pa-btn-primary"
+                disabled={busy}
+                onClick={joinCup}
+              >
+                {tournament?.rail === 'sol_chain' ? 'Join tournament' : `Join · ${formatPoke(entryFee)}`}
+              </button>
+            ) : null}
+            {myMatch && myAction ? (
+              <Link
+                className={isPlayableMatch(myMatch.status) ? 'pa-btn pa-btn-primary' : 'pa-btn pa-btn-surface'}
+                href={`/battle/${myMatch.id}`}
+              >
+                {myAction}
+              </Link>
+            ) : liveMatch ? (
+              <Link className="pa-btn pa-btn-surface" href={`/battle/${liveMatch.id}`}>
+                Watch live
+              </Link>
+            ) : null}
+            {tournament?.status === 'completed' ? (
+              <Link className="pa-btn pa-btn-gold" href={`/result/${tournament.id}`}>
+                View results
+              </Link>
+            ) : null}
+          </div>
+        </div>
+        <div className="cup-statline">
+          <div>
+            <span><CupIcon name="users" />Players</span>
+            <strong>{players.length} / {maxPlayers}</strong>
+          </div>
+          <div>
+            <span><CupIcon name="swords" />Round {round} / {rounds.length}</span>
+            <strong>{rounds[round - 1] ?? 'Registration'}</strong>
+          </div>
+          <div className="is-prize">
+            <span><CupIcon name="trophy" />Prize pool</span>
+            <strong>{prizeLabel}</strong>
+          </div>
+        </div>
+        {you ? (
+          <p className={`cup-you is-${you.kind}`}>
+            <CupIcon name={YOU_ICON[you.kind]} />
+            <span><PlayerStatusCopy kind={you.kind} opponentId={you.opponentId} roundLabel={you.roundLabel} /></span>
           </p>
-          {you ? (
-            <p className={`pa-cup-you is-${you.kind}`}>
-              <PlayerStatusCopy kind={you.kind} opponentId={you.opponentId} roundLabel={you.roundLabel} />
-            </p>
-          ) : null}
-        </div>
-        <div className="pa-cup-head-actions">
-          {!walletConnected ? (
-            <button
-              type="button"
-              className="pa-btn pa-btn-primary"
-              disabled={connectingWallet}
-              onClick={() => void connectInjectedWallet()}
-            >
-              {connectingWallet ? 'Connecting…' : 'Connect wallet'}
-            </button>
-          ) : !registered && canRegister ? (
-            <button
-              type="button"
-              className="pa-btn pa-btn-primary"
-              disabled={busy}
-              onClick={joinCup}
-            >
-              {tournament?.rail === 'sol_chain' ? 'Join tournament' : `Join · ${formatPoke(entryFee)}`}
-            </button>
-          ) : null}
-          {myMatch && myAction ? (
-            <Link
-              className={isPlayableMatch(myMatch.status) ? 'pa-btn pa-btn-primary' : 'pa-btn pa-btn-surface'}
-              href={`/battle/${myMatch.id}`}
-            >
-              {myAction}
-            </Link>
-          ) : liveMatch ? (
-            <Link className="pa-btn pa-btn-surface" href={`/battle/${liveMatch.id}`}>
-              Watch live
-            </Link>
-          ) : null}
-          {tournament?.status === 'completed' ? (
-            <Link className="pa-btn pa-btn-surface" href={`/result/${tournament.id}`}>
-              View results
-            </Link>
-          ) : null}
-          <Link className="pa-gen1-back" href="/tournaments">← Schedule</Link>
-        </div>
+        ) : null}
       </header>
 
       <ErrorToast error={error} onDismiss={() => setError(null)} />
 
       {!walletConnected && canRegister ? (
-        <p className="pa-cup-note">Connect a wallet to register. The bracket stays visible.</p>
+        <p className="cup-note"><CupIcon name="lock" />Connect a wallet to register. The bracket stays visible.</p>
       ) : null}
       {!registered && canRegister && walletConnected ? (
-        <p className="pa-cup-note">
-              {isCasualPreset
-                ? 'Tournament entry is open. Each fight opens a private 6 → 3 pick when the bracket reaches your round.'
-                : saved?.validated
-                  ? `Bringing ${saved.name}`
-                  : rulesetId === 'gen9ou' && isDemoAuthEnabled()
-                    ? (saved
-                      ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
-                      : 'No saved protocol. The demo team will be brought.')
-                    : `A legal ${formatCard?.title ?? 'format'} team is required to register.`}
+        <p className="cup-note">
+          <CupIcon name="clipboard" />
+          {isCasualPreset
+            ? 'Tournament entry is open. Each fight opens a private 6 → 3 pick when the bracket reaches your round.'
+            : saved?.validated
+              ? `Bringing ${saved.name}`
+              : rulesetId === 'gen9ou' && isDemoAuthEnabled()
+                ? (saved
+                  ? 'Draft is not Gen 9 OU legal, so the demo team will be brought.'
+                  : 'No saved protocol. The demo team will be brought.')
+                : `A legal ${formatCard?.title ?? 'format'} team is required to register.`}
         </p>
       ) : null}
 
       {tournament ? (
-        <div className="pa-cup-layout">
-          <section className="pa-tree-panel" aria-label="Tournament bracket">
-            <header>
-              <h2>Bracket</h2>
+        <div className="cup-hub">
+          <section className="cup-panel cup-board" aria-label="Tournament bracket">
+            <header className="cup-panel-head">
+              <h2><CupIcon name="swords" />Bracket</h2>
               <span>
                 {previewTournament ? 'Preview board' : tournament.bracket?.length ? 'Single elimination' : 'Field preview'}
               </span>
             </header>
-            {isDemoAuthEnabled() ? (
-              <div className="pa-board-preview" role="group" aria-label={`Preview a full ${previewField}-player board`}>
-                {([
-                  ['live', 'Live'] as const,
-                  ...roundTitles(previewField).slice(0, -1).map((label, index) => (
-                    [index + 1, previewRoundName(label)] as const
-                  )),
-                  ['champion', 'Champion'] as const,
-                ]).map(([id, label]) => (
-                  <button
-                    key={label}
-                    type="button"
-                    className={boardPreview === id ? 'is-on' : undefined}
-                    onClick={() => {
-                      setSelected(null);
-                      setBoardPreview(id);
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {previewTournament ? (
-              <p className="pa-board-preview-note">Sample board only. The live cup, matches, and prizes are unchanged.</p>
-            ) : null}
-            <TournamentBracket
-              matches={boardMatches}
-              maxPlayers={boardField}
-              viewerId={playerId}
-              winner={previewTournament ? previewTournament.winner : tournament.winner}
-              status={boardStatus}
-              selectedId={selected?.id}
-              onSelect={match => {
-                if (previewTournament || match.placeholder) return;
-                setSelected(match);
-              }}
-            />
+            <div className="cup-board-body">
+              {isDemoAuthEnabled() ? (
+                <div className="cup-segment" role="group" aria-label={`Preview a full ${previewField}-player board`}>
+                  {([
+                    ['live', 'Live'] as const,
+                    ...roundTitles(previewField).slice(0, -1).map((label, index) => (
+                      [index + 1, previewRoundName(label)] as const
+                    )),
+                    ['champion', 'Champion'] as const,
+                  ]).map(([id, label]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className={boardPreview === id ? 'is-on' : undefined}
+                      aria-pressed={boardPreview === id}
+                      onClick={() => {
+                        setSelected(null);
+                        setBoardPreview(id);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {previewTournament ? (
+                <p className="cup-note is-warn">
+                  <CupIcon name="clipboard" />
+                  Sample board only. The live cup, matches, and prizes are unchanged.
+                </p>
+              ) : null}
+              <TournamentBracket
+                matches={boardMatches}
+                maxPlayers={boardField}
+                viewerId={playerId}
+                winner={previewTournament ? previewTournament.winner : tournament.winner}
+                status={boardStatus}
+                selectedId={selected?.id}
+                onSelect={match => {
+                  if (previewTournament || match.placeholder) return;
+                  setSelected(match);
+                }}
+              />
+            </div>
           </section>
 
-          <aside className="pa-cup-aside">
-            <section className="pa-cup-info">
-              <header>Format</header>
-              <dl className="pa-cup-facts">
+          <aside className="cup-aside">
+            <section className="cup-panel is-accent cup-prize-panel" aria-label="Prize">
+              <div className="cup-prize-card">
+                <header>
+                  <small><CupIcon name="trophy" />Prize pool</small>
+                  <strong>{prizeLabel}</strong>
+                </header>
+                <ol className="cup-split">
+                  {([
+                    ['first', '1st', 50, shares?.first],
+                    ['second', '2nd', 35, shares?.second],
+                    ['third', '3rd', 15, shares?.third],
+                  ] as const).map(([key, place, percent, amount]) => (
+                    <li key={key} className={`is-${key}`}>
+                      <i>{place}</i>
+                      <span>{place} place · {percent}%</span>
+                      <b>{amount !== undefined ? formatShare(amount) : `${percent}%`}</b>
+                      <CupMeter value={percent} max={100} />
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </section>
+
+            <section className="cup-panel">
+              <header className="cup-panel-head"><h3><CupIcon name="clipboard" />Format</h3></header>
+              <dl className="cup-facts">
                 <div><dt>Format</dt><dd>{formatCard?.title ?? formatName(rulesetId)}</dd></div>
                 <div><dt>Pool</dt><dd>{formatCard?.restriction ?? 'OU legal'}</dd></div>
                 <div><dt>Teams</dt><dd>{formatCard?.teamModeLabel ?? 'Custom team'}</dd></div>
@@ -754,17 +898,13 @@ export default function TournamentDetailPage() {
                 <div><dt>Bracket</dt><dd>Single elimination</dd></div>
                 <div><dt>Match</dt><dd>Best of 1</dd></div>
                 <div><dt>Entry</dt><dd>{burnFeeLabel ?? (entryFee > 0 ? formatPoke(entryFee) : 'Treasury entry')}</dd></div>
-                <div><dt>Prize pool</dt><dd>{prizeLabel}</dd></div>
-                <div><dt>1st place</dt><dd>50%{shares ? ` · ${formatShare(shares.first)}` : ''}</dd></div>
-                <div><dt>2nd place</dt><dd>35%{shares ? ` · ${formatShare(shares.second)}` : ''}</dd></div>
-                <div><dt>3rd place</dt><dd>15%{shares ? ` · ${formatShare(shares.third)}` : ''}</dd></div>
                 <div><dt>Time limit</dt><dd>{formatTimeout(tournament.matchTimeoutMs)}</dd></div>
               </dl>
             </section>
 
-            <section className="pa-cup-info">
-              <header>Rules</header>
-              <ul className="pa-cup-rules">
+            <section className="cup-panel">
+              <header className="cup-panel-head"><h3><CupIcon name="flag" />Rules</h3></header>
+              <ul className="cup-rulelist">
                 <li>Single elimination. Semifinal losers play one match for 3rd.</li>
                 <li>Each match uses the {formatCard?.title ?? 'format'} ruleset on the current battle engine.</li>
                 <li>
@@ -779,14 +919,18 @@ export default function TournamentDetailPage() {
               </ul>
             </section>
 
-            <section className="pa-cup-info">
-              <header>Field · {players.length} / {maxPlayers}</header>
-              <ul className="pa-cup-field">
-                {players.length ? players.map(player => (
-                  <li key={player.id}>
-                    <TrainerName playerId={player.id} />
-                    {player.id === playerId ? <small>You</small> : null}
-                    {tournament.winner === player.id ? <small>Champion</small> : null}
+            <section className="cup-panel">
+              <header className="cup-panel-head">
+                <h3><CupIcon name="users" />Field</h3>
+                <span>{players.length} / {maxPlayers}</span>
+              </header>
+              <ul className="cup-field">
+                {players.length ? players.map((player, index) => (
+                  <li key={player.id} className={player.id === playerId ? 'is-you' : undefined}>
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    <b><TrainerName playerId={player.id} /></b>
+                    {player.id === playerId ? <small className="cup-pill is-you">You</small> : null}
+                    {tournament.winner === player.id ? <small className="cup-pill is-gold">Champion</small> : null}
                   </li>
                 )) : (
                   <li className="is-empty">Waiting for trainers</li>
@@ -796,12 +940,12 @@ export default function TournamentDetailPage() {
           </aside>
         </div>
       ) : connected ? (
-        <p className="pa-empty">Loading tournament…</p>
+        <p className="cup-empty">Loading tournament…</p>
       ) : (
-        <p className="pa-empty">Connect to load the live cup.</p>
+        <p className="cup-empty">Connect to load the live cup.</p>
       )}
 
-      <MatchDetailDialog match={selected} viewerId={playerId} onClose={() => setSelected(null)} />
+      <MatchDetailDialog match={selected} viewerId={playerId} maxPlayers={boardField} onClose={() => setSelected(null)} />
     </div>
   );
 }

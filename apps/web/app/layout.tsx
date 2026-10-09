@@ -7,6 +7,7 @@ import { ArenaShell } from '@/components/shell';
 import './globals.css';
 import './stitch-home.css';
 import './motion.css';
+import './tournament.css';
 
 const barlow = Barlow({
   subsets: ['latin'],

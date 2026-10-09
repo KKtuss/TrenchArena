@@ -26,9 +26,7 @@
 .fight-switch,
 .fight-tera,
 .fight-confirm,
-.trainer-pick,
-.pa-tree-match-btn,
-.pa-match-close {
+.trainer-pick {
   cursor: pointer;
   transition:
     transform var(--motion-micro) var(--ease-out),
@@ -75,14 +73,6 @@
 
 .pa-toast {
   animation: pa-toast-in var(--motion-short) var(--ease-out);
-}
-
-.pa-match-overlay {
-  animation: pa-fade var(--motion-short) var(--ease-out);
-}
-
-.pa-match-dialog {
-  animation: pa-enter var(--motion-medium) var(--ease-out);
 }
 
 .trainer-pick.is-selected {
@@ -378,23 +368,6 @@
 
 /* Bracket advancement. Transitions only — completed matches do not replay on load. */
 
-.pa-tree-match,
-.pa-tree-row,
-.pa-tree-champion,
-.pa-stage-crown,
-.pa-tree-name {
-  transition:
-    border-color var(--motion-medium) var(--ease-out),
-    background-color var(--motion-medium) var(--ease-out),
-    color var(--motion-short) var(--ease-out),
-    opacity var(--motion-short) var(--ease-out),
-    box-shadow var(--motion-medium) var(--ease-out);
-}
-
-.pa-tree-row.is-won .pa-tree-name {
-  color: #00f0ff;
-}
-
 @keyframes pa-route-leave {
   from {
     opacity: 1;
@@ -504,8 +477,6 @@
   .pa-history-row,
   .pa-async,
   .pa-toast,
-  .pa-match-overlay,
-  .pa-match-dialog,
   .pa-countdown b,
   .pa-casual-mon,
   .pa-casual-slot.is-filled > span,
@@ -523,10 +494,6 @@
   .pa-battle-intro,
   .pa-match-vs-card,
   .pa-match-vs-bar i,
-  .pa-tree-match,
-  .pa-tree-row,
-  .pa-tree-champion,
-  .pa-stage-crown,
   .brand-pulse,
   .home-live-dot,
   .battle,
