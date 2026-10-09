@@ -739,14 +739,14 @@
 }
 
 .cup-feature-cta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.6rem 1rem;
+  display: grid;
+  gap: 0.6rem;
 }
 
 .cup-feature-cta .pa-btn {
-  min-width: 13rem;
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
 }
 
 .cup-feature-cta small {

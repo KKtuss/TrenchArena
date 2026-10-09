@@ -311,7 +311,7 @@ function SlotCard({
 
   const action = !joinable && status === 'ROTATION PREVIEW' ? (
     <button type="button" className="pa-btn pa-btn-surface" disabled>
-      Rotation preview
+      Scheduling starts soon
     </button>
   ) : !joinable ? (
     <button type="button" className="pa-btn pa-btn-surface" disabled>
