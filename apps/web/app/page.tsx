@@ -1,30 +1,48 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 
-import { CompetitivePaths, TournamentEconomicsBlock } from '@/components/ui';
+import { CupIcon } from '@/components/cup-icons';
+import { CupMeter } from '@/components/cup-meter';
+import { FormatStage, Gen1CupArt } from '@/components/gen1-cup-art';
+import { CompetitivePaths } from '@/components/ui';
 import { TeamStrip, TrainerSprite } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import {
-  formatPoke,
+  formatCardsRaw,
+  formatPokeFromAtoms,
   formatRoomAmount,
   formatSolLamports,
   formatTournamentEntry,
   formatTournamentPrize,
 } from '@/lib/api-client';
+import { roomAccent, roomCode, roomStatusLabel, roomStatusPulses, roomStatusTone } from '@/lib/arena-room';
 import type { BattleView, CasualRoom, LiveFight, TournamentSummary } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
 import { readSavedTeam, type SavedTeam } from '@/lib/team';
-
-function formatLabel(format: string): string {
-  return format === 'gen9ou' ? 'GEN 9 OU' : format.toUpperCase();
-}
+import { formatById, type FormatPresentation } from '@/lib/tournament-formats';
 
 function formatRoomLabel(room: CasualRoom): string {
   return formatCasualRoomLabel(room).toUpperCase();
+}
+
+function tournamentFormat(tournament: TournamentSummary): FormatPresentation {
+  return formatById(tournament.ruleset ?? tournament.format) ?? formatById('gen9ou')!;
+}
+
+function tournamentStatus(tournament: TournamentSummary): { label: string; tone: string; pulse: boolean } {
+  if (tournament.status === 'completed') {
+    return { label: tournament.winner ? 'Crown awarded' : 'Completed', tone: 'is-done', pulse: false };
+  }
+  if (tournament.status === 'registration') return { label: 'Registration', tone: 'is-open', pulse: true };
+  if (tournament.status === 'ready') return { label: 'Ready to start', tone: 'is-info', pulse: false };
+  if (tournament.status === 'in-progress' || tournament.status === 'active') {
+    return { label: 'Bracket live', tone: 'is-live', pulse: true };
+  }
+  return { label: tournament.status, tone: 'is-done', pulse: false };
 }
 
 function roomHref(room: CasualRoom): string {
@@ -37,14 +55,6 @@ function roomRank(room: CasualRoom): number {
   if (room.status === 'ready') return 1;
   if (room.status === 'open') return 2;
   return 3;
-}
-
-function eventStatus(tournament: TournamentSummary): string {
-  if (tournament.status === 'completed') return tournament.winner ? 'Crown awarded' : 'Completed';
-  if (tournament.status === 'registration') return 'Registration';
-  if (tournament.status === 'ready') return 'Ready to start';
-  if (tournament.status === 'in-progress' || tournament.status === 'active') return 'Bracket live';
-  return tournament.status;
 }
 
 const EMPTY_EVENTS: unknown[] = [];
@@ -97,40 +107,15 @@ export default function LandingPage() {
   }, [playerId]);
 
   const rooms = [...(snapshot?.openCasualRooms ?? [])].sort((a, b) => roomRank(a) - roomRank(b));
-  const featured = rooms[0];
   const board = rooms.slice(0, 3);
   const tournaments = snapshot?.tournaments ?? [];
   const flagship = tournaments.find(item => item.status !== 'completed') ?? tournaments[0];
-  const minors = tournaments.filter(item => item.id !== flagship?.id).slice(0, 3);
+  const minors = tournaments.filter(item => item.id !== flagship?.id).slice(0, 2);
   const chain = chainEconomyEnabled;
-  const paidOut = (snapshot?.recentCasualResults ?? []).reduce((sum, room) => {
-    if (chain && room.rail !== 'sol_chain') return sum;
-    if (!chain && room.rail === 'sol_chain') return sum;
-    return sum + (room.payout?.amount ?? 0);
-  }, 0);
-  const paidOutLabel = paidOut
-    ? (chain ? formatSolLamports(paidOut) : formatPoke(paidOut))
-    : '—';
-  const flagshipPrize = formatTournamentPrize(flagship);
+  const totals = snapshot?.economyTotals;
   const liveFight = live?.fight;
   const liveView = live?.view;
   const liveActive = Boolean(liveFight && liveView && (liveFight.status === 'active' || liveFight.status === 'battling'));
-
-  const flywheel = chain
-    ? [
-      { n: '01', tone: 'cyan', kicker: 'Source', title: 'Creator / Dev Rewards - $CARDS', copy: 'Token trading activity generates creator and developer rewards for the project.' },
-      { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Tournament Treasury', copy: 'Ninety percent of those rewards fund the Tournament Treasury that banks competition prizes.' },
-      { n: '03', tone: 'amber', kicker: 'Fund', title: 'Prize Pools', copy: 'Cups draw CARDS from the Treasury so players compete without large collateral.' },
-      { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Fixed POKE burn after fill. Gen brackets on the stadium calendar.' },
-      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the Treasury prize 50/35/15. Arena fights stay separate and player-funded.' },
-    ]
-    : [
-      { n: '01', tone: 'cyan', kicker: 'Source', title: 'Entry holds', copy: 'Players post POKE entry fees when they register for a cup.' },
-      { n: '02', tone: 'sky', kicker: 'Allocate 90%', title: 'Prize pool', copy: 'Ninety percent of held entries form the prize pool, paid 50/35/15.' },
-      { n: '03', tone: 'amber', kicker: 'Fund', title: 'Field prize', copy: 'The prize grows with the field — it is not a separate vault balance.' },
-      { n: '04', tone: 'coral', kicker: 'Compete', title: 'Competitive Events', copy: 'Low-entry tournaments put Gen brackets on the stadium calendar.' },
-      { n: '05', tone: 'green', kicker: 'Reward', title: 'Players', copy: '1st, 2nd, and 3rd split the prize pool 50/35/15. Arena fights stay separate and player-funded.' },
-    ];
 
   return (
     <div className="pa-home">
@@ -251,161 +236,58 @@ export default function LandingPage() {
         <CompetitivePaths chain={chain} />
       </section>
 
-      <section className="pa-fly" id="treasury">
-        <header>
-          <div>
-            <h2><span>◆</span> Tournament flywheel</h2>
-            <p>
-              {chain
-                ? 'Creator and developer rewards fund cups. Arena collateral never enters this loop.'
-                : 'Held entry fees fund the champion. Arena collateral never enters this loop.'}
-            </p>
+      <section className="cup-page home-board">
+        <article className="cup-panel home-payouts">
+          <header className="cup-panel-head">
+            <h2><CupIcon name="coins" />Paid &amp; burned</h2>
+            <span>Arena SOL · tournament CARDS · POKE burn</span>
+          </header>
+          <div className="home-payout-grid">
+            <div className="cup-stat">
+              <span>Arena SOL paid</span>
+              <strong>{formatSolLamports(totals?.arenaSolLamports ?? 0)}</strong>
+            </div>
+            <div className="cup-stat">
+              <span>Tournament CARDS paid</span>
+              <strong>{formatCardsRaw(totals?.tournamentCardsRaw ?? 0)}</strong>
+            </div>
+            <div className="cup-stat">
+              <span>POKE burned</span>
+              <strong>{formatPokeFromAtoms(totals?.burnedPokeAtoms ?? 0)}</strong>
+            </div>
           </div>
-          <span className="pa-live-pill">
-            <i /> {chain ? '90% Treasury · 10% project' : '90% prize · 10% ops'}
-          </span>
-        </header>
-        <div className="pa-fly-grid">
-          {flywheel.map(item => (
-            <article key={item.n} className={`tone-${item.tone}`}>
-              <div className="pa-fly-top"><b>{item.n}</b><small>{item.kicker}</small></div>
-              <strong>{item.title}</strong>
-              <p>{item.copy}</p>
-            </article>
-          ))}
+        </article>
+        <div className="cup-section-head">
+          <h2>Live arena board</h2>
+          <span>{rooms.length} {rooms.length === 1 ? 'fight' : 'fights'}</span>
         </div>
-        <p className="pa-econ-note" style={{ marginTop: '0.85rem' }}>
-          Separate track: arena fights take one 2% protocol fee from the gross player-funded pool
-          {chain ? ' at match start' : ' at settlement'}. No withdrawal tax.
+        {board.length ? (
+          <div className="arena-board">
+            {board.map(room => <HomeFight key={room.id} room={room} playerId={playerId} />)}
+          </div>
+        ) : <p className="cup-empty">No open challenges right now.</p>}
+      </section>
+
+      <section className="cup-page home-radar">
+        <div className="cup-section-head">
+          <h2>Tournament radar</h2>
+          <Link href="/tournaments">View complete calendar</Link>
+        </div>
+        <p className="cup-lead">
+          {chain
+            ? 'Fixed POKE burn. Competitive prize from the Tournament Treasury.'
+            : 'Entry held at join. Competitive prize from the field pool.'}
         </p>
-      </section>
-
-      <section className="pa-split">
-        <div>
-          <header>
-            <h2>Live arena board</h2>
-            <span>{rooms.length} {rooms.length === 1 ? 'fight' : 'fights'}</span>
-          </header>
-          {board.length ? board.map(room => (
-            <article key={room.id} className="pa-board">
-              <div className="pa-board-mark">{room.format === 'gen9ou' ? 'OU' : 'PA'}</div>
-              <div>
-                <p className="pa-board-trainers">
-                  <ProfileTrainerSprite label={room.creatorId} side="left" />
-                  <b><TrainerName playerId={room.creatorId} /></b>
-                  <span>vs</span>
-                  {room.opponentId ? <ProfileTrainerSprite label={room.opponentId} side="right" /> : null}
-                  <b>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Open slot'}</b>
-                </p>
-                <small>{formatRoomLabel(room)} • {room.battleSize} • {room.status}</small>
-              </div>
-              <div className="pa-board-side">
-                <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
-                <small style={{ display: 'block', color: '#8ea0c0' }}>{room.rail === 'sol_chain' ? 'SOL each' : 'mock each'}</small>
-                <Link href={roomHref(room)}>{room.status === 'open' ? 'Join' : 'Watch live'}</Link>
-              </div>
-            </article>
-          )) : <p className="pa-empty">No open challenges right now.</p>}
-        </div>
-        <div id="treasury-audit">
-          <header>
-            <h2>Funding snapshot</h2>
-            <span className="ok">{chain ? 'Chain rail' : 'Mock ledger'}</span>
-          </header>
-          <div className="pa-vault">
-            <div className="pa-vault-grid">
-              <div>
-                <small>{chain ? 'Flagship treasury prize' : 'Flagship prize pool'}</small>
-                <strong>{flagship ? flagshipPrize : '—'}</strong>
-                <span>
-                  {chain
-                    ? (snapshot?.solBalances
-                      ? `Live vault ${formatSolLamports(snapshot.solBalances.treasuryLamports)}`
-                      : 'Configured CARDS prize for the open cup')
-                    : '90% of held entries · provisional until settle'}
-                </span>
-              </div>
-              <div>
-                <small>Recent arena payouts</small>
-                <strong className="ok">{paidOutLabel}</strong>
-                <span>Player-funded wins after protocol fee</span>
-              </div>
-            </div>
-            <div className="pa-legend">
-              <span><i className="escrow" /> {chain ? 'Tournament Treasury 90%' : 'Prize pool 90%'}</span>
-              <span><i className="ops" /> {chain ? 'Project funds 10%' : 'Ops share 10%'}</span>
-              <span><i className="vault" /> Arena pools stay player-funded</span>
-            </div>
-            <div className="pa-contract">
-              <span>
-                Arena fee 2%
-                {chain ? ' at match start' : ' at settlement'}
-                {' · no withdrawal tax'}
-              </span>
-              <span>{chain ? 'CARDS prizes · POKE burn' : 'Mock ledger'}</span>
-            </div>
-            <Link href="/treasury">Open Treasury map</Link>
-          </div>
-        </div>
-      </section>
-
-      <section className="pa-radar">
-        <header>
-          <div>
-            <h2><span>◆</span> Tournament radar</h2>
-            <p>
-              {chain
-                ? 'Fixed POKE burn. Competitive CARDS prize from the Tournament Treasury.'
-                : 'Entry held at join. Competitive prize from the field pool.'}
-            </p>
-          </div>
-          <Link href="/tournaments">View complete calendar →</Link>
-        </header>
         {flagship ? (
-          <div className="pa-radar-grid">
-            <article className="pa-flagship">
-              <div className="pa-flag-top">
-                <span>Flagship circuit</span>
-                <small>{eventStatus(flagship)}</small>
+          <div className="home-radar-grid">
+            <RadarCard tournament={flagship} feature />
+            {minors.length ? (
+              <div className="home-radar-side">
+                {minors.map(event => <RadarCard key={event.id} tournament={event} />)}
               </div>
-              <h3>{flagship.title}</h3>
-              <p>{flagship.winner ? `Champion ${flagship.winner}` : `${formatLabel(flagship.format)} · ${flagship.playerCount}/${flagship.maxPlayers} on the field.`}</p>
-              {flagship.playerCount > 0 ? (
-                <div className="ps-field" aria-hidden>
-                  {Array.from({ length: Math.min(flagship.playerCount, 4) }, (_, index) => (
-                    <TrainerSprite key={index} label="" />
-                  ))}
-                </div>
-              ) : null}
-              <TournamentEconomicsBlock tournament={flagship} economics={flagship.economics} compact />
-              <div className="pa-flag-actions">
-                {flagship.status === 'registration' ? (
-                  <Link className="pa-btn pa-btn-primary" href={`/tournament/${flagship.id}`}>Register now</Link>
-                ) : (
-                  <Link className="pa-btn pa-btn-primary" href={`/tournament/${flagship.id}`}>Watch bracket</Link>
-                )}
-                <Link className="pa-btn pa-btn-surface" href={`/tournament/${flagship.id}`}>Rules</Link>
-              </div>
-            </article>
-            <div className="pa-minors">
-              {minors.length ? minors.map(event => (
-                <article key={event.id}>
-                  <small>{formatLabel(event.format)}</small>
-                  <h4>{event.title}</h4>
-                  <p>{eventStatus(event)}{event.winner ? ` · ${event.winner}` : ''}</p>
-                  <strong>
-                    {event.rail === 'sol_chain' ? 'Burn' : 'Entry'}{' '}
-                    {formatTournamentEntry(event)}
-                  </strong>
-                  <span style={{ display: 'block', color: '#8ea0c0', fontSize: '0.7rem' }}>
-                    Prize {formatTournamentPrize(event)}
-                  </span>
-                  <Link href={`/tournament/${event.id}`}>{event.status === 'registration' ? 'Join tier' : 'Watch'}</Link>
-                </article>
-              )) : <p className="pa-empty">No other cups on the calendar.</p>}
-            </div>
+            ) : null}
           </div>
-        ) : <p className="pa-empty">No cup on deck yet.</p>}
+        ) : <p className="cup-empty">No cup on deck yet.</p>}
       </section>
 
       <footer className="pa-foot">
@@ -427,5 +309,172 @@ export default function LandingPage() {
         </div>
       </footer>
     </div>
+  );
+}
+
+function HomeFight({ room, playerId }: { room: CasualRoom; playerId?: string | null }) {
+  const mine = Boolean(playerId && (room.creatorId === playerId || room.opponentId === playerId));
+  const live = room.status === 'battling';
+  const real = room.rail === 'sol_chain';
+
+  return (
+    <Link href={roomHref(room)} className={`cup-panel is-accent cup-accent-${roomAccent(room)} arena-fight${mine ? ' is-you' : ''}${live ? ' is-live' : ''}`}>
+      <header className="arena-fight-head">
+        <span className={`cup-pill ${roomStatusTone(room.status)}`}>
+          {roomStatusPulses(room.status) ? <i className="cup-dot is-pulse" aria-hidden /> : null}
+          {roomStatusLabel(room.status)}
+        </span>
+        <span className="cup-chip arena-mark">{formatRoomLabel(room)}</span>
+        <span className="cup-chip">{room.battleSize}</span>
+        <span className={`cup-chip${real ? ' is-sol' : ''}`}>{real ? 'Real SOL' : 'Mock POKE'}</span>
+        {mine ? <span className="cup-pill is-you">You</span> : null}
+        <code className="arena-fight-code">#{roomCode(room)}</code>
+      </header>
+      <div className="arena-fight-body">
+        <div className="arena-versus">
+          <div className="arena-fighter">
+            <span className="arena-fighter-art">
+              <ProfileTrainerSprite label={room.creatorId} side="left" />
+            </span>
+            <div>
+              <b><TrainerName playerId={room.creatorId} /></b>
+              <small>Challenger</small>
+            </div>
+          </div>
+          <span className="arena-versus-mark" aria-hidden>VS</span>
+          <div className={`arena-fighter is-rival${room.opponentId ? '' : ' is-open'}`}>
+            <span className="arena-fighter-art">
+              {room.opponentId ? <ProfileTrainerSprite label={room.opponentId} side="right" /> : <i aria-hidden>?</i>}
+            </span>
+            <div>
+              <b>{room.opponentId ? <TrainerName playerId={room.opponentId} /> : 'Open slot'}</b>
+              <small>{room.opponentId ? 'Rival' : 'Waiting'}</small>
+            </div>
+          </div>
+        </div>
+        <div className="cup-stat arena-fight-stake">
+          <span><CupIcon name="coins" />Stake each</span>
+          <strong>{formatRoomAmount(room.collateral, room.rail)}</strong>
+          <small>
+            Pool {formatRoomAmount(room.economics.totalPot, room.rail)} · winner {formatRoomAmount(room.economics.winnerPayout, room.rail)} · 2% fee
+          </small>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function RadarCard({ tournament, feature = false }: { tournament: TournamentSummary; feature?: boolean }) {
+  const format = tournamentFormat(tournament);
+  const status = tournamentStatus(tournament);
+  const chain = tournament.rail === 'sol_chain';
+  const prize = formatTournamentPrize(tournament);
+  const entry = formatTournamentEntry(tournament);
+  const href = `/tournament/${tournament.id}`;
+  const art = (
+    <div className="cup-art" style={{ '--cup-art-bg': `url('${format.backdrop}')` } as CSSProperties}>
+      <span className={`cup-pill ${status.tone} ${feature ? 'cup-feature-when' : 'cup-slot-when'}`}>
+        {status.pulse ? <i className="cup-dot is-pulse" aria-hidden /> : null}
+        {status.label}
+      </span>
+      {feature ? (
+        <span className="cup-art-mark" aria-hidden>
+          {format.region}
+          <small>{format.restriction}</small>
+        </span>
+      ) : null}
+      {format.id === 'gen1cup' ? (
+        <Gen1CupArt compact={!feature} />
+      ) : (
+        <FormatStage compact={!feature} trainer={format.trainer} pokemon={format.pokemon} />
+      )}
+    </div>
+  );
+
+  if (!feature) {
+    return (
+      <article className={`cup-panel is-accent cup-accent-${format.accent} cup-slot`}>
+        {art}
+        <div className="cup-slot-body">
+          <span className="cup-feature-theme">{format.title}</span>
+          <h3>{tournament.title}</h3>
+          <dl className="cup-slot-facts">
+            <div>
+              <dt>{chain ? 'Treasury prize' : 'Prize pool'}</dt>
+              <dd className="is-prize">{prize}</dd>
+            </div>
+            <div>
+              <dt>{chain ? 'Burn fee' : 'Entry'}</dt>
+              <dd>{entry}</dd>
+            </div>
+            <div>
+              <dt>Field</dt>
+              <dd>{tournament.playerCount} / {tournament.maxPlayers}</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>{tournament.winner ? <TrainerName playerId={tournament.winner} /> : status.label}</dd>
+            </div>
+          </dl>
+          <Link className="pa-btn pa-btn-gold" href={href}>
+            {tournament.status === 'registration' ? 'Register now' : 'Watch bracket'}
+          </Link>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <article className={`cup-panel is-accent cup-accent-${format.accent} cup-feature`}>
+      {art}
+      <div className="cup-feature-body">
+        <div className="cup-crumbs">
+          <span className="cup-kicker">Flagship circuit</span>
+          <span className={`cup-pill ${status.tone}`}>
+            {status.pulse ? <i className="cup-dot is-pulse" aria-hidden /> : null}
+            {status.label}
+          </span>
+        </div>
+        <div className="cup-feature-title">
+          <h2 className="cup-title">{tournament.title}</h2>
+          <span className="cup-feature-theme">{format.title}</span>
+        </div>
+        <div className="cup-chips">
+          <span className="cup-chip"><CupIcon name="users" />{format.teamModeLabel}</span>
+          <span className="cup-chip">{tournament.maxPlayers} players</span>
+          <span className="cup-chip">Single elimination</span>
+        </div>
+        <div className="cup-prize-hero">
+          <small><CupIcon name="trophy" />{chain ? 'Treasury prize' : 'Prize pool'}</small>
+          <strong>{prize}</strong>
+        </div>
+        <div className="cup-feature-stats">
+          <div className="cup-stat">
+            <span><CupIcon name="coins" />{chain ? 'Burn fee' : 'Entry'}</span>
+            <strong>{entry}</strong>
+          </div>
+          <div className="cup-stat">
+            <span><CupIcon name="users" />Field</span>
+            <strong>{tournament.playerCount} / {tournament.maxPlayers}</strong>
+            <CupMeter value={tournament.playerCount} max={tournament.maxPlayers} />
+          </div>
+          <div className="cup-stat">
+            <span><CupIcon name="crown" />{tournament.winner ? 'Champion' : 'Pool'}</span>
+            <strong>{tournament.winner ? <TrainerName playerId={tournament.winner} /> : format.restriction}</strong>
+          </div>
+        </div>
+        <p className="cup-note">
+          {chain
+            ? 'Prize is reserved from the Tournament Treasury, paid 50/35/15.'
+            : '90% of held entry fees form the prize pool, paid 50/35/15.'}
+        </p>
+        <div className="cup-feature-cta">
+          <Link className="pa-btn pa-btn-gold" href={href}>
+            {tournament.status === 'registration' ? 'Register now' : 'Watch bracket'}
+          </Link>
+          <Link className="pa-btn pa-btn-surface" href={href}>Rules</Link>
+        </div>
+      </div>
+    </article>
   );
 }

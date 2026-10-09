@@ -11,6 +11,7 @@ import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer'
 import { ShowdownBattle } from '@/components/showdown-battle';
 import { useArena } from '@/lib/arena-context';
 import { formatRoomAmount, formatTournamentPrize } from '@/lib/api-client';
+import { markOpenedFight } from '@/lib/opened-fights';
 import { settlementRevealDelay } from '@/lib/settlement-reveal';
 
 export default function BattlePage() {
@@ -49,6 +50,10 @@ export default function BattlePage() {
   if (match && joinedFinished.current === null) {
     joinedFinished.current = match.status === 'completed';
   }
+
+  useEffect(() => {
+    if (matchId) markOpenedFight(matchId);
+  }, [matchId]);
 
   useEffect(() => {
     if (!playerId) return;

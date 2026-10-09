@@ -895,8 +895,6 @@ export default function TournamentDetailPage() {
                 <div><dt>Teams</dt><dd>{formatCard?.teamModeLabel ?? 'Custom team'}</dd></div>
                 <div><dt>Battle</dt><dd>Singles</dd></div>
                 <div><dt>Players</dt><dd>{maxPlayers}</dd></div>
-                <div><dt>Bracket</dt><dd>Single elimination</dd></div>
-                <div><dt>Match</dt><dd>Best of 1</dd></div>
                 <div><dt>Entry</dt><dd>{burnFeeLabel ?? (entryFee > 0 ? formatPoke(entryFee) : 'Treasury entry')}</dd></div>
                 <div><dt>Time limit</dt><dd>{formatTimeout(tournament.matchTimeoutMs)}</dd></div>
               </dl>
@@ -919,24 +917,6 @@ export default function TournamentDetailPage() {
               </ul>
             </section>
 
-            <section className="cup-panel">
-              <header className="cup-panel-head">
-                <h3><CupIcon name="users" />Field</h3>
-                <span>{players.length} / {maxPlayers}</span>
-              </header>
-              <ul className="cup-field">
-                {players.length ? players.map((player, index) => (
-                  <li key={player.id} className={player.id === playerId ? 'is-you' : undefined}>
-                    <span>{String(index + 1).padStart(2, '0')}</span>
-                    <b><TrainerName playerId={player.id} /></b>
-                    {player.id === playerId ? <small className="cup-pill is-you">You</small> : null}
-                    {tournament.winner === player.id ? <small className="cup-pill is-gold">Champion</small> : null}
-                  </li>
-                )) : (
-                  <li className="is-empty">Waiting for trainers</li>
-                )}
-              </ul>
-            </section>
           </aside>
         </div>
       ) : connected ? (

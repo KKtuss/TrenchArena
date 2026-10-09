@@ -8,6 +8,7 @@ import './globals.css';
 import './stitch-home.css';
 import './motion.css';
 import './tournament.css';
+import './arena.css';
 
 const barlow = Barlow({
   subsets: ['latin'],

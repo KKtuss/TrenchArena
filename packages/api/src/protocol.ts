@@ -196,6 +196,12 @@ export interface ArenaSnapshot {
   openCasualRooms: CasualRoom[];
   myCasualRooms: CasualRoom[];
   recentCasualResults: CasualRoom[];
+  /** Settled arena SOL, paid tournament CARDS, and POKE actually burned at roster lock. */
+  economyTotals?: {
+    arenaSolLamports: number;
+    tournamentCardsRaw: number;
+    burnedPokeAtoms: number;
+  };
   chainEconomyEnabled?: boolean;
   passport?: PassportSnapshot;
   solBalances?: { freeLamports: string; treasuryLamports: string };

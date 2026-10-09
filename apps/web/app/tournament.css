@@ -1684,64 +1684,6 @@
   font-weight: 700;
 }
 
-.cup-field {
-  display: grid;
-  max-height: 18rem;
-  overflow: auto;
-  padding: 0.35rem 0.5rem 0.5rem;
-  scrollbar-width: thin;
-}
-
-.cup-field li {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 1.9rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 3px;
-  color: var(--cup-text);
-  font-family: var(--cup-body);
-  font-size: 0.8rem;
-}
-
-.cup-field li > span:first-child {
-  min-width: 1.4rem;
-  color: var(--cup-faint);
-  font-family: var(--cup-mono);
-  font-size: 0.58rem;
-}
-
-.cup-field li > b {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cup-field li:nth-child(odd) {
-  background: rgba(84, 124, 186, 0.06);
-}
-
-.cup-field li.is-you {
-  background: rgba(0, 240, 255, 0.1);
-}
-
-.cup-field li.is-empty {
-  color: var(--cup-faint);
-  font-family: var(--cup-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.cup-field .cup-pill {
-  min-height: 1.15rem;
-  padding: 0.1rem 0.4rem;
-  font-size: 0.52rem;
-}
-
 /* ---------- Bracket ---------- */
 
 .cup-bracket {

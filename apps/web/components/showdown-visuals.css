@@ -23,6 +23,10 @@
   opacity: 0.55;
 }
 
+.ps-team.is-concealed .ps-icon-empty {
+  opacity: 0.92;
+}
+
 .ps-sprite {
   width: 80px;
   height: 80px;

@@ -108,14 +108,16 @@ export function TeamStrip({
   species,
   fainted,
   slots = 6,
+  concealed = false,
 }: {
   species?: readonly string[];
   fainted?: readonly boolean[];
   slots?: number;
+  concealed?: boolean;
 }) {
-  const filled = (species ?? []).filter(Boolean).slice(0, slots);
+  const filled = concealed ? [] : (species ?? []).filter(Boolean).slice(0, slots);
   return (
-    <span className="ps-team">
+    <span className={`ps-team${concealed ? ' is-concealed' : ''}`} aria-label={concealed ? 'Hidden team' : undefined}>
       {Array.from({ length: slots }, (_, index) => {
         const name = filled[index];
         const isFainted = Boolean(fainted?.[index]);

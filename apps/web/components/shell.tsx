@@ -11,6 +11,8 @@ import { TrainerProfileControl } from '@/components/trainer-profile';
 import { useArena } from '@/lib/arena-context';
 import { formatPoke, formatPokeAtomsValue, formatPokeValue, formatSolLamportsValue } from '@/lib/api-client';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
+import { markOpenedFight, openedFightIds } from '@/lib/opened-fights';
+import { ownPlayableMatch, type TournamentDetail } from '@/lib/tournament-hub';
 
 const backdropZoomScale = 1.94;
 const backdropZoomMs = 460;
@@ -216,6 +218,7 @@ export function ArenaShell({ children }: { children: ReactNode }) {
 
   return (
     <>
+      <TournamentFightOpener />
       <header className="shell-nav shell-nav-stitch">
         <div className="shell-nav-inner">
           <Link href="/" className="shell-wordmark" aria-label="PokeArena home">
@@ -372,6 +375,29 @@ export function ArenaShell({ children }: { children: ReactNode }) {
       <ErrorToast error={error} onDismiss={clearError} />
     </>
   );
+}
+
+function TournamentFightOpener() {
+  const pathname = usePathname() ?? '';
+  const router = useRouter();
+  const { client, playerId } = useArena();
+
+  useEffect(() => {
+    return client.onMessage(message => {
+      if (message.type !== 'tournament.state' && message.type !== 'tournament.result') return;
+      const match = ownPlayableMatch(message.tournament as TournamentDetail, playerId);
+      if (!match) return;
+      if (pathname === `/battle/${match.id}`) {
+        markOpenedFight(match.id);
+        return;
+      }
+      if (openedFightIds().has(match.id)) return;
+      markOpenedFight(match.id);
+      router.push(`/battle/${match.id}`);
+    });
+  }, [client, pathname, playerId, router]);
+
+  return null;
 }
 
 function LiveFightBanner() {

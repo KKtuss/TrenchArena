@@ -1539,12 +1539,14 @@ export class ApiServer {
 
   private async buildArenaSnapshot(playerId: string, reconcile = true): Promise<ArenaSnapshot> {
     if (reconcile) containRpc('reconcileSolRoomsForPlayer', this.reconcileSolRoomsForPlayer(playerId));
+    const tournaments = await this.listTournamentSummaries();
     const base: ArenaSnapshot = {
       wallet: await this.economics.ensureWallet(playerId),
-      tournaments: await this.listTournamentSummaries(),
+      tournaments,
       openCasualRooms: this.casual.listOpenRooms(playerId),
       myCasualRooms: this.casual.listRoomsForPlayer(playerId),
       recentCasualResults: this.casual.listRecentResults(10, playerId),
+      economyTotals: this.economyTotals(tournaments, this.casual.settledArenaSolLamports()),
       chainEconomyEnabled: this.chainEconomy.enabled,
       tournamentScheduler: await this.tournamentSchedulerState(),
       trainers: this.trainers.snapshot(),
@@ -1905,6 +1907,27 @@ export class ApiServer {
       }
     }
     return byPlayer;
+  }
+
+  private economyTotals(
+    tournaments: TournamentSummary[],
+    arenaSolLamports: number,
+  ): NonNullable<ArenaSnapshot['economyTotals']> {
+    let tournamentCardsRaw = 0;
+    let burnedPokeAtoms = 0;
+    for (const tournament of tournaments) {
+      if (tournament.status === 'completed' && tournament.prizeCardsRaw) {
+        tournamentCardsRaw += tournament.prizeCardsRaw;
+      }
+      if (
+        tournament.rail === 'sol_chain'
+        && (tournament.status === 'in-progress' || tournament.status === 'completed')
+        && tournament.burnFeeAtoms
+      ) {
+        burnedPokeAtoms += tournament.burnFeeAtoms * tournament.maxPlayers;
+      }
+    }
+    return { arenaSolLamports, tournamentCardsRaw, burnedPokeAtoms };
   }
 
   private async listTournamentSummaries(): Promise<TournamentSummary[]> {

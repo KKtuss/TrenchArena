@@ -12,6 +12,7 @@ import {
   groupedRounds,
   hubStatus,
   matchActionLabel,
+  ownPlayableMatch,
   playerHubStatus,
   playerScore,
   progressionSteps,
@@ -66,6 +67,17 @@ test('mock live bracket advances winners and highlights the viewer path', () => 
   assert.equal(matchActionLabel(live!, 'spectator'), 'View match');
   const status = playerHubStatus(tournament, tournament.bracket ?? [], 'you');
   assert.equal(status.kind, 'live');
+});
+
+test('a ready or live cup fight is the one that should open', () => {
+  const tournament = buildMockTournament({ maxPlayers: 8, currentRound: 2, viewerId: 'you' });
+  const live = ownPlayableMatch(tournament, 'you');
+  assert.equal(live?.status, 'active');
+  assert.equal(live?.player1, 'you');
+  assert.equal(ownPlayableMatch(tournament, 'someone-else'), undefined);
+  assert.equal(ownPlayableMatch({
+    bracket: [{ id: 'waiting', round: 1, bracketPosition: 0, player1: 'you', player2: 'them', status: 'pending' }],
+  }, 'you'), undefined);
 });
 
 test('progression marks the current round and completed cups', () => {

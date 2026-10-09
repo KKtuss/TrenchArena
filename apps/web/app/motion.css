@@ -55,7 +55,6 @@
 
 .panel,
 .pa-vault,
-.pa-lobby,
 .pa-result-card,
 .matchup-row,
 .matchup-stage,
@@ -95,15 +94,6 @@
 
 .pa-lobby-side.is-present {
   animation: pa-enter var(--motion-medium) var(--ease-out);
-}
-
-.pa-lobby-side.is-open .pa-fight-open {
-  animation: pa-search 1.4s var(--ease-in-out) infinite;
-}
-
-.pa-countdown b {
-  display: block;
-  animation: pa-count-pulse var(--motion-impact) var(--ease-out);
 }
 
 .pa-vault.is-funded > header span.ok {
@@ -465,7 +455,6 @@
   .nav-links a,
   .panel,
   .pa-vault,
-  .pa-lobby,
   .pa-lobby-side,
   .pa-lobby-ready,
   .pa-result-card,
@@ -477,7 +466,6 @@
   .pa-history-row,
   .pa-async,
   .pa-toast,
-  .pa-countdown b,
   .pa-casual-mon,
   .pa-casual-slot.is-filled > span,
   .pa-casual-select.is-dealing .pa-casual-mon,

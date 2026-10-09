@@ -6,15 +6,23 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorToast } from '@/components/error-toast';
 
 import { CASUAL_BATTLE_HANDOFF_MS, CasualBattleReveal, CasualSelectBoard } from '@/components/casual-select';
+import { CupIcon } from '@/components/cup-icons';
 import { TeamStrip } from '@/components/showdown-visuals';
 import { ProfileTrainerSprite, TrainerName } from '@/components/profile-trainer';
 import { useArena } from '@/lib/arena-context';
+import { roomAccent, roomCode, roomStatusLabel, roomStatusPulses, roomStatusTone } from '@/lib/arena-room';
 import { shouldEnterLiveBattle } from '@/lib/battle-entry';
 import { formatPoke, formatSolLamports } from '@/lib/api-client';
 import { signSerializedTransaction } from '@/lib/solana-tx';
 import type { CasualRoom, TxIntentPayload } from '@/lib/protocol';
 import { formatCasualRoomLabel } from '@/lib/protocol';
-import { battlePaste, readSavedTeam, type SavedTeam } from '@/lib/team';
+import {
+  activateTeam,
+  battlePaste,
+  readRoster,
+  readSavedTeam,
+  type SavedTeam,
+} from '@/lib/team';
 
 function formatLabel(room: CasualRoom): string {
   return formatCasualRoomLabel(room).toUpperCase();
@@ -100,6 +108,7 @@ export default function CasualRoomPage() {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
   const [savedTeam, setSavedTeam] = useState<SavedTeam | null>(null);
+  const [rosterTeams, setRosterTeams] = useState<SavedTeam[]>([]);
   const [starterPaste, setStarterPaste] = useState<string>();
   const [clock, setClock] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
@@ -112,7 +121,13 @@ export default function CasualRoomPage() {
   const battleHandoff = useRef(false);
 
   useEffect(() => {
-    setSavedTeam(playerId ? readSavedTeam(playerId) : null);
+    if (!playerId) {
+      setSavedTeam(null);
+      setRosterTeams([]);
+      return;
+    }
+    setSavedTeam(readSavedTeam(playerId, 'gen9ou'));
+    setRosterTeams(readRoster(playerId, 'gen9ou').teams);
   }, [playerId]);
 
   useEffect(() => {
@@ -417,101 +432,277 @@ export default function CasualRoomPage() {
     void act(() => sendSelection(next));
   };
 
-  const code = room ? room.id.slice(0, 8).toUpperCase() : '········';
+  const switchable = rosterTeams.filter(team => team.paste.trim() || team.species.length);
+  const switchTeam = () => {
+    if (!playerId || youReady) return;
+    if (switchable.length < 2) {
+      router.push('/teams');
+      return;
+    }
+    const index = Math.max(0, switchable.findIndex(team => team.id === savedTeam?.id));
+    const next = switchable[(index + 1) % switchable.length];
+    activateTeam(playerId, next.id, 'gen9ou');
+    setSavedTeam(readSavedTeam(playerId, 'gen9ou'));
+    setRosterTeams(readRoster(playerId, 'gen9ou').teams);
+  };
+
+  const code = room ? roomCode(room) : '········';
+
+  if (casualSelect && (countingDown || drafting || revealBattle)) {
+    return (
+      <div className="pa-page is-match-phase">
+        {drafting || revealBattle ? (
+          <CasualSelectBoard
+            yours={yours}
+            selected={selected}
+            confirmed={Boolean(yours?.confirmed) || revealBattle}
+            rivalConfirmed={Boolean(rivalPreview?.confirmed)}
+            secondsLeft={selectionLeft}
+            disabled={busy || revealBattle}
+            busy={busy}
+            onToggle={toggleSlot}
+            onLock={() => void act(() => sendSelection(selected, true))}
+          />
+        ) : null}
+        {revealBattle ? <CasualBattleReveal yourId={yourId} rivalId={rivalId} /> : null}
+        <ErrorToast error={error} onDismiss={() => setError(null)} />
+      </div>
+    );
+  }
+
+  const lead = real
+    ? 'Your SOL stake is confirmed before this challenge is offered to another player.'
+    : competitive
+      ? 'Bring a legal Gen 9 OU team. The rival cannot see your paste until the fight starts.'
+      : 'Ready up once a rival joins. The 6→3 pick happens after both of you are ready.';
+  const kicker = !room
+    ? 'Arena challenge'
+    : competitive
+      ? 'Competitive · Custom team'
+      : room.battleSize === '2v2'
+        ? '2v2 · Multi'
+        : 'Casual · Random six → 3';
+  const bothReady = youReady && rivalReady;
+  const stakeTone = real ? (stakesLocked || yourStakeLocked ? 'is-open' : 'is-warn') : 'is-done';
+  const stakeLabel = real
+    ? (stakesLocked ? 'Escrow locked' : yourStakeLocked ? 'Your stake locked' : 'Waiting for wager')
+    : 'No SOL';
+  const econNote = !room
+    ? ''
+    : real
+      ? (stakesLocked
+        ? 'Both stakes are locked. The server settles escrow from the battle result.'
+        : yourStakeLocked
+          ? 'Your stake is locked. The challenge is waiting for an opponent to join.'
+          : room.opponentId
+            ? 'Your wager is not confirmed yet. Pay the wager below; the lobby will not start until the server confirms it.'
+        : room.status === 'cancelled'
+          ? 'Challenge cancelled. Unlocked stakes are refunded by the escrow rules.'
+          : 'Your wallet will be asked to sign the escrow and stake transaction.')
+      : 'Mock fight. Development balance only. Nothing is escrowed on-chain.';
+
+  const roomActions = room ? [
+    isPlayer && real && !yourStakeLocked && (
+      youAreCreator
+        // Creator payment opens the room (`open`). Never ask them
+        // to pay again once the lobby is public.
+        ? room.status === 'pending_deposit'
+        : Boolean(room.opponentId === playerId)
+          && (room.status === 'full' || room.status === 'ready' || room.status === 'open')
+    ) ? (
+      <button
+        key="pay"
+        type="button"
+        className="pa-btn pa-btn-primary"
+        disabled={busy}
+        onClick={() => void act(payWager)}
+      >
+        {depositPending
+          ? 'Wager confirming…'
+          : fundingSignature
+            ? 'Check wager status'
+            : `Pay ${formatSolLamports(room.economics.collateral)} wager`}
+      </button>
+    ) : null,
+    canAccept ? (
+      <button
+        key="accept"
+        type="button"
+        className="pa-btn pa-btn-primary"
+        disabled={busy}
+        onClick={() => void act(async () => {
+          const response = await client.request({ type: 'casual.accept', roomId });
+          if (response.type === 'casual.state') setRoom(response.room);
+        })}
+      >
+        {real ? 'Join challenge' : 'Accept challenge'}
+      </button>
+    ) : null,
+    isPlayer && casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown && (!real || stakesLocked) ? (
+      <button
+        key="ready"
+        type="button"
+        className="pa-btn pa-btn-primary"
+        disabled={busy}
+        onClick={() => void act(async () => {
+          if (!playerId) return;
+          const response = await client.request({
+            type: 'casual.ready',
+            roomId,
+            ready: !youReady,
+          });
+          if (response.type === 'casual.state') setRoom(response.room);
+        })}
+      >
+        {youReady ? 'Unready' : 'Ready up'}
+      </button>
+    ) : null,
+    isPlayer && competitive && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
+      <button
+        key="lock"
+        type="button"
+        className="pa-btn pa-btn-primary"
+        disabled={busy || (real && !stakesLocked && !youReady) || (!youReady && !canLockCompetitive)}
+        onClick={() => void act(async () => {
+          if (!playerId) return;
+          const response = await client.request({
+            type: 'casual.ready',
+            roomId,
+            ready: !youReady,
+            ...(!youReady && ownPaste ? { team: ownPaste } : {}),
+          });
+          if (response.type === 'casual.state') setRoom(response.room);
+        })}
+      >
+        {youReady ? 'Unready' : 'Lock team'}
+      </button>
+    ) : null,
+    isPlayer && room.battleSize === '2v2' && (room.status === 'full' || room.status === 'ready') ? (
+      <button
+        key="ready-2v2"
+        type="button"
+        className="pa-btn pa-btn-surface"
+        disabled={busy || (real && !stakesLocked && !(playerId && room.ready[playerId]))}
+        onClick={() => void act(async () => {
+          if (!playerId) return;
+          const response = await client.request({
+            type: 'casual.ready',
+            roomId,
+            ready: !room.ready[playerId],
+          });
+          if (response.type === 'casual.state') setRoom(response.room);
+        })}
+      >
+        {playerId && room.ready[playerId] ? 'Unready' : 'Ready up'}
+      </button>
+    ) : null,
+    room.status === 'battling' ? (
+      <Link key="rejoin" className="pa-btn pa-btn-primary" href={`/battle/${room.matchId}`}>Rejoin fight</Link>
+    ) : null,
+    room.status === 'completed' ? (
+      <Link key="result" className="pa-btn pa-btn-primary" href={`/result/${room.id}`}>View result</Link>
+    ) : null,
+    isPlayer && room.status === 'battling' ? (
+      <button
+        key="forfeit"
+        type="button"
+        className="pa-btn pa-btn-danger"
+        disabled={busy}
+        onClick={() => void act(async () => {
+          const response = await client.request({ type: 'casual.forfeit', roomId });
+          if (response.type === 'casual.state') {
+            setRoom(response.room);
+            router.push(`/result/${response.room.id}`);
+          }
+        })}
+      >
+        Forfeit fight
+      </button>
+    ) : null,
+    isPlayer
+      && room.status !== 'battling'
+      && room.status !== 'completed'
+      && room.status !== 'cancelled' ? (
+      <button
+        key="cancel"
+        type="button"
+        className="pa-btn pa-btn-surface"
+        disabled={busy}
+        onClick={() => void act(async () => {
+          const response = await client.request({ type: 'casual.cancel', roomId });
+          if (response.type === 'casual.state') {
+            setRoom(response.room);
+            router.replace('/arena');
+          }
+        })}
+      >
+        Cancel
+      </button>
+    ) : null,
+  ].filter(Boolean) : [];
 
   return (
-    <div className={`pa-page${casualSelect && (countingDown || drafting || revealBattle) ? ' is-match-phase' : ''}`}>
-      {casualSelect && (drafting || revealBattle) ? (
-        <CasualSelectBoard
-          yours={yours}
-          selected={selected}
-          confirmed={Boolean(yours?.confirmed) || revealBattle}
-          rivalConfirmed={Boolean(rivalPreview?.confirmed)}
-          secondsLeft={selectionLeft}
-          disabled={busy || revealBattle}
-          busy={busy}
-          onToggle={toggleSlot}
-          onLock={() => void act(() => sendSelection(selected, true))}
-        />
-      ) : null}
-      {revealBattle ? <CasualBattleReveal yourId={yourId} rivalId={rivalId} /> : null}
-      {casualSelect && (countingDown || drafting || revealBattle) ? (
-        <ErrorToast error={error} onDismiss={() => setError(null)} />
-      ) : null}
-      {casualSelect && (countingDown || drafting || revealBattle) ? null : (
-      <>
-      <header className="pa-page-head pa-page-head-row">
-        <div>
-          <h1 className={room ? undefined : 'pa-async'}>{room ? `Challenge ${code}` : 'Finding your room…'}</h1>
-          <p className="pa-lead">
-            {real
-              ? 'Your SOL stake is confirmed before this challenge is offered to another player.'
-              : competitive
-              ? 'Bring a legal Gen 9 OU team. The rival cannot see your paste until the fight starts.'
-              : 'Ready up once a rival joins. The 6→3 pick happens after both of you are ready.'}
-          </p>
-        </div>
-        <Link className="pa-btn pa-btn-surface" href="/arena">Back to arena</Link>
-      </header>
+    <div className={`pa-page cup-page cup-accent-${room ? roomAccent(room) : 'casual'} arena-room`}>
+      <ErrorToast error={error} onDismiss={() => setError(null)} />
 
-      <section className="pa-lobby">
+      <nav className="cup-crumbs" aria-label="Challenge">
+        <div className="cup-crumbs-left">
+          <Link className="cup-back" href="/arena"><CupIcon name="arrow-left" />Back to arena</Link>
+          {room ? (
+            <>
+              <span className="cup-chip arena-mark">{formatLabel(room)}</span>
+              <span className="cup-chip">{room.battleSize.toUpperCase()}</span>
+              <span className={`cup-chip${real ? ' is-sol' : ''}`}>{real ? 'Real SOL' : 'Mock POKE'}</span>
+            </>
+          ) : null}
+        </div>
+        {room ? (
+          <div className="cup-crumbs-right">
+            <span className={`cup-pill ${roomStatusTone(room.status)}`}>
+              {roomStatusPulses(room.status) ? <i className="cup-dot is-pulse" aria-hidden /> : null}
+              {roomStatusLabel(room.status)}
+            </span>
+            {isPlayer ? <span className="cup-pill is-you">{youAreCreator ? 'Your challenge' : "You're in"}</span> : null}
+          </div>
+        ) : null}
+      </nav>
+
+      <section className="cup-panel is-accent arena-stage">
+        <header className="arena-stage-head">
+          <span className="cup-kicker">{kicker}</span>
+          <h1 className={`cup-title${room ? '' : ' pa-async'}`}>{room ? `Challenge ${code}` : 'Finding your room…'}</h1>
+          <p className="cup-lead">{lead}</p>
+        </header>
+
         {room ? (
           <>
-            <div className="pa-lobby-rail">
-              <span className={`pa-live-pill status-${room.status}`}>
-                <i /> {room.status}
-              </span>
-              <span className="pa-chip">{formatLabel(room)}</span>
-              <span className="pa-chip">{room.battleSize.toUpperCase()}</span>
-            </div>
-
-            <p className="pa-lobby-note">
-              {room ? lobbyNote({
-                room,
-                competitive,
-                countingDown,
-                countdownLeft,
-                youReady,
-                rivalReady,
-              }) : ''}
-            </p>
-
-            {countingDown && !casualSelect ? (
-              <div className="pa-countdown" role="status" aria-live="polite">
-                <small>{countdownLeft > 0 ? 'Battle starts in' : 'Fight!'}</small>
-                <b key={countdownLeft > 0 ? countdownLeft : 'go'}>{countdownLeft > 0 ? countdownLeft : 'GO'}</b>
-              </div>
-            ) : null}
-
-            {competitive ? (
-              <div className="pa-protocol">
-                <span>
-                  {savedTeam?.validated
-                    ? savedTeam.name
-                    : starterPaste
-                      ? 'Demo Circuit'
-                      : 'No legal team locked on this trainer'}
-                </span>
-                <TeamStrip species={savedTeam?.species} slots={6} />
-                {!canLockCompetitive ? (
-                  <Link className="pa-btn pa-btn-surface pa-btn-sm" href="/teams">Open My Teams</Link>
+            <div className="arena-ring">
+              <article className={`arena-corner is-you${yourId ? ' is-present' : ''}${youReady ? ' is-ready' : ''}`}>
+                <small className="arena-corner-tag">Your trainer</small>
+                {competitive ? (
+                  <div className="arena-party">
+                    <TeamStrip species={isPlayer ? savedTeam?.species : undefined} concealed={!isPlayer} slots={6} />
+                    {!isPlayer ? (
+                      <span>Hidden until battle</span>
+                    ) : !youReady ? (
+                      <button
+                        type="button"
+                        className="pa-btn pa-btn-surface pa-btn-sm"
+                        onClick={switchTeam}
+                      >
+                        Switch team
+                      </button>
+                    ) : (
+                      <span>{savedTeam?.name ?? (starterPaste ? 'Demo Circuit' : 'No team')}</span>
+                    )}
+                  </div>
                 ) : null}
-              </div>
-            ) : null}
-
-            {room.battleSize === '2v2' ? (
-              <div className="pa-protocol">
-                <span>2v2 roster</span>
-                <TeamStrip slots={3} />
-              </div>
-            ) : null}
-
-            <div className="pa-lobby-vs">
-              <article className={`pa-lobby-side cyan${yourId ? ' is-present' : ''}`}>
-                <small>Your trainer</small>
-                <ProfileTrainerSprite label={yourId} side="left" />
-                <strong><TrainerName playerId={yourId} /></strong>
-                <span className={`pa-lobby-ready ${youReady ? 'on' : ''}`}>
+                <span className="arena-corner-art">
+                  <ProfileTrainerSprite label={yourId} side="left" />
+                </span>
+                <strong className="arena-corner-name"><TrainerName playerId={yourId} /></strong>
+                <span className={`cup-pill ${youReady ? 'is-open' : 'is-done'}`}>
+                  {youReady ? <CupIcon name="check" /> : null}
                   {sideReadyLabel({
                     isYou: true,
                     hasRival: Boolean(rivalId),
@@ -522,14 +713,35 @@ export default function CasualRoomPage() {
                   })}
                 </span>
               </article>
-              <div className="pa-lobby-mid">
-                <span>VS</span>
-              </div>
-              <article key={rivalId ?? 'open'} className={`pa-lobby-side coral${rivalId ? ' is-present' : ' is-open'}`}>
-                <small>Opponent</small>
-                {rivalId ? <ProfileTrainerSprite label={rivalId} side="right" /> : <span className="pa-fight-open" aria-hidden />}
-                <strong>{rivalId ? <TrainerName playerId={rivalId} /> : 'Waiting…'}</strong>
-                <span className={`pa-lobby-ready ${rivalReady ? 'on' : ''}`}>
+
+              {countingDown && !casualSelect ? (
+                <div className="arena-ring-mid is-count" role="status" aria-live="polite">
+                  <small>{countdownLeft > 0 ? 'Starts in' : 'Fight!'}</small>
+                  <b key={countdownLeft > 0 ? countdownLeft : 'go'}>{countdownLeft > 0 ? countdownLeft : 'GO'}</b>
+                </div>
+              ) : (
+                <div className="arena-ring-mid" aria-hidden>
+                  <span>VS</span>
+                </div>
+              )}
+
+              <article
+                key={rivalId ?? 'open'}
+                className={`arena-corner is-rival${rivalId ? ' is-present' : ' is-open'}${rivalReady ? ' is-ready' : ''}`}
+              >
+                <small className="arena-corner-tag">Opponent</small>
+                {competitive ? (
+                  <div className="arena-party">
+                    <TeamStrip concealed slots={6} />
+                    <span>Hidden until battle</span>
+                  </div>
+                ) : null}
+                <span className="arena-corner-art">
+                  {rivalId ? <ProfileTrainerSprite label={rivalId} side="right" /> : <i aria-hidden>?</i>}
+                </span>
+                <strong className="arena-corner-name">{rivalId ? <TrainerName playerId={rivalId} /> : 'Waiting…'}</strong>
+                <span className={`cup-pill ${rivalReady ? 'is-open' : 'is-done'}`}>
+                  {rivalReady ? <CupIcon name="check" /> : null}
                   {sideReadyLabel({
                     isYou: false,
                     hasRival: Boolean(rivalId),
@@ -541,240 +753,117 @@ export default function CasualRoomPage() {
                 </span>
               </article>
             </div>
+
+            <footer className="arena-stage-foot">
+              <p className={`cup-note${room.status === 'cancelled' ? ' is-warn' : bothReady ? ' is-good' : ''}`}>
+                <CupIcon name={room.status === 'cancelled' ? 'flag' : bothReady ? 'check' : 'clock'} />
+                {lobbyNote({
+                  room,
+                  competitive,
+                  countingDown,
+                  countdownLeft,
+                  youReady,
+                  rivalReady,
+                })}
+              </p>
+              {room.battleSize === '2v2' ? (
+                <div className="arena-roster">
+                  <span>2v2 roster</span>
+                  <TeamStrip slots={3} />
+                  <em>2v2 Multi · Coming soon</em>
+                </div>
+              ) : null}
+              {roomActions.length ? (
+                <div className="cup-actions arena-stage-actions">{roomActions}</div>
+              ) : null}
+              {depositPending ? (
+                <p className="cup-note is-warn">
+                  <CupIcon name="clock" />
+                  The signed wager stays pending until the escrow confirms. Paying again will not create a second escrow.
+                </p>
+              ) : null}
+            </footer>
           </>
         ) : (
-          <p className="pa-empty">Subscribing to room…</p>
+          <p className="cup-empty arena-stage-empty">Subscribing to room…</p>
         )}
       </section>
 
       {room ? (
-        <section className="pa-split">
-          <div className={`pa-vault${stakesLocked ? ' is-funded' : ''}${real ? ' rail-sol' : ' rail-poke'}`}>
-            <header>
-              <h2>{real ? 'Real stake' : 'Mock fight'}</h2>
-              <span className={real ? (stakesLocked ? 'ok' : yourStakeLocked ? 'ok' : 'warn') : 'ok'}>
-                {real
-                  ? (stakesLocked ? 'Escrow locked' : yourStakeLocked ? 'Your stake locked' : 'Waiting for wager')
-                  : 'No SOL'}
-              </span>
+        <div className="arena-room-grid">
+          <section className={`cup-panel arena-stake${stakesLocked ? ' is-funded' : ''}`}>
+            <header className="cup-panel-head">
+              <h2><CupIcon name="coins" />{real ? 'Real stake' : 'Mock fight'}</h2>
+              <span className={`cup-pill ${stakeTone}`}>{stakeLabel}</span>
             </header>
-            <div className="pa-econ-rows">
-              <div><span>Your stake</span><strong>{money(room.economics.collateral)}</strong></div>
-              <div><span>Opponent stake</span><strong>{money(room.economics.collateral)}</strong></div>
-              <div><span>Amount locked</span><strong>{money(lockedAmount)}</strong></div>
-              <div className="fee"><span>Platform fee · 2%</span><strong>{money(room.economics.protocolFee)}</strong></div>
-              <div className="payout"><span>Potential payout</span><strong>{money(room.economics.winnerPayout)}</strong></div>
+            <div className="cup-panel-body arena-stake-body">
+              <div className="arena-stake-grid">
+                <div className="cup-stat">
+                  <span>Your stake</span>
+                  <strong>{money(room.economics.collateral)}</strong>
+                </div>
+                <div className="cup-stat">
+                  <span>Opponent stake</span>
+                  <strong>{money(room.economics.collateral)}</strong>
+                </div>
+                <div className="cup-stat">
+                  <span><CupIcon name="lock" />Amount locked</span>
+                  <strong>{money(lockedAmount)}</strong>
+                </div>
+                <div className="cup-stat is-fee">
+                  <span>Platform fee · 2%</span>
+                  <strong>{money(room.economics.protocolFee)}</strong>
+                </div>
+              </div>
+              <div className="cup-prize-hero">
+                <small><CupIcon name="trophy" />Potential payout</small>
+                <strong>{money(room.economics.winnerPayout)}</strong>
+              </div>
+              <p className="cup-funding">
+                <CupIcon name={real ? 'lock' : 'check'} />
+                {econNote}
+              </p>
+              {room.status === 'completed' ? (
+                <dl className="cup-facts arena-settle">
+                  <div className={room.winnerId ? (room.winnerId === playerId ? 'is-won' : 'is-lost') : undefined}>
+                    <dt>{room.winnerId ? (room.winnerId === playerId ? 'WIN' : 'LOSS') : 'RESULT'}</dt>
+                    <dd>{room.winnerId ? (room.winnerId === playerId ? 'You won' : 'You lost') : 'Unresolved'}</dd>
+                  </div>
+                  <div><dt>Stake</dt><dd>{money(room.economics.collateral)}</dd></div>
+                  <div className="is-prize">
+                    <dt>Payout</dt>
+                    <dd>{room.payout ? money(room.payout.amount) : 'Pending settlement'}</dd>
+                  </div>
+                  <div><dt>Escrow</dt><dd>{real ? (room.payout ? 'Settled' : 'Pending') : 'Mock ledger'}</dd></div>
+                </dl>
+              ) : null}
             </div>
-            <p className="pa-econ-note">
-              {real
-                ? (stakesLocked
-                  ? 'Both stakes are locked. The server settles escrow from the battle result.'
-                  : yourStakeLocked
-                    ? 'Your stake is locked. The challenge is waiting for an opponent to join.'
-                    : room.opponentId
-                      ? 'Your wager is not confirmed yet. Pay the wager below; the lobby will not start until the server confirms it.'
-                  : room.status === 'cancelled'
-                    ? 'Challenge cancelled. Unlocked stakes are refunded by the escrow rules.'
-                    : 'Your wallet will be asked to sign the escrow and stake transaction.')
-                : 'Mock fight. Development balance only. Nothing is escrowed on-chain.'}
-            </p>
-            {room.status === 'completed' ? (
-              <div className="pa-econ-rows pa-settle">
-                <div>
-                  <span>{room.winnerId ? (room.winnerId === playerId ? 'WIN' : 'LOSS') : 'RESULT'}</span>
-                  <strong>{room.winnerId ? (room.winnerId === playerId ? 'You won' : 'You lost') : 'Unresolved'}</strong>
-                </div>
-                <div><span>Stake</span><strong>{money(room.economics.collateral)}</strong></div>
-                <div className="payout">
-                  <span>Payout</span>
-                  <strong>
-                    {room.payout
-                      ? money(room.payout.amount)
-                      : 'Pending settlement'}
-                  </strong>
-                </div>
-                <div><span>Escrow</span><strong>{real ? (room.payout ? 'Settled' : 'Pending') : 'Mock ledger'}</strong></div>
-              </div>
-            ) : null}
-          </div>
-          <div className="pa-split-side">
-            <div className="pa-vault">
-              <header>
-                <h2>Room code</h2>
-                <span className="ok">Bring your rival</span>
-              </header>
-              <div className="pa-room-code">
-                <strong>{code}</strong>
-                <span>{room.roomType === 'private' ? 'Private challenge' : 'Open challenge'}</span>
-                <button
-                  type="button"
-                  className={`pa-btn pa-btn-surface pa-btn-sm${copied ? ' is-copied' : ''}`}
-                  onClick={() => {
-                    void navigator.clipboard?.writeText(window.location.href).then(() => {
-                      setCopied(true);
-                      window.setTimeout(() => setCopied(false), 1200);
-                    });
-                  }}
-                >
-                  {copied ? 'Link copied' : 'Copy challenge link'}
-                </button>
-              </div>
+          </section>
+
+          <section className="cup-panel arena-code">
+            <header className="cup-panel-head">
+              <h2><CupIcon name="ticket" />Room code</h2>
+              <span>Bring your rival</span>
+            </header>
+            <div className="cup-panel-body arena-code-body">
+              <strong>{code}</strong>
+              <small>{room.roomType === 'private' ? 'Private challenge' : 'Open challenge'}</small>
+              <button
+                type="button"
+                className={`pa-btn pa-btn-surface${copied ? ' is-copied' : ''}`}
+                onClick={() => {
+                  void navigator.clipboard?.writeText(window.location.href).then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1200);
+                  });
+                }}
+              >
+                {copied ? 'Link copied' : 'Copy challenge link'}
+              </button>
             </div>
-            {canAccept || (isPlayer && (
-              (casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown)
-              || (room.status !== 'battling' && room.status !== 'completed')
-            )) ? (
-              <div className="pa-vault">
-                <div className="pa-lobby-actions pa-room-actions">
-                  {isPlayer && real && !yourStakeLocked && (
-                    youAreCreator
-                      // Creator payment opens the room (`open`). Never ask them
-                      // to pay again once the lobby is public.
-                      ? room.status === 'pending_deposit'
-                      : Boolean(room.opponentId === playerId)
-                        && (room.status === 'full' || room.status === 'ready' || room.status === 'open')
-                  ) ? (
-                    <button
-                      type="button"
-                      className="pa-btn pa-btn-primary"
-                      disabled={busy}
-                      onClick={() => void act(payWager)}
-                    >
-                      {depositPending
-                        ? 'Wager confirming…'
-                        : fundingSignature
-                          ? 'Check wager status'
-                          : `Pay ${formatSolLamports(room.economics.collateral)} wager`}
-                    </button>
-                  ) : null}
-                  {depositPending ? (
-                    <p className="pa-muted">The signed wager stays pending until the escrow confirms. Paying again will not create a second escrow.</p>
-                  ) : null}
-                  {canAccept ? (
-                    <button
-                      type="button"
-                      className="pa-btn pa-btn-primary"
-                      disabled={busy}
-                      onClick={() => void act(async () => {
-                        const response = await client.request({ type: 'casual.accept', roomId });
-                        if (response.type === 'casual.state') setRoom(response.room);
-                      })}
-                    >
-                      {real ? 'Join challenge' : 'Accept challenge'}
-                    </button>
-                  ) : null}
-                  {isPlayer
-                    && room.status !== 'battling'
-                    && room.status !== 'completed'
-                    && room.status !== 'cancelled' ? (
-                    <button
-                      type="button"
-                      className="pa-btn pa-btn-surface"
-                      disabled={busy}
-                      onClick={() => void act(async () => {
-                        const response = await client.request({ type: 'casual.cancel', roomId });
-                        if (response.type === 'casual.state') {
-                          setRoom(response.room);
-                          router.replace('/arena');
-                        }
-                      })}
-                    >
-                      Cancel
-                    </button>
-                  ) : null}
-                  {isPlayer && casualSelect && (room.status === 'full' || room.status === 'ready') && !countingDown && (!real || stakesLocked) ? (
-                    <button
-                      type="button"
-                      className="pa-btn pa-btn-primary"
-                      disabled={busy}
-                      onClick={() => void act(async () => {
-                        if (!playerId) return;
-                        const response = await client.request({
-                          type: 'casual.ready',
-                          roomId,
-                          ready: !youReady,
-                        });
-                        if (response.type === 'casual.state') setRoom(response.room);
-                      })}
-                    >
-                      {youReady ? 'Unready' : 'Ready up'}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </section>
+          </section>
+        </div>
       ) : null}
-
-      <ErrorToast error={error} onDismiss={() => setError(null)} />
-
-      <div className="pa-lobby-actions">
-        {isPlayer && competitive && room && (room.status === 'full' || room.status === 'ready') && !countingDown ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-primary"
-            disabled={busy || (real && !stakesLocked && !youReady) || (!youReady && !canLockCompetitive)}
-            onClick={() => void act(async () => {
-              if (!playerId) return;
-              const response = await client.request({
-                type: 'casual.ready',
-                roomId,
-                ready: !youReady,
-                ...(!youReady && ownPaste ? { team: ownPaste } : {}),
-              });
-              if (response.type === 'casual.state') setRoom(response.room);
-            })}
-          >
-            {youReady ? 'Unready' : 'Lock team'}
-          </button>
-        ) : null}
-        {isPlayer && room && room.battleSize === '2v2' && (room.status === 'full' || room.status === 'ready') ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-surface"
-            disabled={busy || (real && !stakesLocked && !(playerId && room.ready[playerId]))}
-            onClick={() => void act(async () => {
-              if (!playerId) return;
-              const response = await client.request({
-                type: 'casual.ready',
-                roomId,
-                ready: !room.ready[playerId],
-              });
-              if (response.type === 'casual.state') setRoom(response.room);
-            })}
-          >
-            {playerId && room.ready[playerId] ? 'Unready' : 'Ready up'}
-          </button>
-        ) : null}
-        {room?.battleSize === '2v2' ? (
-          <span className="pa-soon" style={{ border: 0, padding: 0 }}>2v2 Multi · Coming soon</span>
-        ) : null}
-        {room?.status === 'battling' ? (
-          <Link className="pa-btn pa-btn-primary" href={`/battle/${room.matchId}`}>Rejoin fight</Link>
-        ) : null}
-        {isPlayer && room?.status === 'battling' ? (
-          <button
-            type="button"
-            className="pa-btn pa-btn-danger"
-            disabled={busy}
-            onClick={() => void act(async () => {
-              const response = await client.request({ type: 'casual.forfeit', roomId });
-              if (response.type === 'casual.state') {
-                setRoom(response.room);
-                router.push(`/result/${response.room.id}`);
-              }
-            })}
-          >
-            Forfeit fight
-          </button>
-        ) : null}
-        {room?.status === 'completed' ? (
-          <Link className="pa-btn pa-btn-primary" href={`/result/${room.id}`}>View result</Link>
-        ) : null}
-      </div>
-      </>
-      )}
     </div>
   );
 }

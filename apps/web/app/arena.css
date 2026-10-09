@@ -1,0 +1,787 @@
+/* Arena board and challenge lobby. Built on the cup- tokens and primitives from tournament.css,
+   so these pages need `.cup-page` on their root. */
+
+.arena-ticker-end {
+  margin-left: auto;
+}
+
+.arena-board-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-left: auto;
+}
+
+.arena-filter button.is-casual.is-on {
+  background: rgba(169, 139, 255, 0.18);
+  color: var(--cup-violet);
+}
+
+.arena-filter button.is-competitive.is-on {
+  background: rgba(0, 240, 255, 0.16);
+  color: var(--cup-cyan);
+}
+
+.arena-mark {
+  padding: 0.34rem 0.7rem;
+  border-color: rgba(var(--cup-accent-rgb), 0.7);
+  background: rgba(var(--cup-accent-rgb), 0.18);
+  color: var(--cup-accent);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-shadow: 0 0 14px rgba(var(--cup-accent-rgb), 0.45);
+}
+
+.cup-chip.is-sol {
+  border-color: rgba(255, 204, 51, 0.45);
+  color: var(--cup-gold);
+}
+
+.cup-stat.is-fee > strong {
+  color: #ff8a94;
+}
+
+/* ---------- Board rows ---------- */
+
+.arena-board {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.arena-fight {
+  display: grid;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  animation: pa-enter var(--motion-medium) var(--ease-out) both;
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    box-shadow var(--motion-short) var(--ease-out);
+}
+
+.arena-fight:hover {
+  border-color: rgba(var(--cup-accent-rgb), 0.45);
+}
+
+.arena-fight.is-live {
+  border-color: rgba(255, 70, 85, 0.55);
+  box-shadow:
+    0 0 22px -8px rgba(255, 70, 85, 0.6),
+    0 22px 44px -28px rgba(0, 0, 0, 0.85);
+}
+
+.arena-fight.is-you {
+  border-color: rgba(0, 240, 255, 0.6);
+  box-shadow:
+    0 0 0 1px rgba(0, 240, 255, 0.2),
+    0 0 24px -8px rgba(0, 240, 255, 0.55),
+    0 22px 44px -28px rgba(0, 0, 0, 0.85);
+}
+
+.arena-fight-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--cup-line);
+}
+
+.arena-fight-code {
+  margin-left: auto;
+  color: var(--cup-faint);
+  font-family: var(--cup-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.arena-fight-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(13rem, 0.55fr);
+  align-items: center;
+  gap: 0.75rem 1.1rem;
+  padding: 0.9rem 1rem 1rem;
+}
+
+.arena-versus {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.arena-fighter {
+  --arena-tint: 0, 240, 255;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.arena-fighter.is-rival {
+  --arena-tint: 255, 70, 85;
+  flex-direction: row-reverse;
+  text-align: right;
+}
+
+.arena-fighter > div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.arena-fighter b {
+  overflow: hidden;
+  color: var(--cup-text);
+  font-family: var(--cup-body);
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arena-fighter small {
+  color: rgba(var(--arena-tint), 0.85);
+  font-family: var(--cup-mono);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.arena-fighter-art {
+  display: grid;
+  place-items: end center;
+  width: 3.4rem;
+  height: 3.4rem;
+  flex: none;
+}
+
+.arena-fighter-art .ps-trainer-img {
+  width: 3.3rem;
+  height: 3.3rem;
+}
+
+.arena-fighter-art > i,
+.arena-corner-art > i {
+  color: var(--cup-faint);
+  font-family: var(--cup-mono);
+  font-size: 0.9rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.arena-fighter.is-open .arena-fighter-art {
+  place-items: center;
+}
+
+.arena-fighter.is-open .arena-fighter-art > i {
+  font-size: 1.35rem;
+  animation: pa-search 1.4s var(--ease-in-out) infinite;
+}
+
+.arena-fighter.is-open b {
+  color: var(--cup-dim);
+  font-family: var(--cup-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.arena-fighter.is-open small {
+  color: var(--cup-faint);
+}
+
+.arena-versus-mark {
+  display: grid;
+  place-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border: 1px solid var(--cup-line-strong);
+  border-radius: 50%;
+  background: var(--cup-panel-solid);
+  color: var(--cup-dim);
+  font-family: var(--cup-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+}
+
+.arena-fight.is-live .arena-versus-mark {
+  border-color: rgba(255, 70, 85, 0.6);
+  color: #ff8a94;
+}
+
+.arena-fight-stake > strong {
+  font-size: 1.2rem;
+}
+
+.arena-fight-stake > small {
+  line-height: 1.45;
+}
+
+/* Home page board and payout strip. */
+.home-board,
+.home-radar {
+  display: grid;
+  align-content: start;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.home-payout-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  padding: 0.85rem;
+}
+
+.home-payout-grid .cup-stat > strong {
+  font-size: clamp(1.05rem, 1.6vw, 1.35rem);
+  white-space: normal;
+}
+
+.home-radar .cup-section-head a {
+  color: var(--cup-accent);
+  font-family: var(--cup-mono);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.home-radar .cup-section-head a:hover {
+  color: var(--cup-text);
+}
+
+.home-radar-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(17rem, 0.8fr);
+  gap: 0.85rem;
+  align-items: stretch;
+}
+
+.home-radar-side {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+  min-height: 0;
+}
+
+.home-radar-side:has(> :nth-child(2)) {
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.home-radar .cup-feature,
+.home-radar-side .cup-slot {
+  height: 100%;
+  min-height: 0;
+}
+
+.home-radar .cup-feature {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.home-radar .cup-feature .cup-art {
+  min-height: 11rem;
+  border-right: 0;
+  border-bottom: 1px solid var(--cup-line);
+}
+
+.home-radar .cup-feature-body .cup-title {
+  font-size: clamp(1.7rem, 2.2vw, 2.35rem);
+}
+
+.home-radar .cup-prize-hero strong {
+  font-size: clamp(1.45rem, 2vw, 2rem);
+}
+
+.home-radar .cup-feature-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.home-radar-side .cup-slot-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.home-radar-side .cup-slot .pa-btn {
+  margin-top: auto;
+}
+
+.home-radar .cup-stat > strong {
+  font-size: 1.05rem;
+  white-space: normal;
+}
+
+@media (max-width: 1100px) {
+  .home-radar-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .home-radar-side:has(> :nth-child(2)) {
+    grid-template-rows: none;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .home-radar-side:has(> :nth-child(2)) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .home-payout-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Challenge lobby ---------- */
+
+.arena-stage {
+  overflow: hidden;
+}
+
+.arena-stage-head {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1.35rem 1.5rem 1.2rem;
+}
+
+.arena-stage-empty {
+  margin: 0 1.5rem 1.5rem;
+}
+
+.arena-ring {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 1.25rem;
+  padding: 1.6rem clamp(1rem, 4vw, 3.5rem) 1.7rem;
+  border-top: 1px solid var(--cup-line);
+  border-bottom: 1px solid var(--cup-line);
+  isolation: isolate;
+  background: #050914;
+}
+
+.arena-ring::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(180deg, rgba(5, 9, 20, 0.55) 0%, rgba(5, 9, 20, 0.2) 40%, rgba(5, 9, 20, 0.35) 75%, rgba(5, 9, 20, 0.88) 100%),
+    radial-gradient(ellipse 55% 70% at 50% 100%, rgba(var(--cup-accent-rgb), 0.2), transparent 70%),
+    url('/stages/gen9ou.webp') 50% 100% / cover no-repeat;
+}
+
+.arena-corner {
+  --arena-tint: 0, 240, 255;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.95rem 0.9rem 1.05rem;
+  border: 1px solid rgba(var(--arena-tint), 0.3);
+  border-radius: var(--cup-radius);
+  background: linear-gradient(180deg, rgba(var(--arena-tint), 0.12), rgba(4, 8, 18, 0.78) 55%);
+  box-shadow: inset 0 2px 0 rgba(var(--arena-tint), 0.85);
+  text-align: center;
+  transition:
+    border-color var(--motion-short) var(--ease-out),
+    box-shadow var(--motion-short) var(--ease-out);
+}
+
+.arena-corner.is-rival {
+  --arena-tint: 255, 70, 85;
+}
+
+.arena-corner.is-present {
+  animation: pa-enter var(--motion-medium) var(--ease-out);
+}
+
+.arena-corner.is-ready {
+  border-color: rgba(78, 230, 154, 0.55);
+}
+
+.arena-corner.is-open {
+  border-style: dashed;
+  border-color: var(--cup-line-strong);
+  background: rgba(4, 8, 18, 0.62);
+  box-shadow: none;
+}
+
+.arena-corner-tag {
+  color: rgb(var(--arena-tint));
+  font-family: var(--cup-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.arena-corner.is-open .arena-corner-tag {
+  color: var(--cup-faint);
+}
+
+.arena-corner-art {
+  position: relative;
+  display: grid;
+  place-items: end center;
+  width: 7rem;
+  height: 7rem;
+}
+
+.arena-corner-art::after {
+  content: "";
+  position: absolute;
+  right: 12%;
+  bottom: 2%;
+  left: 12%;
+  z-index: -1;
+  height: 0.9rem;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(var(--arena-tint), 0.6), transparent 70%);
+}
+
+.arena-corner-art .ps-trainer-img {
+  width: 7rem;
+  height: 7rem;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.55));
+}
+
+.arena-corner.is-open .arena-corner-art::after {
+  display: none;
+}
+
+.arena-corner.is-open .arena-corner-art > i {
+  display: grid;
+  place-items: center;
+  width: 4.5rem;
+  height: 4.5rem;
+  margin-bottom: 1.25rem;
+  border: 1px dashed var(--cup-line-strong);
+  border-radius: 50%;
+  font-size: 1.4rem;
+  animation: pa-search 1.4s var(--ease-in-out) infinite;
+}
+
+.arena-corner-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: #f4f1ea;
+  font-family: var(--cup-display);
+  font-size: clamp(1.3rem, 2.4vw, 1.75rem);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.arena-corner.is-open .arena-corner-name {
+  color: var(--cup-faint);
+}
+
+.arena-party {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  min-height: 5.375rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--cup-line);
+  border-radius: 4px;
+  background: rgba(4, 8, 18, 0.72);
+}
+
+.arena-party .ps-team {
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.arena-party > span {
+  color: var(--cup-faint);
+  font-family: var(--cup-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.arena-party .pa-btn {
+  min-height: 2rem;
+  padding: 0.45rem 0.9rem;
+}
+
+.arena-ring-mid {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  align-self: center;
+  width: 4.2rem;
+  height: 4.2rem;
+  border: 1px solid rgba(255, 70, 85, 0.55);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 40%, rgba(255, 70, 85, 0.3), rgba(10, 18, 34, 0.95) 70%);
+  box-shadow: 0 0 28px -6px rgba(255, 70, 85, 0.55);
+  color: #ffd3d7;
+  font-family: var(--cup-display);
+  font-size: 1.5rem;
+  letter-spacing: 0.04em;
+}
+
+.arena-ring-mid.is-count {
+  gap: 0.15rem;
+  width: 6rem;
+  height: 6rem;
+  border-color: rgba(var(--cup-accent-rgb), 0.6);
+  background: radial-gradient(circle at 50% 40%, rgba(var(--cup-accent-rgb), 0.28), rgba(10, 18, 34, 0.95) 70%);
+  box-shadow: 0 0 32px -6px rgba(var(--cup-accent-rgb), 0.6);
+}
+
+.arena-ring-mid.is-count small {
+  color: var(--cup-dim);
+  font-family: var(--cup-mono);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.arena-ring-mid.is-count b {
+  color: #fff;
+  font-family: var(--cup-mono);
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 0 18px rgba(var(--cup-accent-rgb), 0.6);
+  animation: pa-count-pulse var(--motion-impact) var(--ease-out);
+}
+
+.arena-stage-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 1rem 1.5rem 1.2rem;
+}
+
+.arena-stage-foot > .cup-note {
+  flex: 1 1 22rem;
+}
+
+.arena-stage-foot > .cup-note + .cup-actions + .cup-note,
+.arena-stage-foot > .arena-roster {
+  flex-basis: 100%;
+}
+
+.arena-stage-actions {
+  justify-content: flex-end;
+}
+
+.arena-stage-actions .pa-btn {
+  min-width: 9.5rem;
+}
+
+.arena-roster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.arena-roster span,
+.arena-roster em {
+  color: var(--cup-faint);
+  font-family: var(--cup-mono);
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.arena-roster em {
+  margin-left: auto;
+  color: var(--cup-gold);
+}
+
+.arena-room-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+.arena-room-grid .cup-panel-head {
+  min-height: 3.2rem;
+}
+
+.arena-stake-body {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.arena-stake-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.arena-stake.is-funded .cup-panel-head .cup-pill {
+  animation: pa-lock var(--motion-medium) var(--ease-out);
+}
+
+.arena-settle {
+  border-top: 1px solid var(--cup-line);
+}
+
+.arena-settle .is-won dd { color: var(--cup-green); }
+.arena-settle .is-lost dd { color: #ff8a94; }
+.arena-settle .is-prize dd { color: var(--cup-gold); }
+
+.arena-code-body {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.arena-code-body strong {
+  color: var(--cup-accent);
+  font-family: var(--cup-mono);
+  font-size: clamp(1.9rem, 4vw, 2.6rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 22px rgba(var(--cup-accent-rgb), 0.35);
+}
+
+.arena-code-body small {
+  color: var(--cup-faint);
+  font-family: var(--cup-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.arena-code-body .pa-btn {
+  width: 100%;
+  margin-top: 0.35rem;
+}
+
+.arena-code .is-copied {
+  color: var(--cup-green);
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 1180px) {
+  .arena-stake-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .arena-room-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .arena-fight-body {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0.75rem 0.8rem 0.85rem;
+  }
+
+  .arena-fight-head {
+    padding: 0.6rem 0.8rem;
+  }
+
+  .arena-stage-head,
+  .arena-stage-foot {
+    padding-right: 1rem;
+    padding-left: 1rem;
+  }
+
+  .arena-ring {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 1rem;
+  }
+
+  .arena-ring-mid {
+    position: absolute;
+    bottom: 8.75rem;
+    left: 50%;
+    z-index: 2;
+    width: 2.9rem;
+    height: 2.9rem;
+    font-size: 1.05rem;
+    transform: translate(-50%, 50%);
+  }
+
+  .arena-ring-mid.is-count {
+    width: 4.4rem;
+    height: 4.4rem;
+  }
+
+  .arena-ring-mid.is-count b {
+    font-size: 1.5rem;
+  }
+
+  .arena-corner-art,
+  .arena-corner-art .ps-trainer-img {
+    width: 5rem;
+    height: 5rem;
+  }
+
+  .arena-party {
+    justify-self: stretch;
+    min-height: 7.2rem;
+    padding: 0.45rem 0.4rem;
+  }
+
+  .arena-party .ps-team {
+    display: grid;
+    grid-template-columns: repeat(3, 2.1rem);
+    justify-items: center;
+    gap: 0;
+  }
+
+  .arena-party .pa-btn {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.62rem;
+    white-space: nowrap;
+  }
+
+  .arena-stage-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .arena-stage-actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .arena-stage-actions .pa-btn {
+    width: 100%;
+    min-width: 0;
+  }
+}

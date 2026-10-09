@@ -355,6 +355,16 @@ export class CasualRoomService {
     return this.recentResults.slice(0, limit).map(room => this.serializeRoom(room, viewerId));
   }
 
+  /** SOL returned to arena players. Ties store one side's share, so both sides are counted. */
+  settledArenaSolLamports(): number {
+    return this.listAllCompletedFightRecords().reduce((sum, record) => {
+      if (record.payoutSymbol !== 'SOL' && record.rail !== 'sol_chain') return sum;
+      const amount = record.payoutAmount ?? 0;
+      if (!amount) return sum;
+      return sum + (record.resultStatus === 'tie' ? amount * 2 : amount);
+    }, 0);
+  }
+
   /**
    * Completed casual and competitive rooms this player fought.
    * Reads the live room plus its settlement payout. Does not include

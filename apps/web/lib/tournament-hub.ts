@@ -401,6 +401,20 @@ export function playerHubStatus(
   return { kind: 'watching' };
 }
 
+/** The viewer's ready or live cup fight, if the bracket has one. */
+export function ownPlayableMatch(
+  tournament: { bracket?: BracketMatch[] } | null | undefined,
+  playerId?: string | null,
+): BracketMatch | undefined {
+  if (!playerId || !tournament?.bracket) return undefined;
+  const match = findPlayerMatch(
+    tournament.bracket.filter(item => !item.placeholder),
+    playerId,
+  );
+  if (!match || !isPlayableMatch(match.status)) return undefined;
+  return match;
+}
+
 export function matchActionLabel(
   match: BracketMatch,
   playerId?: string | null,
