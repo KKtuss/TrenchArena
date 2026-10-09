@@ -298,6 +298,19 @@ export interface FightHistoryCursor {
   id: string;
 }
 
+export interface LeaderboardRow {
+  rank: number;
+  playerId: string;
+  username: string;
+  spriteId: string;
+  fights: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  winRateBps: number | null;
+  solPnlLamports: number;
+}
+
 export type ServerMessage =
   | { type: 'ready'; playerId: string; chainEconomyEnabled?: boolean; requestId?: string }
   | {
@@ -365,6 +378,7 @@ export type ServerMessage =
   | { type: 'live.list'; fights: LiveFight[]; requestId?: string }
   | { type: 'live.update'; fight?: LiveFight; view?: BattleView; events?: unknown[]; requestId?: string }
   | { type: 'trainer.directory'; trainers: Record<string, PublicTrainerProfile>; requestId?: string }
+  | { type: 'leaderboard.list'; rows: LeaderboardRow[]; requestId?: string }
   | { type: 'trainer.profile'; playerId: string; profile: PublicTrainerProfile; requestId?: string }
   | { type: 'team.starter'; name: string; paste: string; requestId?: string }
   | { type: 'team.inspect'; inspection: import('./team').TeamInspection; requestId?: string }
@@ -428,6 +442,7 @@ export type ClientMessage =
       choice: PlayerChoice;
     }
   | { type: 'ping' }
+  | { type: 'leaderboard.list' }
   | { type: 'team.starter' }
   | { type: 'team.inspect'; team: string; ruleset?: string }
   | {

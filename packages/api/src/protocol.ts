@@ -3,6 +3,7 @@ import type { BattleView, PlayerChoice } from '@pokearena/battle-engine';
 import type { CasualRoom } from './casual-service';
 import type { CasualPresetMon } from './casual-presets';
 import type { FightHistoryCursor, FightHistoryEntry } from './fight-history';
+import type { LeaderboardRow } from './leaderboard';
 import type { LiveFight } from './live-fights';
 import type { PublicTrainerProfile } from './trainer-directory';
 import type {
@@ -112,6 +113,7 @@ export type ClientMessage =
       choice: PlayerChoice;
     }
   | { type: 'ping'; requestId: string }
+  | { type: 'leaderboard.list'; requestId: string }
   | { type: 'team.starter'; requestId: string }
   | { type: 'team.inspect'; requestId: string; team: string; ruleset?: string }
   | {
@@ -266,6 +268,7 @@ export type ServerMessage = { requestId?: string } & (
   | { type: 'live.list'; fights: LiveFight[] }
   | { type: 'live.update'; fight?: LiveFight; view?: BattleView; events?: unknown[] }
   | { type: 'trainer.directory'; trainers: Record<string, PublicTrainerProfile> }
+  | { type: 'leaderboard.list'; rows: LeaderboardRow[] }
   | { type: 'trainer.profile'; playerId: string; profile: PublicTrainerProfile }
   | { type: 'team.starter'; name: string; paste: string }
   | { type: 'team.inspect'; inspection: import('@pokearena/battle-engine').TeamInspection }
@@ -319,6 +322,7 @@ export function parseClientMessage(raw: string): ClientMessage {
     case 'live.list':
     case 'live.unwatch':
     case 'ping':
+    case 'leaderboard.list':
     case 'team.starter':
       return { type: value.type, requestId: value.requestId as string };
     case 'history.list': {

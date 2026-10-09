@@ -41,7 +41,13 @@ import {
 
 import { CASUAL_SELECTION_MS, CASUAL_START_COUNTDOWN_MS, CasualRoomService } from './casual-service';
 import { getGenerationPreset } from './generation-presets';
-import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor } from './fight-history';
+import { casualFightEntry, pageFightHistory, tournamentFightEntry, type FightHistoryCursor, type FightHistoryEntry } from './fight-history';
+import {
+  applyFightToLeaderboard,
+  emptyLeaderboardStats,
+  rankLeaderboard,
+  type LeaderboardRow,
+} from './leaderboard';
 import { pickLiveFight, spectatorBattleView, spectatorEvents, type LiveFight } from './live-fights';
 import { assessDepositEscrow, ChainEconomyService, depositEscrowFollowUp, SettlementUnknownError } from './chain-economy';
 import { containRpc, installRpcProcessGuard } from './rpc-guard';
@@ -208,6 +214,7 @@ type TournamentSelectionState = {
 const publicDirectory = join(__dirname, '../../public');
 const DEFAULT_DISCONNECT_GRACE_MS = 10_000;
 const SNAPSHOT_COALESCE_MS = 50;
+const LEADERBOARD_CACHE_MS = 3_000;
 const DISPLAY_POKE_TTL_MS = 8_000;
 const DISPLAY_POKE_CONCURRENCY = 4;
 
@@ -268,6 +275,7 @@ export class ApiServer {
   private readonly displayPokeBalances = new Map<string, { value: bigint; expiresAt: number }>();
   private readonly displayPokeReads = new Map<string, Promise<bigint>>();
   private readonly displayPokeLimiter = new AsyncLimiter(DISPLAY_POKE_CONCURRENCY);
+  private leaderboardCache: { at: number; rows: LeaderboardRow[] } | null = null;
   constructor(
     tournamentsOrOptions?: TournamentService | ApiServerOptions,
     economics?: EconomicsStore | MockEconomics,
@@ -759,6 +767,11 @@ export class ApiServer {
 
     if (message.type === 'ping') {
       this.send(connection, { type: 'pong' }, message.requestId);
+      return;
+    }
+
+    if (message.type === 'leaderboard.list') {
+      this.send(connection, { type: 'leaderboard.list', rows: await this.listLeaderboard() }, message.requestId);
       return;
     }
 
@@ -1808,47 +1821,90 @@ export class ApiServer {
     return pageFightHistory([...casual, ...cups], limit, before);
   }
 
+  private async listLeaderboard(): Promise<LeaderboardRow[]> {
+    const now = Date.now();
+    if (this.leaderboardCache && now - this.leaderboardCache.at < LEADERBOARD_CACHE_MS) {
+      return this.leaderboardCache.rows;
+    }
+    const profiles = this.trainers.snapshot();
+    const playerIds = Object.keys(profiles);
+    const stats = new Map(playerIds.map(playerId => [
+      playerId,
+      emptyLeaderboardStats(playerId, profiles[playerId]!),
+    ]));
+    for (const record of this.casual.listAllCompletedFightRecords()) {
+      for (const playerId of [record.creatorId, record.opponentId]) {
+        const row = stats.get(playerId);
+        if (!row) continue;
+        applyFightToLeaderboard(row, casualFightEntry(record, playerId));
+      }
+    }
+    const cupsByPlayer = await this.tournamentHistoryForPlayers(new Set(playerIds));
+    for (const [playerId, entries] of cupsByPlayer) {
+      const row = stats.get(playerId);
+      if (!row) continue;
+      for (const entry of entries) applyFightToLeaderboard(row, entry);
+    }
+    const rows = rankLeaderboard([...stats.values()]);
+    this.leaderboardCache = { at: now, rows };
+    return rows;
+  }
+
   private async tournamentHistory(playerId: string) {
+    const cups = await this.tournamentHistoryForPlayers(new Set([playerId]));
+    return cups.get(playerId) ?? [];
+  }
+
+  private async tournamentHistoryForPlayers(playerIds: ReadonlySet<string>) {
+    const byPlayer = new Map<string, FightHistoryEntry[]>();
+    for (const playerId of playerIds) byPlayer.set(playerId, []);
+    if (playerIds.size === 0) return byPlayer;
     const tournaments = await this.tournaments.listTournaments();
-    const entries = [];
     for (const tournament of tournaments) {
-      const playing = tournament.players.some(player => player.id === playerId && player.status === 'registered');
-      if (!playing) continue;
-      const matches = await this.tournaments.getBracket(tournament.id);
-      const mine = matches.filter(match => (
-        (match.player1 === playerId || match.player2 === playerId)
-        && (match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied')
-        && typeof match.completedAt === 'number'
+      const playing = tournament.players.filter(player => (
+        player.status === 'registered' && playerIds.has(player.id)
       ));
-      const last = [...mine].sort((a, b) => (
-        b.round - a.round || (b.completedAt ?? 0) - (a.completedAt ?? 0)
-      ))[0];
+      if (playing.length === 0) continue;
+      const matches = await this.tournaments.getBracket(tournament.id);
       const cupSettled = tournament.status === 'completed' && typeof tournament.winner === 'string';
       const symbol = tournament.rail === 'sol_chain' ? 'CARDS' as const : 'POKE' as const;
       const prize = symbol === 'CARDS'
         ? (tournament.prizeCardsRaw ?? 0)
         : previewTournament(tournament.entryFee, tournament.players.length).prizePool;
-      for (const match of mine) {
-        const opponentId = match.player1 === playerId ? match.player2 : match.player1;
-        if (!opponentId || match.completedAt === undefined) continue;
-        if (match.status !== 'completed' && match.status !== 'forfeited' && match.status !== 'tied') continue;
-        entries.push(tournamentFightEntry({
-          playerId,
-          matchId: match.id,
-          tournamentId: tournament.id,
-          opponentId,
-          status: match.status,
-          ...(match.winner ? { winnerId: match.winner } : {}),
-          completedAt: match.completedAt,
-          entryFee: symbol === 'CARDS' ? (tournament.entryAtoms ?? tournament.entryFee) : tournament.entryFee,
-          prize,
-          symbol,
-          carriesCupBalance: cupSettled && last?.id === match.id,
-          playerWonCup: tournament.winner === playerId,
-        }));
+      for (const player of playing) {
+        const playerId = player.id;
+        const mine = matches.filter(match => (
+          (match.player1 === playerId || match.player2 === playerId)
+          && (match.status === 'completed' || match.status === 'forfeited' || match.status === 'tied')
+          && typeof match.completedAt === 'number'
+        ));
+        const last = [...mine].sort((a, b) => (
+          b.round - a.round || (b.completedAt ?? 0) - (a.completedAt ?? 0)
+        ))[0];
+        const entries = byPlayer.get(playerId);
+        if (!entries) continue;
+        for (const match of mine) {
+          const opponentId = match.player1 === playerId ? match.player2 : match.player1;
+          if (!opponentId || match.completedAt === undefined) continue;
+          if (match.status !== 'completed' && match.status !== 'forfeited' && match.status !== 'tied') continue;
+          entries.push(tournamentFightEntry({
+            playerId,
+            matchId: match.id,
+            tournamentId: tournament.id,
+            opponentId,
+            status: match.status,
+            ...(match.winner ? { winnerId: match.winner } : {}),
+            completedAt: match.completedAt,
+            entryFee: symbol === 'CARDS' ? (tournament.entryAtoms ?? tournament.entryFee) : tournament.entryFee,
+            prize,
+            symbol,
+            carriesCupBalance: cupSettled && last?.id === match.id,
+            playerWonCup: tournament.winner === playerId,
+          }));
+        }
       }
     }
-    return entries;
+    return byPlayer;
   }
 
   private async listTournamentSummaries(): Promise<TournamentSummary[]> {

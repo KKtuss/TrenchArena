@@ -55,7 +55,10 @@ export default function ArenaPage() {
               : 'Mock fights use the development POKE ledger. Casual deals a random six after both trainers ready up. Competitive uses your own Gen 9 OU team.'}
           </p>
         </div>
-        <Link className="pa-btn pa-btn-primary" href="/casual/create">Create challenge</Link>
+        <div className="pa-page-head-actions">
+          <Link className="pa-btn pa-btn-surface" href="/leaderboard">Leaderboard</Link>
+          <Link className="pa-btn pa-btn-primary" href="/casual/create">Create challenge</Link>
+        </div>
       </header>
 
       <div className="pa-live-strip">

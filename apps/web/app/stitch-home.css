@@ -1675,6 +1675,15 @@
   gap: 1rem 1.5rem;
 }
 
+.pa-page-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex-shrink: 0;
+}
+
 .pa-page-head:not(.pa-page-head-row),
 .pa-page-head-row > div:first-child {
   display: grid;
@@ -4282,5 +4291,162 @@
   .pa-profile-team-roster .ps-icon-wrap .ps-icon,
   .pa-profile-team-roster .ps-icon-empty {
     transform: scale(1.8);
+  }
+}
+
+.pa-board-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.pa-board-panel > header {
+  padding: 0.85rem 1rem;
+  margin-bottom: 0;
+}
+
+.pa-board-panel > .pa-lead,
+.pa-board-panel > .cup-lead {
+  padding: 0.85rem 1rem 1.1rem;
+}
+
+.pa-board-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.pa-board-row {
+  display: grid;
+  grid-template-columns: 4.2rem minmax(0, 1.6fr) 5.5rem 5.5rem 8.5rem;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  padding: 0.7rem 1.1rem;
+  border-top: 1px solid var(--pa-line, rgba(84, 124, 186, 0.22));
+  min-height: 4.4rem;
+}
+
+.pa-board-row.pa-board-cols {
+  min-height: 0;
+  padding: 0.45rem 1.1rem;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #8ea0c0;
+}
+
+.pa-board-row.is-you {
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.08), transparent 55%);
+}
+
+.pa-board-rank {
+  font-family: var(--font-anton), Impact, sans-serif;
+  font-size: 1.35rem;
+  letter-spacing: 0.04em;
+  color: #f4f1ea;
+}
+
+.pa-board-trainer {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.pa-board-trainer .ps-trainer-img {
+  width: 3.1rem;
+  height: 3.1rem;
+  flex-shrink: 0;
+}
+
+.pa-board-trainer-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.pa-board-trainer strong {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1rem;
+  color: #f4f1ea;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pa-board-trainer small {
+  flex-shrink: 0;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #00f0ff;
+}
+
+.pa-board-wallet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: #8ea0c0;
+}
+
+.pa-board-stat,
+.pa-board-pnl {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.pa-board-stat small,
+.pa-board-pnl small {
+  display: none;
+  font-family: var(--font-jetbrains), monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8ea0c0;
+}
+
+.pa-board-stat b,
+.pa-board-pnl b {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  color: #dee2f3;
+}
+
+.pa-board-pnl.is-up b { color: #54d68b; }
+.pa-board-pnl.is-down b { color: #ff717d; }
+.pa-board-pnl.is-flat b { color: #8ea0c0; }
+
+@media (max-width: 720px) {
+  .pa-board-row {
+    grid-template-columns: 2.8rem minmax(0, 1.4fr) 4.2rem 4.2rem minmax(5.5rem, auto);
+    grid-template-areas:
+      "rank trainer trainer trainer trainer"
+      "rank fights wr pnl pnl";
+    padding: 0.85rem 1rem 1rem;
+  }
+
+  .pa-board-row.pa-board-cols {
+    display: none;
+  }
+
+  .pa-board-rank { grid-area: rank; align-self: start; }
+  .pa-board-trainer { grid-area: trainer; }
+  .pa-board-fights { grid-area: fights; }
+  .pa-board-wr { grid-area: wr; }
+  .pa-board-pnl { grid-area: pnl; }
+
+  .pa-board-stat small,
+  .pa-board-pnl small {
+    display: block;
   }
 }

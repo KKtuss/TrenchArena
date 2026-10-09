@@ -171,6 +171,7 @@ export function ArenaShell({ children }: { children: ReactNode }) {
     { href: '/teams', label: 'My Teams', active: pathname === '/teams' },
     { href: '/teams/builder', label: 'Team Builder', active: pathname.startsWith('/teams/builder') },
     { href: '/tournaments', label: 'Tournaments', active: pathname.startsWith('/tournament') },
+    { href: '/leaderboard', label: 'Leaderboard', active: pathname.startsWith('/leaderboard') },
     { href: '/treasury', label: 'Treasury & Economy', active: pathname.startsWith('/treasury') },
     ...(isDemoAuthEnabled()
       ? [{ href: '/profile', label: 'Profile', active: pathname.startsWith('/profile') }]

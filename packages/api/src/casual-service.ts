@@ -361,11 +361,15 @@ export class CasualRoomService {
    * open, battling, or cancelled rooms.
    */
   listCompletedFightRecords(playerId: string): CasualFightRecord[] {
+    return this.listAllCompletedFightRecords()
+      .filter(record => record.creatorId === playerId || record.opponentId === playerId);
+  }
+
+  listAllCompletedFightRecords(): CasualFightRecord[] {
     return [...this.rooms.values()]
       .filter((room): room is CasualRoom & { opponentId: string } => (
         room.status === 'completed'
         && typeof room.opponentId === 'string'
-        && (room.creatorId === playerId || room.opponentId === playerId)
       ))
       .map(room => this.fightRecord(room))
       .sort((a, b) => b.completedAt - a.completedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
