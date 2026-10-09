@@ -183,6 +183,21 @@
   max-width: var(--shell-side-chip-w);
 }
 
+.shell-nav-stitch .trainer-passport-dot {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #ff4d5c;
+  box-shadow: 0 0 8px rgba(255, 77, 92, 0.95);
+}
+
+.shell-nav-stitch .trainer-passport-dot.is-ok {
+  background: #3ee07a;
+  box-shadow: 0 0 8px rgba(62, 224, 122, 0.95);
+}
+
 .shell-nav-stitch .trainer-control.is-active {
   border-color: #00f0ff;
   color: #00f0ff;

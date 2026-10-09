@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 
 import { useArena } from '@/lib/arena-context';
 import { isDemoAuthEnabled } from '@/lib/demo-auth';
+import { casualChallengeAccess } from '@/lib/play-access';
 import { listWalletOptions } from '@/lib/solana-wallet';
 import {
   isTrainerUsername,
@@ -28,7 +29,14 @@ export function TrainerProfileControl() {
     saveTrainerProfile,
     playerLabel,
     authBusy,
+    snapshot,
+    chainEconomyEnabled,
   } = useArena();
+  const passportOk = casualChallengeAccess({
+    walletConnected,
+    chainEconomyEnabled,
+    passport: snapshot?.passport,
+  }).ok;
   const pathname = usePathname() ?? '';
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -47,6 +55,11 @@ export function TrainerProfileControl() {
         <small>{walletConnected ? 'Trainer' : 'Wallet'}</small>
         <strong>{walletConnected ? playerLabel : 'Connect'}</strong>
       </span>
+      <span
+        className={`trainer-passport-dot${passportOk ? ' is-ok' : ' is-off'}`}
+        title={passportOk ? 'Passport requirements met' : 'Passport requirements not met'}
+        aria-label={passportOk ? 'Passport requirements met' : 'Passport requirements not met'}
+      />
     </>
   );
 
